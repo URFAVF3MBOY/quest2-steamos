@@ -1,0 +1,219 @@
+name: build-quest2-steamos
+
+# Builds a kernel with the extra options SteamOS needs (btrfs, user namespaces, fanotify, ...)
+# plus TWO boot images from it:
+#   boot_steamos.img  -> mounts Valve's rootfs from the USB drive and starts systemd;
+#                        shows the kernel log on the headset display; falls back to the
+#                        USB serial shell if the drive/rootfs can't be mounted
+#   boot_ramonly.img  -> the RAM-only Alpine image (serial terminal, qscreen, screen-test)
+# No KernelSU in this build.
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_commit:
+        description: "oculus-linux-kernel commit (oculus-quest2-kernel-master)"
+        default: "6e428607392d72708bc95cb7126768494c6b5ac0"
+      steamos_cmdline:
+        description: "tokens appended to the stock cmdline for the SteamOS image (max ~200 chars)"
+        default: "loglevel=7 qs_rot=0 rootpartuuid=20262026-01 systemd.log_target=kmsg systemd.log_level=info regulator_ignore_unused clk_ignore_unused"
+      ram_cmdline:
+        description: "tokens appended for the RAM-only image"
+        default: "androidboot.q2_ram=1 loglevel=7 regulator_ignore_unused clk_ignore_unused"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      MAKEVARS: ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- REAL_CC=clang
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Cache apt packages
+        id: aptcache
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-cache
+          key: apt-q2-noble-v1
+
+      - name: Install build dependencies
+        run: |
+          # downloaded .debs are cached in ~/apt-cache, so only the first run pays the slow mirror
+          mkdir -p ~/apt-cache/partial
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dir::Cache::archives="$HOME/apt-cache" \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu git curl cpio rsync kmod \
+            device-tree-compiler python3 dwarves zip file \
+            qemu-user-static binfmt-support
+          sudo chown -R "$USER" ~/apt-cache || true
+
+      - name: Fetch Meta Quest 2 kernel source
+        run: |
+          mkdir src && cd src
+          git init -q
+          git remote add origin https://github.com/facebookincubator/oculus-linux-kernel.git
+          git fetch --depth 1 origin "${{ inputs.kernel_commit }}"
+          git checkout -q FETCH_HEAD
+          git log -1 --format='%H %cd %s'
+
+      - name: Cache AOSP clang
+        id: clangcache
+        uses: actions/cache@v4
+        with:
+          path: toolchain/clang
+          key: clang-r450784e-v1
+
+      - name: Fetch clang r450784e (AOSP prebuilt)
+        if: steps.clangcache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p toolchain/clang && cd toolchain
+          curl -fsSL -o clang.tar.gz \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master-kernel-build-2022/clang-r450784e.tar.gz"
+          tar -xzf clang.tar.gz -C clang
+          rm clang.tar.gz
+
+      - name: Show clang version
+        run: ./toolchain/clang/bin/clang --version | head -n 1
+
+      - name: Apply source fixes
+        working-directory: src
+        run: |
+          # the fixes patch is per kernel generation: try the newer-commit patch, then the older-commit one
+          if git apply --check ../patches/oculus-kernel-fixes.patch 2>/dev/null; then
+            git apply ../patches/oculus-kernel-fixes.patch; echo "applied oculus-kernel-fixes.patch"
+          else
+            git apply --check ../patches/oculus-kernel-fixes-old.patch
+            git apply ../patches/oculus-kernel-fixes-old.patch; echo "applied oculus-kernel-fixes-old.patch"
+          fi
+          # newer kernel only: swap in the older SyncBoss driver, whose DT bindings (oculus,syncboss-*) match the headset's device tree
+          if git apply --check ../patches/oculus-syncboss-old-driver.patch 2>/dev/null; then
+            git apply ../patches/oculus-syncboss-old-driver.patch; echo "applied oculus-syncboss-old-driver.patch"
+          else
+            echo "syncboss patch not applicable to this kernel commit, skipping"
+          fi
+          # GPU stack (custom KGSL route): dma-buf sync_file import/export ioctls (v6.0 backport) for implicit sync
+          # between Turnip/zink, compositors and the display (pairs with build-q2gpu / patches/turnip-q2-drm.py)
+          git apply --check ../patches/q2-dmabuf-sync-file.patch
+          git apply ../patches/q2-dmabuf-sync-file.patch; echo "applied q2-dmabuf-sync-file.patch"
+
+      - name: Configure kernel
+        shell: bash
+        working-directory: src
+        run: |
+          export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$PATH"
+          cp ../config/kernel.config .config
+          sed -i 's/^CONFIG_SYSTEM_TRUSTED_KEYS=.*/CONFIG_SYSTEM_TRUSTED_KEYS=""/' .config
+          # apply fragments: "CONFIG_X=y" -> enable, "# CONFIG_X is not set" -> disable
+          for frag in ../config/ramonly.fragment ../config/steamos.fragment; do
+            while IFS= read -r line; do
+              case "$line" in
+                CONFIG_*=y)          ./scripts/config --file .config -e "$(echo "$line" | sed -E 's/^CONFIG_([A-Z0-9_]+)=y$/\1/')" ;;
+                "# CONFIG_"*" is not set") ./scripts/config --file .config -d "$(echo "$line" | sed -E 's/^# CONFIG_([A-Z0-9_]+) is not set$/\1/')" ;;
+              esac
+            done < "$frag"
+          done
+          make $MAKEVARS olddefconfig
+          echo "--- requested options after olddefconfig:"
+          for frag in ../config/ramonly.fragment ../config/steamos.fragment; do
+            grep -E '^CONFIG_[A-Z0-9_]+=y$' "$frag" | while read -r l; do
+              opt="${l%%=*}"
+              if grep -q "^${opt}=y" .config; then echo "ok       $opt"; else echo "MISSING  $opt"; fi
+            done
+          done
+          # options that must be OFF (Lepton / Android apps in rootless podman need normal Linux network rules)
+          for off in CONFIG_ANDROID_PARANOID_NETWORK CONFIG_SDCARD_FS; do
+            grep -q "^${off}=y" .config && { echo "required-off option $off is still on"; exit 1; }; echo "off      $off"
+          done
+          for must in CONFIG_DEVTMPFS CONFIG_USB_CONFIGFS_ACM CONFIG_BTRFS_FS CONFIG_USER_NS CONFIG_OVERLAY_FS CONFIG_USB_STORAGE CONFIG_USB_XHCI_HCD; do
+            grep -q "^${must}=y" .config || { echo "required option $must did not stick (unmet dependency?)"; exit 1; }
+          done
+
+      - name: Build kernel Image
+        shell: bash
+        working-directory: src
+        run: |
+          export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$PATH"
+          # -k keeps going after an error so ONE run lists every failing file, not just the first
+          set +e
+          make $MAKEVARS -k -j"$(nproc)" Image 2>&1 | tee ../kernel-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" != 0 ]; then
+            echo "=================== UNIQUE ERRORS ==================="
+            grep -E "error:|\*\*\* \[|undefined reference|No such file" ../kernel-build.log | sort -u | head -80
+            exit 1
+          fi
+          ls -l arch/arm64/boot/Image
+
+      - name: Build the Wi-Fi driver (qcacld-3.0 -> wlan.ko) against this kernel
+        shell: bash
+        working-directory: src
+        run: |
+          export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$PATH"
+          # Only the module we need: a full "make modules" also builds techpack/audio, which does not compile out of the box.
+          make $MAKEVARS -j"$(nproc)" modules_prepare
+          # symbol versions of the kernel itself (CONFIG_MODVERSIONS), so the module loads without forcing
+          ./scripts/mod/modpost -m -a -o Module.symvers vmlinux
+          echo "vmlinux exports: $(wc -l < Module.symvers)"
+          set +e
+          make $MAKEVARS -j"$(nproc)" M=drivers/staging/qcacld-3.0 modules 2>&1 | tee ../wlan-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" != 0 ]; then
+            echo "=================== UNIQUE ERRORS ==================="
+            grep -E "error:|\*\*\* \[|undefined|WARNING: .*undefined" ../wlan-build.log | sort -u | head -60
+            exit 1
+          fi
+          grep -E "WARNING" ../wlan-build.log | sort -u | head -20 || true
+          rm -rf ../modstage
+          make $MAKEVARS M=drivers/staging/qcacld-3.0 INSTALL_MOD_PATH=../modstage INSTALL_MOD_STRIP=1 modules_install
+          echo "kernel release: $(cat include/config/kernel.release)"
+          find ../modstage -type f | head -20
+          test -n "$(find ../modstage -name wlan.ko)" || { echo "wlan.ko missing"; exit 1; }
+          ls -l $(find ../modstage -name wlan.ko)
+          tar -C ../modstage -czf ../q2modules.tar.gz lib
+          ls -l ../q2modules.tar.gz
+
+      - name: Build initramfs - SteamOS (USB root)
+        run: INIT_FILE="$PWD/initramfs/init-steamos" bash scripts/build_initramfs.sh initramfs-steamos.cpio.gz
+
+      - name: Build initramfs - RAM-only (serial shell)
+        run: bash scripts/build_initramfs.sh initramfs-ramonly.cpio.gz
+
+      - name: Pack boot images
+        shell: bash
+        run: |
+          python3 scripts/repack_boot.py --header stock/header_page.bin --dtb stock/dtb.bin \
+            --kernel src/arch/arm64/boot/Image --ramdisk initramfs-steamos.cpio.gz \
+            --cmdline-append "${{ inputs.steamos_cmdline }}" --out boot_steamos.img
+          python3 scripts/repack_boot.py --header stock/header_page.bin --dtb stock/dtb.bin \
+            --kernel src/arch/arm64/boot/Image --ramdisk initramfs-ramonly.cpio.gz \
+            --cmdline-append "${{ inputs.ram_cmdline }}" --out boot_ramonly.img
+          ls -l boot_steamos.img boot_ramonly.img
+          sha256sum boot_steamos.img boot_ramonly.img
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quest2-steamos
+          path: |
+            boot_steamos.img
+            boot_ramonly.img
+            q2modules.tar.gz
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-debug-steamos
+          path: |
+            src/.config
+            src/System.map
+            kernel-build.log
+          if-no-files-found: ignore

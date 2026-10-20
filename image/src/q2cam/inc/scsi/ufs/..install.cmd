@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/scsi/ufs/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/scsi/ufs /tmp/khsrc/include/uapi/scsi/ufs ioctl.h ufs.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/scsi/ufs ./include/generated/uapi/scsi/ufs ; touch /tmp/khdr/include/scsi/ufs/.install

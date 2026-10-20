@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/linux/genwqe/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/genwqe /tmp/khsrc/include/uapi/linux/genwqe genwqe_card.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/genwqe ./include/generated/uapi/linux/genwqe ; touch /tmp/khdr/include/linux/genwqe/.install

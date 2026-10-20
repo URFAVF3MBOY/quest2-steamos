@@ -1,0 +1,143 @@
+name: build-q2gpu-android
+
+# The Quest 2 GPU stack for ANDROID apps (VRChat etc. in Valve's Lepton container).
+# Lepton gives Android the host's /dev/dri/renderD128 and Valve's Android Mesa (/usr/share/guestos/android/vendor),
+# both made for the Steam Frame's upstream "msm" GPU driver.  On the Quest the GPU is KGSL and renderD128 is the display
+# driver (msm_drm) -> inside Android: "ZINK: failed to choose pdev", EGL fails, surfaceflinger aborts, Android stops.
+# This builds the same patched Mesa as build-q2gpu (Turnip on KGSL paired with msm_drm, zink for EGL/GLES/GBM) for
+# Android (bionic, NDK, API 30 = Lepton's LineageOS 18.1 / Android 11), with one extra change: Turnip opens /dev/q2kgsl
+# first (the real KGSL device, passed in by the Quest image) because Lepton bind-mounts renderD128 at /dev/kgsl-3d0.
+# Fix (desk-264): Mesa looks up libdrm with allow_fallback = the "allow-fallback-for" option, so --force-fallback-for alone
+# did nothing ("Dependency libdrm not found"); -Dallow-fallback-for=libdrm builds it from subprojects/libdrm.wrap.
+# Result: artifact "q2gpu-android" -> q2gpu-android.tar.gz with the files named as in /usr/share/guestos/android/vendor.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mesa_ref:
+        description: "Mesa commit (same as build-q2gpu)"
+        default: "4e1e46921e19f071437d67caaeaa0aa91da8a536"
+      api:
+        description: "Android API level (Lepton = LineageOS 18.1 = 30)"
+        default: "30"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git ninja-build pkg-config bison flex glslang-tools python3-pip patchelf file
+          sudo pip install --break-system-packages --ignore-installed meson mako pyyaml packaging pycparser ply
+          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"; echo "NDK=$NDK" >> "$GITHUB_ENV"; ls "$NDK"; cat "$NDK/source.properties"
+
+      - name: Fetch Mesa
+        run: |
+          git clone --filter=blob:none https://gitlab.freedesktop.org/mesa/mesa.git mesa
+          cd mesa
+          git checkout "${{ github.event.inputs.mesa_ref }}"
+          echo "Mesa $(cat VERSION) @ $(git rev-parse --short HEAD)"
+          # libdrm / zlib / expat for Android come from Mesa's own subprojects/*.wrap (built static into the libraries)
+          cat subprojects/libdrm.wrap
+
+      - name: Patch (async queue + KGSL <-> msm_drm pairing + /dev/q2kgsl)
+        run: |
+          python3 patches/turnip-q2-async.py mesa
+          python3 patches/turnip-q2-drm.py mesa
+          python3 - <<'PY'
+          p = 'mesa/src/freedreno/vulkan/tu_knl.cc'; s = open(p).read()
+          old = 'static const char path[] = "/dev/kgsl-3d0";'
+          new = ('/* q2: inside Lepton, /dev/kgsl-3d0 is a bind of renderD128; the real KGSL is passed in as /dev/q2kgsl */\n'
+                 '   const char *path = access("/dev/q2kgsl", F_OK) == 0 ? "/dev/q2kgsl" : "/dev/kgsl-3d0";')
+          assert s.count(old) == 1, 'kgsl path not found'
+          s = s.replace(old, new)
+          if '#include <unistd.h>' not in s: s = '#include <unistd.h>\n' + s
+          open(p, 'w').write(s); print('patched', p)
+          PY
+          cd mesa && git diff --stat && git diff > "$GITHUB_WORKSPACE/q2gpu-android-mesa.diff"
+
+      - name: Cross file (NDK clang, aarch64, API ${{ github.event.inputs.api }})
+        run: |
+          B="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"; A=${{ github.event.inputs.api }}
+          cat > android-aarch64.ini <<EOF
+          [binaries]
+          ar = '$B/llvm-ar'
+          c = ['$B/aarch64-linux-android$A-clang']
+          cpp = ['$B/aarch64-linux-android$A-clang++', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables', '-static-libstdc++', '-Wno-c++11-narrowing']
+          c_ld = 'lld'
+          cpp_ld = 'lld'
+          strip = '$B/llvm-strip'
+          pkg-config = ['/usr/bin/false']   # never pick up the build machine's x86 .pc files
+          [properties]
+          needs_exe_wrapper = true
+          [host_machine]
+          system = 'android'
+          cpu_family = 'aarch64'
+          cpu = 'armv8'
+          endian = 'little'
+          EOF
+          cat android-aarch64.ini
+
+      - name: Configure
+        working-directory: mesa
+        run: |
+          meson setup build --cross-file "$GITHUB_WORKSPACE/android-aarch64.ini" --prefix=/vendor --libdir=lib64 \
+            -Dbuildtype=release -Db_ndebug=true --force-fallback-for=libdrm,expat,zlib -Dallow-fallback-for=libdrm \
+            -Dplatforms=android -Dplatform-sdk-version=${{ github.event.inputs.api }} -Dandroid-stub=true -Dandroid-libbacktrace=disabled -Dandroid-strict=false \
+            -Dvulkan-drivers=freedreno -Dfreedreno-kmds=kgsl,msm -Dgallium-drivers=zink -Dvulkan-layers= \
+            -Degl=enabled -Dgbm=enabled -Dglx=disabled -Dopengl=true -Dgles1=enabled -Dgles2=enabled \
+            -Degl-lib-suffix=_mesa -Dgles-lib-suffix=_mesa \
+            -Dllvm=disabled -Dvalgrind=disabled -Dtools= -Dlibunwind=disabled -Dlmsensors=disabled -Dzstd=disabled \
+            -Dbuild-tests=false -Dvideo-codecs= -Dwerror=false
+
+      - name: Build
+        working-directory: mesa
+        run: ninja -C build
+
+      - name: Collect (named as in /usr/share/guestos/android/vendor)
+        run: |
+          O="$GITHUB_WORKSPACE/out/vendor"; mkdir -p "$O/lib64/hw" "$O/lib64/egl"
+          cd mesa/build; find . -name '*.so' -type f | sort
+          f() { find . -name "$1" -type f | head -n 1; }
+          cp "$(f libvulkan_freedreno.so)" "$O/lib64/hw/vulkan.freedreno.so"
+          for n in libEGL_mesa.so libGLESv1_CM_mesa.so libGLESv2_mesa.so; do cp "$(f $n)" "$O/lib64/egl/$n"; done
+          cp "$(f 'libgallium*.so')" "$O/lib64/libgallium_dri.so"
+          G=$(f libgbm.so); [ -n "$G" ] || G=$(f 'libgbm*.so'); cp "$G" "$O/lib64/libgbm_mesa.so"
+          # desk-271: GBM's backend is a separate plug-in in this Mesa (gbm/dri_gbm.so, looked up in <libdir>/gbm);
+          # without it Android's gralloc said "Unable to create gbm device"
+          D=$(f dri_gbm.so); [ -n "$D" ] || { echo "dri_gbm.so not built"; exit 1; }
+          mkdir -p "$O/lib64/gbm" && cp "$D" "$O/lib64/gbm/dri_gbm.so"
+          strings "$O/lib64/libgbm_mesa.so" | grep -E '/vendor/lib64/gbm|gbm' | head -5
+          patchelf --set-soname vulkan.freedreno.so "$O/lib64/hw/vulkan.freedreno.so"
+          patchelf --set-soname libgbm_mesa.so "$O/lib64/libgbm_mesa.so"
+          G2=$(basename "$(f 'libgallium*.so')")
+          for x in "$O"/lib64/*.so "$O"/lib64/*/*.so; do
+            [ "$G2" != libgallium_dri.so ] && patchelf --replace-needed "$G2" libgallium_dri.so "$x" 2>/dev/null
+            [ "$x" = "$O/lib64/libgallium_dri.so" ] && patchelf --set-soname libgallium_dri.so "$x"
+            patchelf --replace-needed libgbm.so libgbm_mesa.so "$x" 2>/dev/null; true
+          done
+          "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-unneeded "$O"/lib64/*.so "$O"/lib64/*/*.so
+          cp "$GITHUB_WORKSPACE/q2gpu-android-mesa.diff" "$GITHUB_WORKSPACE/out/"; git -C .. rev-parse HEAD > "$GITHUB_WORKSPACE/out/mesa-commit.txt"
+
+      - name: Check
+        run: |
+          cd "$GITHUB_WORKSPACE/out"
+          strings vendor/lib64/hw/vulkan.freedreno.so | grep -c 'q2-turnip-drm' || { echo "turnip-q2-drm patch missing"; exit 1; }
+          strings vendor/lib64/hw/vulkan.freedreno.so | grep -c '/dev/q2kgsl' || { echo "/dev/q2kgsl patch missing"; exit 1; }
+          for x in $(find vendor -name '*.so' | sort); do
+            echo "=== $x ($(du -h $x | cut -f1))"; file "$x"
+            readelf -d "$x" | grep -E 'NEEDED|SONAME' | sed 's/.*: //' | tr '\n' ' '; echo
+          done
+
+      - name: Pack
+        run: tar -C out -czf q2gpu-android.tar.gz . && ls -l q2gpu-android.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: q2gpu-android
+          path: q2gpu-android.tar.gz
+          retention-days: 30

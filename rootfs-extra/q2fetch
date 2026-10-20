@@ -1,0 +1,50 @@
+#!/bin/sh
+# q2fetch - neofetch-style system summary that only needs /proc, /sys and /etc/os-release.
+# (SteamOS' VR image ships neither neofetch nor fastfetch.)  Works in any POSIX sh.
+. /etc/os-release 2>/dev/null
+rd() { [ -r "$1" ] && tr -d '\0' < "$1" 2>/dev/null; }
+kb() { sed -n "s/^$1:[[:space:]]*\([0-9]*\) kB.*/\1/p" /proc/meminfo | head -n 1; }
+
+host="$(rd /proc/sys/kernel/hostname)"; [ -n "$host" ] || host=$(hostname 2>/dev/null)
+title="root@$host"
+echo "$title"
+printf '%*s\n' "${#title}" '' | tr ' ' '-'
+
+echo "OS: ${PRETTY_NAME:-?} ${VERSION_ID:+$VERSION_ID }${VERSION_CODENAME:+($VERSION_CODENAME${VARIANT_ID:+, $VARIANT_ID}) }$(uname -m)"
+echo "Build: ${BUILD_ID:-?}"
+model="$(rd /proc/device-tree/model)"; [ -n "$model" ] || model="$(rd /sys/firmware/devicetree/base/model)"
+hw="$(sed -n 's/.*androidboot.hardware=\([^ ]*\).*/\1/p' /proc/cmdline | head -n 1)"
+echo "Host: ${model:-unknown}${hw:+ [$hw]}"
+echo "Kernel: $(uname -r)"
+
+up=$(cut -d. -f1 /proc/uptime 2>/dev/null)
+if [ -n "$up" ]; then
+  d=$((up/86400)); h=$((up%86400/3600)); m=$((up%3600/60)); s=$((up%60))
+  u=""; [ $d -gt 0 ] && u="${d}d "; [ $h -gt 0 ] && u="$u${h}h "; [ $m -gt 0 ] && u="$u${m}m "; echo "Uptime: $u${s}s"
+fi
+
+pk=""
+[ -d /var/lib/pacman/local ] && pk="$(ls /var/lib/pacman/local 2>/dev/null | grep -vc '^ALPM_DB_VERSION$') (pacman)"
+[ -n "$pk" ] && echo "Packages: $pk"
+echo "Shell: ${SHELL:-/bin/sh}"
+
+soc="$(rd /sys/devices/soc0/machine)"; sid="$(rd /sys/devices/soc0/soc_id)"
+n=$(grep -c '^processor' /proc/cpuinfo 2>/dev/null); f=$(rd /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq)
+[ -n "$f" ] || f=$(rd /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq)
+cpuf=""; [ -n "$f" ] && cpuf=" @ $((f/1000))MHz (max)"
+echo "CPU: Qualcomm ${soc:-SoC}${sid:+ (id $sid)} (${n:-?} cores)$cpuf"
+
+gpu="$(rd /sys/class/kgsl/kgsl-3d0/gpu_model)"
+[ -n "$gpu" ] && echo "GPU: Qualcomm $gpu (KGSL)" || echo "GPU: no KGSL device visible"
+
+mt=$(kb MemTotal); mf=$(kb MemAvailable)
+[ -n "$mt" ] && echo "Memory: $(( (mt-${mf:-0})/1024 ))MiB / $((mt/1024))MiB"
+
+df -h / 2>/dev/null | awk 'NR==2{print "Disk (/): " $3 " / " $2 " (" $5 ") " }' 2>/dev/null || true
+
+for m in /sys/class/drm/card*-*/modes; do [ -r "$m" ] && { echo "Display: $(head -n 1 "$m") ($(echo "$m" | cut -d/ -f5))"; break; }; done
+echo "Display (splash fb): 1920x3664 (qscreen)"
+
+nic=""
+for i in /sys/class/net/*; do b="${i##*/}"; [ "$b" = lo ] && continue; a="$(ip -4 -o addr show dev "$b" 2>/dev/null | sed -n 's/.*inet \([0-9.\/]*\).*/\1/p' | head -n 1)"; nic="$nic $b${a:+=$a}"; done
+echo "Network:${nic:- none}"

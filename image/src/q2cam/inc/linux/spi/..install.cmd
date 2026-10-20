@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/linux/spi/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/spi /tmp/khsrc/include/uapi/linux/spi spidev.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/spi ./include/generated/uapi/linux/spi ; touch /tmp/khdr/include/linux/spi/.install

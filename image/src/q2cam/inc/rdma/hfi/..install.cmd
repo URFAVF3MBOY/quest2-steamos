@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/rdma/hfi/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/rdma/hfi /tmp/khsrc/include/uapi/rdma/hfi hfi1_ioctl.h hfi1_user.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/rdma/hfi ./include/generated/uapi/rdma/hfi ; touch /tmp/khdr/include/rdma/hfi/.install

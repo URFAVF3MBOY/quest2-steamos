@@ -1,0 +1,12 @@
+# Options switched on on top of config/kernel.config for the RAM-only first-light image.
+# Only "CONFIG_X=y" lines are read by the workflow.
+#
+# devtmpfs: our initramfs mounts it for /dev
+CONFIG_DEVTMPFS=y
+# USB gadget serial (CDC ACM): gives a COM port on the PC = our terminal
+CONFIG_USB_CONFIGFS_ACM=y
+# USB gadget networking, for later (stock config only has NCM)
+CONFIG_USB_CONFIGFS_ECM=y
+CONFIG_USB_CONFIGFS_RNDIS=y
+# debugfs: lets us read clk/regulator/gpio state from inside Linux
+CONFIG_DEBUG_FS=y

@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/mtd/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/mtd /tmp/khsrc/include/uapi/mtd inftl-user.h mtd-abi.h mtd-user.h nftl-user.h ubi-user.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/mtd ./include/generated/uapi/mtd ; touch /tmp/khdr/include/mtd/.install

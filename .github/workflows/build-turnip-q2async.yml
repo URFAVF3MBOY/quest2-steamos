@@ -1,0 +1,86 @@
+name: build-turnip-q2async
+
+# Turnip (KGSL) with a real second GPU queue + KGSL context priorities, for SteamVR's compositor on the Quest 2.
+# Patch: patches/turnip-q2-async.py.  Same Mesa commit as the SteamOS rootfs by default (Mesa 26.3.0-devel a3da13e17d).
+# Built natively on arm64 Ubuntu 24.04 (glibc 2.39 = the rootfs).
+# Result: artifact "q2tu-aarch64" -> q2tu.tar.gz, unpacks to /opt/q2tu (only vrcompositor is pointed at it).
+
+on:
+  workflow_dispatch:
+    inputs:
+      mesa_ref:
+        description: "Mesa commit/branch/tag (gitlab.freedesktop.org/mesa/mesa)"
+        default: "a3da13e17d"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git ninja-build pkg-config bison flex glslang-tools python3-pip python3-dev \
+            libdrm-dev libx11-dev libx11-xcb-dev libxext-dev libxfixes-dev libxrandr-dev libxshmfence-dev \
+            libxcb1-dev libxcb-dri3-dev libxcb-present-dev libxcb-sync-dev libxcb-shm0-dev libxcb-xfixes0-dev libxcb-randr0-dev \
+            libexpat1-dev zlib1g-dev libzstd-dev libelf-dev libwayland-dev wayland-protocols libvulkan-dev spirv-tools
+          sudo pip install --break-system-packages --ignore-installed meson mako pyyaml packaging pycparser ply
+          meson --version
+
+      - name: Fetch Mesa
+        run: |
+          git clone --filter=blob:none https://gitlab.freedesktop.org/mesa/mesa.git mesa
+          cd mesa
+          git checkout "${{ github.event.inputs.mesa_ref }}"
+          echo "Mesa $(cat VERSION) @ $(git rev-parse --short HEAD)"
+
+      - name: Patch (real compute queue + KGSL priorities)
+        run: |
+          python3 patches/turnip-q2-async.py mesa
+          cd mesa && git diff --stat && git diff > "$GITHUB_WORKSPACE/turnip-q2-async.diff"
+
+      - name: Configure
+        working-directory: mesa
+        run: |
+          meson setup build --prefix=/opt/q2tu -Dbuildtype=release -Db_ndebug=true \
+            -Dvulkan-drivers=freedreno -Dfreedreno-kmds=kgsl,msm -Dgallium-drivers= -Dvulkan-layers= \
+            -Dplatforms=x11 -Dglx=disabled -Dgbm=disabled -Degl=disabled -Dopengl=false -Dgles1=disabled -Dgles2=disabled \
+            -Dllvm=disabled -Dvalgrind=disabled -Dtools= -Dlibunwind=disabled -Dlmsensors=disabled -Dbuild-tests=false \
+            -Dwerror=false
+
+      - name: Build
+        working-directory: mesa
+        run: ninja -C build
+
+      - name: Install into a staging dir
+        working-directory: mesa
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/stage"
+          DESTDIR="$GITHUB_WORKSPACE/stage" ninja -C build install
+          strip --strip-unneeded $(find "$GITHUB_WORKSPACE/stage" -name 'libvulkan_freedreno.so')
+          cp "$GITHUB_WORKSPACE/turnip-q2-async.diff" "$GITHUB_WORKSPACE/stage/opt/q2tu/"
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/stage/opt/q2tu/mesa-commit.txt"
+          find "$GITHUB_WORKSPACE/stage" -type f
+
+      - name: Check what it needs from the system
+        run: |
+          LIB=$(find "$GITHUB_WORKSPACE/stage" -name 'libvulkan_freedreno.so' | head -n 1)
+          ls -l "$LIB"; readelf -d "$LIB" | grep NEEDED
+          objdump -T "$LIB" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n 1
+          objdump -T "$LIB" | grep -o 'GLIBCXX_[0-9.]*' | sort -uV | tail -n 1
+          strings "$LIB" | grep -c 'q2-turnip' || { echo "patch missing from the binary"; exit 1; }
+          find "$GITHUB_WORKSPACE/stage" -name '*icd*.json' -exec cat {} \;
+
+      - name: Pack
+        run: |
+          tar -C "$GITHUB_WORKSPACE/stage" -czf q2tu.tar.gz opt/q2tu
+          ls -l q2tu.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: q2tu-aarch64
+          path: q2tu.tar.gz
+          retention-days: 30

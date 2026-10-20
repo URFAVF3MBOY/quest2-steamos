@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/linux/can/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/can /tmp/khsrc/include/uapi/linux/can bcm.h error.h gw.h netlink.h raw.h vxcan.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/can ./include/generated/uapi/linux/can ; touch /tmp/khdr/include/linux/can/.install

@@ -1,0 +1,14 @@
+#!/bin/bash
+# desk-290: keep Steam's UI off the cores SteamVR's compositor uses.  With the big dashboard open, Steam's web UI
+# compositor thread runs a whole core flat out (desk-286..289 profiles); the compositor's render thread needs ~0.75 core.
+# Steam (client + web UI) -> CPUs 0-5 (same priority as before); vrcompositor -> CPUs 6-7 (the two fastest cores).  Re-applied every 5 s
+# (new threads/processes).  Off: /var/lib/q2/noaffinity
+STEAMCPUS=${STEAMCPUS:-0-5}; COMPCPUS=${COMPCPUS:-6-7}
+while :; do
+  [ -e /var/lib/q2/noaffinity ] && exit 0
+  for p in $(pgrep -x vrcompositor); do taskset -a -c -p $COMPCPUS $p >/dev/null 2>&1; done
+  for p in $(pgrep -f 'steamrtarm64/(steam|steamwebhelper)'); do
+    taskset -a -c -p $STEAMCPUS $p >/dev/null 2>&1
+  done
+  sleep 5
+done

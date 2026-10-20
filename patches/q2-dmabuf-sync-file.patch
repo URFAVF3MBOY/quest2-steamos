@@ -1,0 +1,248 @@
+diff --git a/drivers/dma-buf/dma-buf.c b/drivers/dma-buf/dma-buf.c
+index b11eb6771..d4578e32e 100644
+--- a/drivers/dma-buf/dma-buf.c
++++ b/drivers/dma-buf/dma-buf.c
+@@ -42,6 +42,8 @@
+ #include <linux/hashtable.h>
+ #include <linux/mount.h>
+ #include <linux/dcache.h>
++#include <linux/sync_file.h>
++#include <linux/dma-fence-array.h>
+ 
+ #include <uapi/linux/dma-buf.h>
+ #include <uapi/linux/magic.h>
+@@ -426,6 +428,196 @@ static int dma_buf_begin_cpu_access_umapped(struct dma_buf *dmabuf,
+ static int dma_buf_end_cpu_access_umapped(struct dma_buf *dmabuf,
+ 					  enum dma_data_direction direction);
+ 
++/*
++ * DMA_BUF_IOCTL_EXPORT_SYNC_FILE / DMA_BUF_IOCTL_IMPORT_SYNC_FILE (backport of v6.0, reservation_object API).
++ * Export: READ -> a fence for the current writer (exclusive fence); WRITE -> writer and all readers.
++ * Import: READ -> added as a shared (reader) fence; WRITE -> becomes the exclusive fence.  4.19's add_excl_fence
++ * drops the shared fences, so a WRITE import is merged with every still-pending fence to keep their ordering.
++ * Signaled fences are skipped, so merged fence arrays never chain up across frames.
++ */
++static const char *dma_buf_stub_name(struct dma_fence *fence)
++{
++	return "dma_buf_stub";
++}
++
++static const struct dma_fence_ops dma_buf_stub_ops = {
++	.get_driver_name = dma_buf_stub_name,
++	.get_timeline_name = dma_buf_stub_name,
++};
++
++static DEFINE_SPINLOCK(dma_buf_stub_lock);
++static struct dma_fence dma_buf_stub;
++static bool dma_buf_stub_ready;
++
++static struct dma_fence *dma_buf_stub_fence(void)
++{
++	spin_lock(&dma_buf_stub_lock);
++	if (!dma_buf_stub_ready) {
++		dma_fence_init(&dma_buf_stub, &dma_buf_stub_ops,
++			       &dma_buf_stub_lock, 0, 0);
++		dma_fence_signal_locked(&dma_buf_stub);
++		dma_buf_stub_ready = true;	/* the initial reference is never dropped */
++	}
++	spin_unlock(&dma_buf_stub_lock);
++	return dma_fence_get(&dma_buf_stub);
++}
++
++/* pending fences of @resv (all of them if @all, else only the exclusive one) as one fence, or NULL if none */
++static int dma_buf_pending_fence(struct reservation_object *resv, bool all,
++				 struct dma_fence *extra, struct dma_fence **out)
++{
++	struct dma_fence *excl = NULL, **shared = NULL, **fences;
++	struct dma_fence_array *array;
++	unsigned int count = 0, n = 0, i;
++	int ret;
++
++	*out = NULL;
++	ret = reservation_object_get_fences_rcu(resv, &excl, &count, &shared);
++	if (ret) {
++		dma_fence_put(extra);
++		return ret;
++	}
++
++	fences = kmalloc_array(count + 2, sizeof(*fences), GFP_KERNEL);
++	if (!fences) {
++		ret = -ENOMEM;
++		goto put_all;
++	}
++	if (extra)
++		fences[n++] = extra;
++	extra = NULL;
++	for (i = 0; i < count; i++) {
++		if (all && !dma_fence_is_signaled(shared[i]))
++			fences[n++] = shared[i];
++		else
++			dma_fence_put(shared[i]);
++	}
++	count = 0;
++	if (excl && !dma_fence_is_signaled(excl))
++		fences[n++] = excl;
++	else
++		dma_fence_put(excl);
++	excl = NULL;
++	kfree(shared);
++	shared = NULL;
++
++	if (n == 0) {
++		kfree(fences);
++		return 0;
++	}
++	if (n == 1) {
++		*out = fences[0];
++		kfree(fences);
++		return 0;
++	}
++	array = dma_fence_array_create(n, fences, dma_fence_context_alloc(1),
++				       1, false);
++	if (!array) {
++		for (i = 0; i < n; i++)
++			dma_fence_put(fences[i]);
++		kfree(fences);
++		return -ENOMEM;
++	}
++	*out = &array->base;	/* the array owns fences[] and its references */
++	return 0;
++
++put_all:
++	dma_fence_put(extra);
++	dma_fence_put(excl);
++	for (i = 0; i < count; i++)
++		dma_fence_put(shared[i]);
++	kfree(shared);
++	return ret;
++}
++
++static long dma_buf_export_sync_file(struct dma_buf *dmabuf,
++				     void __user *user_data)
++{
++	struct dma_buf_export_sync_file arg;
++	struct dma_fence *fence;
++	struct sync_file *sync_file;
++	int fd, ret;
++
++	if (copy_from_user(&arg, user_data, sizeof(arg)))
++		return -EFAULT;
++	if (arg.flags & ~DMA_BUF_SYNC_RW)
++		return -EINVAL;
++	if ((arg.flags & DMA_BUF_SYNC_RW) == 0)
++		return -EINVAL;
++
++	fd = get_unused_fd_flags(O_CLOEXEC);
++	if (fd < 0)
++		return fd;
++
++	ret = dma_buf_pending_fence(dmabuf->resv,
++				    arg.flags & DMA_BUF_SYNC_WRITE, NULL, &fence);
++	if (ret)
++		goto err_fd;
++	if (!fence)
++		fence = dma_buf_stub_fence();
++
++	sync_file = sync_file_create(fence);
++	dma_fence_put(fence);
++	if (!sync_file) {
++		ret = -ENOMEM;
++		goto err_fd;
++	}
++
++	arg.fd = fd;
++	if (copy_to_user(user_data, &arg, sizeof(arg))) {
++		ret = -EFAULT;
++		fput(sync_file->file);
++		goto err_fd;
++	}
++	fd_install(fd, sync_file->file);
++	return 0;
++
++err_fd:
++	put_unused_fd(fd);
++	return ret;
++}
++
++static long dma_buf_import_sync_file(struct dma_buf *dmabuf,
++				     const void __user *user_data)
++{
++	struct dma_buf_import_sync_file arg;
++	struct reservation_object *resv = dmabuf->resv;
++	struct dma_fence *fence, *merged;
++	int ret = 0;
++
++	if (copy_from_user(&arg, user_data, sizeof(arg)))
++		return -EFAULT;
++	if (arg.flags & ~DMA_BUF_SYNC_RW)
++		return -EINVAL;
++	if ((arg.flags & DMA_BUF_SYNC_RW) == 0)
++		return -EINVAL;
++
++	fence = sync_file_get_fence(arg.fd);
++	if (!fence)
++		return -EINVAL;
++
++	ret = reservation_object_lock_interruptible(resv, NULL);
++	if (ret) {
++		dma_fence_put(fence);
++		return ret;
++	}
++	if (arg.flags & DMA_BUF_SYNC_WRITE) {
++		/* the new writer, plus every pending reader and writer it must not overtake */
++		ret = dma_buf_pending_fence(resv, true, fence, &merged);
++		if (!ret && merged) {
++			reservation_object_add_excl_fence(resv, merged);
++			dma_fence_put(merged);
++		}
++	} else {
++		ret = reservation_object_reserve_shared(resv);
++		if (!ret)
++			reservation_object_add_shared_fence(resv, fence);
++		dma_fence_put(fence);
++	}
++	reservation_object_unlock(resv);
++	return ret;
++}
++
+ static long dma_buf_ioctl(struct file *file,
+ 			  unsigned int cmd, unsigned long arg)
+ {
+@@ -477,6 +669,11 @@ static long dma_buf_ioctl(struct file *file,
+ 	case DMA_BUF_SET_NAME_B:
+ 		return dma_buf_set_name(dmabuf, (const char __user *)arg);
+ 
++	case DMA_BUF_IOCTL_EXPORT_SYNC_FILE:
++		return dma_buf_export_sync_file(dmabuf, (void __user *)arg);
++	case DMA_BUF_IOCTL_IMPORT_SYNC_FILE:
++		return dma_buf_import_sync_file(dmabuf, (const void __user *)arg);
++
+ 	default:
+ 		return -ENOTTY;
+ 	}
+diff --git a/include/uapi/linux/dma-buf.h b/include/uapi/linux/dma-buf.h
+index fa6ab0b2b..1c2879d7a 100644
+--- a/include/uapi/linux/dma-buf.h
++++ b/include/uapi/linux/dma-buf.h
+@@ -49,4 +49,21 @@ struct dma_buf_sync {
+ #define DMA_BUF_SET_NAME_A	_IOW(DMA_BUF_BASE, 1, __u32)
+ #define DMA_BUF_SET_NAME_B	_IOW(DMA_BUF_BASE, 1, __u64)
+ 
++/*
++ * Backport (Quest 2 SteamOS port) of the v6.0 sync_file import/export ioctls, so Mesa's WSI, zink and compositors can
++ * keep implicit sync with drivers (KGSL) that do not attach fences to the dma-buf themselves.
++ */
++struct dma_buf_export_sync_file {
++	__u32 flags;	/* DMA_BUF_SYNC_READ, DMA_BUF_SYNC_WRITE or both */
++	__s32 fd;	/* returned sync_file fd */
++};
++
++struct dma_buf_import_sync_file {
++	__u32 flags;	/* DMA_BUF_SYNC_READ, DMA_BUF_SYNC_WRITE or both */
++	__s32 fd;	/* sync_file fd to add */
++};
++
++#define DMA_BUF_IOCTL_EXPORT_SYNC_FILE	_IOWR(DMA_BUF_BASE, 2, struct dma_buf_export_sync_file)
++#define DMA_BUF_IOCTL_IMPORT_SYNC_FILE	_IOW(DMA_BUF_BASE, 3, struct dma_buf_import_sync_file)
++
+ #endif

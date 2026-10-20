@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/linux/wimax/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/wimax /tmp/khsrc/include/uapi/linux/wimax i2400m.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/wimax ./include/generated/uapi/linux/wimax ; touch /tmp/khdr/include/linux/wimax/.install

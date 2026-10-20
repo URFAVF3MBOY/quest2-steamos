@@ -1,0 +1,1 @@
+void malloc(){} void free(){} void strcmp(){} void vsnprintf(){} void getenv(){} void snprintf(){} void open(){} void close(){} void mmap(){} void nanosleep(){} void pthread_create(){} void memcpy(){} void memset(){} void read(){} void clock_gettime(){}

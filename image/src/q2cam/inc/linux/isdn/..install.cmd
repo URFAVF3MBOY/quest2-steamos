@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/linux/isdn/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/isdn /tmp/khsrc/include/uapi/linux/isdn capicmd.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/isdn ./include/generated/uapi/linux/isdn ; touch /tmp/khdr/include/linux/isdn/.install

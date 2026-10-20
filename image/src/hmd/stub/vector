@@ -1,0 +1,8 @@
+#pragma once
+#include <stddef.h>
+namespace std {
+template <class T> struct vector {
+  T *data(); const T *data() const; size_t size() const; void resize(size_t); bool empty() const;
+  T &operator[](size_t); const T &operator[](size_t) const; void clear(); void push_back(const T &);
+};
+}

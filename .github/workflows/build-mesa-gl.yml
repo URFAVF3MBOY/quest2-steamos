@@ -1,0 +1,98 @@
+name: build-mesa-gl
+
+# Full Mesa for the Quest 2 port, built natively on an arm64 runner (glibc 2.39, same as the SteamOS rootfs).
+# Why: the Steam Frame's own Mesa has no software OpenGL (no llvmpipe/softpipe), so on the Quest (no working GPU yet)
+# nothing can create a GLX context and Steam dies with "glXChooseVisual failed".
+# Contents: OpenGL/GLX (glvnd) + EGL with llvmpipe, softpipe and zink; Vulkan: turnip (freedreno, kgsl+msm) and lavapipe.
+# LLVM is linked statically, so the headset needs no extra LLVM library.
+# Result: artifact "q2gl-aarch64" -> q2gl.tar.gz, paths relative to /opt/q2gl.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mesa_ref:
+        description: "Mesa git ref (branch, tag or commit) from gitlab.freedesktop.org/mesa/mesa"
+        default: "main"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+    steps:
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git ninja-build pkg-config bison flex glslang-tools python3-pip python3-dev \
+            llvm-19-dev libclang-cpp19-dev libpolly-19-dev \
+            libdrm-dev libglvnd-dev libx11-dev libx11-xcb-dev libxext-dev libxfixes-dev libxrandr-dev libxshmfence-dev libxxf86vm-dev \
+            libxcb1-dev libxcb-glx0-dev libxcb-dri2-0-dev libxcb-dri3-dev libxcb-present-dev libxcb-sync-dev libxcb-shm0-dev \
+            libxcb-xfixes0-dev libxcb-randr0-dev libxcb-keysyms1-dev \
+            libexpat1-dev zlib1g-dev libzstd-dev libelf-dev libwayland-dev wayland-protocols libvulkan-dev spirv-tools
+          sudo pip install --break-system-packages --ignore-installed meson mako pyyaml packaging pycparser ply
+          meson --version
+          llvm-config-19 --version
+
+      - name: Fetch Mesa
+        run: |
+          git clone https://gitlab.freedesktop.org/mesa/mesa.git mesa
+          cd mesa
+          git checkout "${{ github.event.inputs.mesa_ref }}"
+          echo "Mesa $(cat VERSION) @ $(git rev-parse --short HEAD)"
+
+      - name: Patch - let zink use the real GPU on the software (drisw) path
+        working-directory: mesa
+        run: |
+          # The Quest's X server (Xvfb) has no DRI3, so GL apps must use Mesa's "drisw" path (LIBGL_ALWAYS_SOFTWARE=1), which
+          # hands finished frames to X with XPutImage.  zink on that path only accepts CPU Vulkan devices; with Q2_ZINK_GPU=1 it
+          # may pick turnip (Adreno 650) instead, so rendering happens on the GPU and only the finished frame is copied.
+          F=src/gallium/drivers/zink/zink_screen.c
+          grep -n 'ALWAYS_SOFTWARE\|CPU device requested' $F || true
+          sed -i 's/debug_get_bool_option("LIBGL_ALWAYS_SOFTWARE", false)/(debug_get_bool_option("LIBGL_ALWAYS_SOFTWARE", false) \&\& !debug_get_bool_option("Q2_ZINK_GPU", false))/g' $F
+          echo "--- after patch"; grep -n 'Q2_ZINK_GPU' $F
+          grep -q 'Q2_ZINK_GPU' $F || { echo "PATCH DID NOT APPLY"; exit 1; }
+
+      - name: Configure
+        working-directory: mesa
+        run: |
+          printf "[binaries]\nllvm-config = '/usr/bin/llvm-config-19'\n" > native.ini
+          meson setup build --native-file native.ini --prefix=/opt/q2gl --libdir=lib -Dbuildtype=release -Db_ndebug=true \
+            -Dgallium-drivers=llvmpipe,softpipe,zink -Dvulkan-drivers=freedreno,swrast -Dfreedreno-kmds=kgsl,msm \
+            -Dvulkan-layers= -Dplatforms=x11 -Dglx=dri -Degl=enabled -Dgbm=enabled -Dglvnd=enabled \
+            -Dopengl=true -Dgles1=disabled -Dgles2=enabled \
+            -Dllvm=enabled -Dshared-llvm=disabled \
+            -Dvalgrind=disabled -Dtools= -Dlibunwind=disabled -Dlmsensors=disabled -Dbuild-tests=false \
+            -Dvideo-codecs= -Dwerror=false
+
+      - name: Build
+        working-directory: mesa
+        run: ninja -C build
+
+      - name: Install into a staging dir
+        working-directory: mesa
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/stage"
+          DESTDIR="$GITHUB_WORKSPACE/stage" ninja -C build install
+          find "$GITHUB_WORKSPACE/stage" -name '*.so*' -type f -exec strip --strip-unneeded {} \; 2>/dev/null || true
+          find "$GITHUB_WORKSPACE/stage" | sort | head -80
+
+      - name: Check what it needs from the system
+        run: |
+          cd "$GITHUB_WORKSPACE/stage/opt/q2gl/lib"
+          for f in libgallium*.so libGLX_mesa.so.0 libEGL_mesa.so.0 libvulkan_freedreno.so libvulkan_lvp.so dri/libdril_dri.so; do
+            [ -e "$f" ] || { echo "MISSING $f"; continue; }
+            echo "=== $f ($(du -h "$f" | cut -f1))"; readelf -d "$f" | grep NEEDED | sed 's/.*Shared library: //' | tr '\n' ' '; echo
+            for p in GLIBC GLIBCXX CXXABI; do objdump -T "$f" | grep -o "${p}_[0-9.]*" | sort -uV | tail -n 1; done
+          done
+          ls -l dri
+
+      - name: Pack
+        run: |
+          tar -C "$GITHUB_WORKSPACE/stage/opt/q2gl" -czf q2gl.tar.gz .
+          ls -l q2gl.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: q2gl-aarch64
+          path: q2gl.tar.gz
+          retention-days: 14

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Show the display test card on the headset (stays up until you run: killall qscreen)
+killall qscreen 2>/dev/null
+qscreen "$@" -t > /tmp/qscreen.log 2>&1 &
+sleep 3
+cat /tmp/qscreen.log
+echo "--- recent display messages:"
+dmesg | tail -n 15

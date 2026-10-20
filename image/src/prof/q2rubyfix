@@ -1,0 +1,196 @@
+#!/usr/bin/python3
+# q2rubyfix <Proton folder>   (desk-316) - Ruby-based Windows games (RPG Maker XP/VX, mkxp: OneShot ...) on the ARM64 Proton.
+#
+# The bug (in Proton itself, also on the Steam Frame): Ruby for Windows (rb_w32_sysinit -> set_pioinfo_extra) finds the C
+# runtime's file table by reading the x86-64 machine code that GetProcAddress(ucrtbase, "_isatty") returns: from +10 on it
+# looks for "48 83 C4 xx" (add rsp,xx) followed by an odd byte, then backwards for "48 8D 15 rel32" (lea rdx,[rip+X]);
+# X is the table.  Wine's x86-64 ucrtbase has an _isatty written for exactly that ("needed for Ruby runtime",
+# dlls/msvcrt/file.c), but it is left out of ARM64EC builds, so x86-64 programs on the ARM64 Proton get a 16-byte export
+# thunk instead; Ruby finds nothing and quits (exit code 1, no message, before the first frame).
+#
+# The fix: Proton's ucrtbase.dll (files/lib/wine/aarch64-windows, an ARM64X file) gets one 32-byte x86-64 stub in the
+# unused end of its x86-64 thunk section (.hexpthk):
+#     jmp <the original _isatty thunk>        <- all that runs: _isatty behaves exactly as before
+#     lea rdx,[rip+<file table>] ; add rsp,0x28 ; ret      <- only read by Ruby
+# and the x86-64 (ARM64EC) view's "_isatty" export points at it.  The ARM64 view (Wine's own ARM64 programs) is untouched.
+# The file table address is taken from the ARM64EC code of _get_osfhandle (adrp+add, then ldr [x, w, uxtw #3]); its
+# entries are 0x50 bytes with the handle at +0x28, which Ruby's own probe finds (0x40 + 0x10).
+# Original kept as ucrtbase.dll.q2orig; re-applied when Proton is updated.  Prints ok / already / a reason.
+# Log: /var/log/q2/proton-fix.txt     Undo: copy ucrtbase.dll.q2orig back (or "Verify files" on Proton in Steam).
+import os, sys, struct, time, shutil, hashlib
+
+LOG = '/var/log/q2/proton-fix.txt'
+def log(m):
+    try:
+        with open(LOG, 'a') as f: f.write(time.strftime('%F %T ') + m + '\n')
+    except OSError: pass
+
+MARK = b'Q2RUBYISATTY'
+FFS = bytes.fromhex('488bc448895820555d')     # the export thunk's fast-forward sequence, then e9 rel32
+
+class PE:
+    def __init__(self, data):
+        d = self.d = bytearray(data)
+        if d[:2] != b'MZ': raise ValueError('not a PE file')
+        pe = struct.unpack_from('<I', d, 0x3c)[0]
+        if d[pe:pe + 4] != b'PE\0\0': raise ValueError('no PE signature')
+        self.fh = pe + 4
+        self.machine, self.nsec = struct.unpack_from('<HH', d, self.fh)
+        self.oh = self.fh + 20
+        if struct.unpack_from('<H', d, self.oh)[0] != 0x20b: raise ValueError('not PE32+')
+        self.dd = self.oh + 112
+        self.sh = self.oh + struct.unpack_from('<H', d, self.fh + 16)[0]
+        self.secs = [(bytes(d[self.sh + 40 * i:self.sh + 40 * i + 8]).rstrip(b'\0'),) +
+                     struct.unpack_from('<IIII', d, self.sh + 40 * i + 8) + (self.sh + 40 * i,) for i in range(self.nsec)]
+    def off(self, rva):
+        for n, vs, va, rs, rp, h in self.secs:
+            if va <= rva < va + max(vs, rs):
+                return rp + rva - va if rva - va < rs else None
+        if rva < self.secs[0][2]: return rva          # headers
+        return None
+    def u16(self, rva): return struct.unpack_from('<H', self.d, self.off(rva))[0]
+    def u32(self, rva): return struct.unpack_from('<I', self.d, self.off(rva))[0]
+    def cstr(self, rva):
+        o = self.off(rva); return bytes(self.d[o:self.d.index(0, o)]).decode('latin1')
+    def exports(self, rva):
+        nf, nn, af, an, ao = struct.unpack_from('<IIIII', self.d, self.off(rva) + 20)
+        out = {}
+        for i in range(nn):
+            n = self.cstr(self.u32(an + 4 * i)); o = self.u16(ao + 2 * i)
+            out[n] = (af + 4 * o, self.u32(af + 4 * o))
+        return out
+    def loadconfig(self):
+        rva, size = struct.unpack_from('<II', self.d, self.dd + 8 * 10)
+        return self.off(rva), size
+
+def arm64x_values(pe):
+    """ARM64X dynamic relocations: {rva: (size, value)} for the 'assign value' fixups (what the x86-64 view sees)"""
+    lc, size = pe.loadconfig()
+    if size < 0xf0: raise ValueError('load config too small for ARM64X')
+    dvoff, dvsec = struct.unpack_from('<IH', pe.d, lc + 0xe0)
+    if not dvsec: raise ValueError('no dynamic value relocation table (not ARM64X)')
+    base = pe.secs[dvsec - 1][4] + dvoff
+    ver, tsize = struct.unpack_from('<II', pe.d, base)
+    if ver != 1: raise ValueError('DVRT version %d' % ver)
+    out = {}; p = base + 8; end = p + tsize
+    while p < end:
+        sym, brs = struct.unpack_from('<QI', pe.d, p); p += 12; q = p; p += brs
+        if sym != 6: continue                        # IMAGE_DYNAMIC_RELOCATION_ARM64X
+        while q < p:
+            va, bs = struct.unpack_from('<II', pe.d, q); r = q + 8; qe = q + bs
+            while r + 2 <= qe:
+                e = struct.unpack_from('<H', pe.d, r)[0]; r += 2
+                if not e: continue
+                o, t, s = e & 0xfff, (e >> 12) & 3, (e >> 14) & 3
+                if t == 1: n = 1 << s; out[va + o] = (n, int.from_bytes(pe.d[r:r + n], 'little')); r += n
+                elif t == 2: r += 2
+            q = qe
+    return out
+
+def code_map(pe):
+    lc, size = pe.loadconfig()
+    chpe = struct.unpack_from('<Q', pe.d, lc + 0xc8)[0]
+    if not chpe: raise ValueError('no CHPE metadata')
+    imagebase = struct.unpack_from('<Q', pe.d, pe.oh + 24)[0]
+    m = pe.off(chpe - imagebase)
+    ver, cmap, count = struct.unpack_from('<III', pe.d, m)
+    entries = []
+    for i in range(count):
+        o = pe.off(cmap + 8 * i); start, length = struct.unpack_from('<II', pe.d, o)
+        entries.append((o, start & ~3, start & 3, length))   # type: 0 ARM64, 1 ARM64EC, 2 x86-64
+    return entries
+
+def sx(v, bits): return v - (1 << bits) if v & (1 << (bits - 1)) else v
+
+def file_table(pe, rva):
+    """ARM64(EC) code: adrp xN ; add xN, xN, #lo ; ldr x, [xN, w, uxtw #3]  ->  the table address"""
+    o = pe.off(rva); regs = {}; prev = None
+    for i in range(64):
+        ins = struct.unpack_from('<I', pe.d, o + 4 * i)[0]; pc = rva + 4 * i
+        if ins == 0xd65f03c0: break
+        if (ins & 0x9f000000) == 0x90000000:
+            regs[ins & 31] = (pc & ~0xfff) + (sx((((ins >> 5) & 0x7ffff) << 2) | ((ins >> 29) & 3), 21) << 12); prev = None; continue
+        if (ins & 0xffc00000) == 0x91000000 and ((ins >> 5) & 31) in regs:
+            prev = (ins & 31, regs[(ins >> 5) & 31] + ((ins >> 10) & 0xfff)); continue
+        if prev and (ins & 0xffe00c00) == 0xf8600800 and ((ins >> 5) & 31) == prev[0]:
+            return prev[1]
+        prev = None
+    return None
+
+def thunk_target(pe, t):
+    o = pe.off(t); b = bytes(pe.d[o:o + 16])
+    if b[:9] != FFS or b[9] != 0xe9: raise ValueError('unexpected export thunk at %#x: %s' % (t, b.hex()))
+    return t + 14 + struct.unpack_from('<i', b, 10)[0]
+
+def ruby_scan(pe, p):
+    """exactly what Ruby 2.5's rb_w32_sysinit does with the bytes at p (from the x86-64 disassembly of OneShot's DLL)"""
+    rd = lambda a, n=1: bytes(pe.d[pe.off(a):pe.off(a) + n])
+    c = p + 10
+    while c < p + 0x12c:
+        if rd(c, 3) == b'\x48\x83\xc4' and rd(c + 4)[0] & 1: break
+        c += 1
+    else: return None
+    c -= 3
+    while c > p:
+        if rd(c, 3) == b'\x48\x8d\x15': return c + 7 + struct.unpack('<i', rd(c + 3, 4))[0]
+        c -= 1
+    return None
+
+def patch(data):
+    pe = PE(data)
+    if pe.machine != 0xaa64: raise ValueError('machine %#x, expected ARM64X (0xaa64)' % pe.machine)
+    vals = arm64x_values(pe)
+    if (pe.dd) not in vals: raise ValueError('no x86-64 export directory in the ARM64X relocations')
+    ecexp = vals[pe.dd][1]
+    ex = pe.exports(ecexp)
+    if '_isatty' not in ex or '_get_osfhandle' not in ex: raise ValueError('_isatty/_get_osfhandle missing from the x86-64 exports')
+    slot, thunk = ex['_isatty']
+    if MARK in pe.d: return None, 'already patched'
+    getosf = thunk_target(pe, ex['_get_osfhandle'][1]); thunk_target(pe, thunk)
+    table = file_table(pe, getosf)
+    if not table: raise ValueError('file table not found in _get_osfhandle (%#x)' % getosf)
+    if ruby_scan(pe, thunk) is not None: raise ValueError('Ruby would already accept _isatty?')
+    sec = next(s for s in pe.secs if s[0] == b'.hexpthk')
+    name, vs, va, rs, rp, hdr = sec
+    stub = (va + vs + 15) & ~15
+    if stub + 48 > va + rs or stub + 48 > ((va + vs + 0xfff) & ~0xfff): raise ValueError('no room in .hexpthk')
+    if any(x not in (0, 0xcc) for x in pe.d[rp + stub - va:rp + stub - va + 48]): raise ValueError('.hexpthk tail is not empty')   # int3 padding is fine
+    code = b'\xe9' + struct.pack('<i', thunk - (stub + 5))            # jmp <original thunk>
+    code += b'\x48\x8d\x15' + struct.pack('<i', table - (stub + 12))   # lea rdx,[rip+table]   (never runs)
+    code += b'\x48\x83\xc4\x28\xc3'                                    # add rsp,0x28 ; ret     (never runs)
+    code += b'\xcc' * (32 - len(code)) + MARK + b'\0' * 4
+    o = rp + stub - va
+    pe.d[o:o + len(code)] = code
+    struct.pack_into('<I', pe.d, hdr + 8, stub + len(code) - va)       # VirtualSize
+    # extend the x86-64 code range of the CHPE code map over the stub (if it ends where the section's code ended)
+    cm = [e for e in code_map(pe) if e[2] == 2 and e[1] < va + vs <= e[1] + e[3]]
+    if cm:
+        eo, start, typ, length = cm[0]; struct.pack_into('<I', pe.d, eo + 4, stub + 32 - start)
+    struct.pack_into('<I', pe.d, pe.off(slot), stub)                    # x86-64 view: _isatty -> stub
+    check = PE(bytes(pe.d))
+    got = ruby_scan(check, check.exports(ecexp)['_isatty'][1])
+    if got != table: raise ValueError('self-check failed (%s)' % got)
+    return bytes(pe.d), 'thunk %#x -> stub %#x, file table %#x, EC _get_osfhandle %#x, code map %s' % (thunk, stub, table, getosf, 'extended' if cm else 'unchanged')
+
+def main():
+    if len(sys.argv) < 2: print('usage: q2rubyfix <Proton folder>'); return 2
+    f = os.path.join(sys.argv[1], 'files', 'lib', 'wine', 'aarch64-windows', 'ucrtbase.dll')
+    if not os.path.isfile(f): log('q2rubyfix: %s not found' % f); print('missing'); return 1
+    data = open(f, 'rb').read()
+    if MARK in data: print('already'); return 0
+    try:
+        new, info = patch(data)
+    except Exception as e:
+        log('q2rubyfix: not patched - %s (%s)' % (e, f)); print('failed'); return 1
+    try:
+        shutil.copyfile(f, f + '.q2orig')
+        with open(f + '.q2tmp', 'wb') as w: w.write(new)
+        os.chmod(f + '.q2tmp', os.stat(f).st_mode & 0o777); os.replace(f + '.q2tmp', f)
+    except OSError as e:
+        log('q2rubyfix: could not write %s: %s' % (f, e)); print('failed'); return 1
+    log('q2rubyfix: Ruby-compatible _isatty added to %s (%s; original sha256 %s kept as .q2orig)'
+        % (f, info, hashlib.sha256(data).hexdigest()[:16]))
+    print('ok'); return 0
+
+if __name__ == '__main__':
+    sys.exit(main())

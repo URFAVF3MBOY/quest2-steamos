@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/linux/iio/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/iio /tmp/khsrc/include/uapi/linux/iio events.h types.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/iio ./include/generated/uapi/linux/iio ; touch /tmp/khdr/include/linux/iio/.install

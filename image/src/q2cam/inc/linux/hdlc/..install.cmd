@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/linux/hdlc/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/hdlc /tmp/khsrc/include/uapi/linux/hdlc ioctl.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/hdlc ./include/generated/uapi/linux/hdlc ; touch /tmp/khdr/include/linux/hdlc/.install

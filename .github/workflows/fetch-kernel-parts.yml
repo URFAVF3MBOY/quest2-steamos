@@ -1,0 +1,45 @@
+name: fetch-quest2-kernel-parts
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sparse clone Meta Quest 2 kernel branch
+        run: |
+          git clone --depth 1 --branch oculus-quest2-kernel-master --filter=blob:none --sparse \
+            https://github.com/facebookincubator/oculus-linux-kernel src
+          cd src
+          git sparse-checkout set arch/arm64/boot/dts arch/arm64/configs techpack drivers/gpu/msm drivers/video/msm
+          git log -1 --format="%H %cd %s" | tee ../head_commit.txt
+          git ls-tree --name-only HEAD > ../top_level.txt
+          git ls-tree -r --name-only HEAD | grep -Ei 'hollywood|quest|kona|jdi|dsc' > ../files_of_interest.txt || true
+          ls -d techpack/* > ../techpack_list.txt 2>/dev/null || true
+
+      - name: Find commits around the Nov 2023 build (best effort)
+        continue-on-error: true
+        run: |
+          cd src
+          git fetch --filter=blob:none --shallow-since=2023-10-15 origin oculus-quest2-kernel-master
+          git log FETCH_HEAD --format='%H %cd %s' --since=2023-11-01 --until=2023-11-14 | head -200 > ../commits_nov2023.txt
+
+      - name: Package
+        run: |
+          cd src
+          zip -qr ../kernel_parts.zip arch/arm64/boot/dts arch/arm64/configs techpack drivers/gpu/msm drivers/video/msm || true
+          cd ..
+          ls -lh kernel_parts.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-parts
+          path: |
+            kernel_parts.zip
+            head_commit.txt
+            top_level.txt
+            files_of_interest.txt
+            techpack_list.txt
+            commits_nov2023.txt
+          if-no-files-found: warn

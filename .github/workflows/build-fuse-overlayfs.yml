@@ -1,0 +1,52 @@
+name: build-fuse-overlayfs
+
+# fuse-overlayfs for the Quest 2 port: Lepton (Valve's Android layer: VRChat etc.) starts Android with rootless podman
+# and an overlay on its rootfs ("--rootfs ...:O").  Kernel 4.19 cannot mount overlayfs inside a user namespace (5.11+),
+# so podman uses fuse-overlayfs as its overlay "mount_program" (FUSE works in user namespaces since 4.18).
+# v2 (desk-258): the C version 1.x.  fuse-overlayfs 2.x (the Rust rewrite, desk-257) opens every path with openat2(),
+# a Linux 5.6 system call with no fallback -> on 4.19 every write failed with ENOSYS ("creating /etc/mtab symlink:
+# function not implemented").  1.x uses plain openat and is what podman documents for kernels >= 4.18.
+# Built natively on arm64 Ubuntu 24.04, statically linked (upstream's Containerfile.static.ubuntu recipe), so it needs
+# nothing from the headset at run time.
+# Result: artifact "fuse-overlayfs-aarch64" -> fuse-overlayfs (single static binary)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "fuse-overlayfs C release tag (github.com/containers/fuse-overlayfs) - keep 1.x"
+        default: "v1.18"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libc6-dev gcc make automake autoconf pkgconf libfuse3-dev file
+
+      - name: Fetch fuse-overlayfs
+        run: |
+          git clone https://github.com/containers/fuse-overlayfs.git src
+          cd src && git checkout "${{ github.event.inputs.ref }}" && git log -1 --format='%H %cd %s'
+          grep -q PKG_CHECK_MODULES configure.ac || { echo "this ref is not the C version (1.x) - use a v1.x tag"; exit 1; }
+
+      - name: Build (static)
+        working-directory: src
+        run: |
+          sh autogen.sh
+          LIBS="-ldl" LDFLAGS="-static" ./configure --prefix /usr
+          make -j"$(nproc)"
+          strip fuse-overlayfs
+          ls -l fuse-overlayfs; file fuse-overlayfs
+          ./fuse-overlayfs --version
+          # must not call openat2 (Linux 5.6+) without a fallback - the 2.x failure on the Quest's 4.19 kernel
+          grep -n "openat2" *.c | head -n 5 || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fuse-overlayfs-aarch64
+          path: src/fuse-overlayfs
+          retention-days: 30

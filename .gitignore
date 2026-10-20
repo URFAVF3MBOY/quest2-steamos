@@ -1,0 +1,14 @@
+mesa/
+q2android/
+q2android.tar.gz
+q2src.tar.gz
+quest2-boot.log
+q2sync.txt
+maybe.zip
+
+# build inputs and outputs (downloaded from the release or built by the workflows)
+image/base/*
+image/art/*
+image/out/
+!image/base/.keep
+!image/art/.keep

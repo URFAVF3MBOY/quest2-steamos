@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/scsi/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/scsi /tmp/khsrc/include/uapi/scsi cxlflash_ioctl.h scsi_bsg_fc.h scsi_ioctl.h scsi_netlink.h scsi_netlink_fc.h sg.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/scsi ./include/generated/uapi/scsi ; touch /tmp/khdr/include/scsi/.install

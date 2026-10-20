@@ -1,0 +1,80 @@
+#!/bin/sh
+# Quest 2 RAM-only first-light init (PID 1).
+# Brings up a USB serial gadget (CDC ACM) and runs a root shell on it.
+# Everything is logged to /dev/kmsg so a failed boot can be read afterwards
+# from Android via /sys/fs/pstore/console-ramoops-0.
+
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export HOME=/root
+export TERM=xterm-256color
+
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+
+log() {
+  echo "q2-init: $*" > /dev/kmsg 2>/dev/null
+  echo "q2-init: $*"
+}
+
+mkdir -p /dev/pts /dev/shm /run /tmp /root
+mount -t devpts devpts /dev/pts 2>/dev/null
+mount -t tmpfs tmpfs /run
+mount -t tmpfs tmpfs /tmp
+hostname quest2
+
+log "started, kernel $(uname -r)"
+log "cmdline: $(cat /proc/cmdline)"
+
+if ! mount -t configfs none /sys/kernel/config 2>/dev/null; then
+  log "configfs mount FAILED"
+fi
+
+# wait for the USB device controller to register (name varies, e.g. a600000.dwc3)
+UDC=""
+i=0
+while [ $i -lt 60 ]; do
+  UDC="$(ls /sys/class/udc 2>/dev/null | head -n 1)"
+  [ -n "$UDC" ] && break
+  i=$((i + 1))
+  sleep 1
+done
+log "udc: '${UDC}' (waited ${i}s)"
+
+if [ -n "$UDC" ]; then
+  G=/sys/kernel/config/usb_gadget/g1
+  mkdir -p "$G" || log "mkdir gadget failed"
+  echo 0x1d6b > "$G/idVendor"
+  echo 0x0104 > "$G/idProduct"
+  echo 0x0200 > "$G/bcdUSB"
+  echo 0x02 > "$G/bDeviceClass"
+  mkdir -p "$G/strings/0x409"
+  echo "q2-ramonly" > "$G/strings/0x409/serialnumber"
+  echo "q2-steamos-port" > "$G/strings/0x409/manufacturer"
+  echo "Quest 2 serial console" > "$G/strings/0x409/product"
+  mkdir -p "$G/configs/c.1/strings/0x409"
+  echo "ACM" > "$G/configs/c.1/strings/0x409/configuration"
+  mkdir -p "$G/functions/acm.usb0" || log "acm function create FAILED (CONFIG_USB_CONFIGFS_ACM missing?)"
+  ln -s "$G/functions/acm.usb0" "$G/configs/c.1/" 2>/dev/null
+  if echo "$UDC" > "$G/UDC"; then
+    log "gadget bound to $UDC"
+  else
+    log "binding UDC FAILED"
+  fi
+else
+  log "no UDC found - no terminal possible"
+fi
+
+# dump a little hardware info into the kernel log (-> pstore) for debugging
+log "ttyGS*: $(ls /dev/ttyGS* 2>/dev/null)"
+log "meminfo: $(head -n 2 /proc/meminfo | tr '\n' ' ')"
+
+# serve a root shell on the gadget serial port, forever
+while true; do
+  if [ -c /dev/ttyGS0 ]; then
+    getty -L -n -l /bin/bash 115200 ttyGS0 xterm-256color
+    log "shell on ttyGS0 exited, restarting"
+  else
+    sleep 2
+  fi
+done

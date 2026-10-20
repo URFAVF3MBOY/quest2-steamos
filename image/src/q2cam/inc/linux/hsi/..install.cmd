@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/linux/hsi/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/hsi /tmp/khsrc/include/uapi/linux/hsi cs-protocol.h hsi_char.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/hsi ./include/generated/uapi/linux/hsi ; touch /tmp/khdr/include/linux/hsi/.install

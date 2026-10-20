@@ -1,0 +1,133 @@
+#!/usr/bin/python3
+# q2buttons (desk-298) - the Quest 2's own buttons, like the Steam Frame's:
+#   power button (qpnp_pon, KEY_POWER): exactly what the Steam Frame does - Valve's deckard-powerbuttond
+#     (github.com/evlaV/deckard-powerbuttond; on the Frame it watches "pmic_pwrkey"): released within 1 s ->
+#     "steam -ifrunning steam://shortpowerpress", held 1 s -> "steam://longpowerpress" at once (while still held).
+#     desk-300: if SteamOS ships that daemon (/usr/lib/hwsupport/steamos-powerbuttond), it is run itself on our button.
+#     systemd-logind no longer powers the headset off on it (logind.conf.d/q2-buttons.conf); real suspend is refused
+#     (sleep.conf.d) because the Quest does not resume under SteamOS yet.  Holding ~10 s still hard-resets (PMIC).
+#   volume buttons (gpio-keys, KEY_VOLUMEUP/DOWN): system volume +-5 % (PipeWire, user steamos), repeats while held;
+#     Steam shows its own volume level.
+#   desk-309: BOTH volume buttons held 2 s -> PC mode with the logs (q2usbpc), no keyboard or sudo needed.  Also starts
+#     PC mode when a user program asks for it (/run/q2req/usbpc or /tmp/q2req-usbpc, written by q2usbpc run without root).
+# Log: /var/log/q2/buttons.txt.  Off: /var/lib/q2/nobuttons
+import os, struct, select, subprocess, time, glob, pwd
+
+LOG = '/var/log/q2/buttons.txt'
+def log(m):
+    try:
+        with open(LOG, 'a') as f: f.write(time.strftime('%H:%M:%S ') + m + '\n')
+    except OSError: pass
+
+if os.path.exists('/var/lib/q2/nobuttons'): raise SystemExit(0)
+KEY_POWER, KEY_VOLUP, KEY_VOLDOWN = 116, 115, 114
+EV = struct.Struct('llHHi')   # struct input_event on 64-bit
+
+def devices():
+    out = {}; name = None
+    for line in open('/proc/bus/input/devices'):
+        if line.startswith('N: Name='): name = line.split('=', 1)[1].strip().strip('"')
+        if line.startswith('H: Handlers=') and name:
+            for h in line.split('=', 1)[1].split():
+                if h.startswith('event') and (name in ('qpnp_pon', 'gpio-keys') or 'pon' in name): out['/dev/input/' + h] = name
+    return out
+
+try: pw = pwd.getpwnam('steamos'); UID = pw.pw_uid; HOME = pw.pw_dir
+except KeyError: UID, HOME = 1000, '/home/steamos'
+ENV = dict(os.environ, XDG_RUNTIME_DIR='/run/user/%d' % UID, HOME=HOME)
+
+def as_user(cmd):
+    try: return subprocess.run(['runuser', '-u', 'steamos', '--'] + cmd, env=ENV, timeout=5, capture_output=True, text=True)
+    except Exception as e: log('command failed: %s %s' % (cmd, e)); return None
+
+def steam_url(url):
+    # desk-299: like steam-powerbuttond (gamescope sessions): "<steam> -ifrunning <url>" hands it to the running client
+    for b in (HOME + '/.local/share/Steam/steamrtarm64/steam', HOME + '/.steam/root/ubuntu12_32/steam', '/usr/bin/steam'):
+        if not os.path.exists(b): continue
+        r = as_user([b, '-ifrunning', url])
+        log('-> %s -ifrunning %s: %s' % (b, url, 'rc %s' % r.returncode if r else 'failed'))
+        if r is not None and r.returncode == 0: return True
+    for p in (HOME + '/.steam/steam.pipe', HOME + '/.local/share/Steam/steam.pipe'):
+        if not os.path.exists(p): continue
+        try:
+            fd = os.open(p, os.O_WRONLY | os.O_NONBLOCK)   # no reader (Steam not running) -> ENXIO, never blocks
+            os.write(fd, (url + '\n').encode()); os.close(fd); log('-> %s (%s)' % (url, p)); return True
+        except OSError as e: log('%s: %s' % (p, e))
+    log('Steam not reachable for %s' % url); return False
+
+def volume(step):
+    r = as_user(['wpctl', 'set-volume', '-l', '1.0', '@DEFAULT_AUDIO_SINK@', step])
+    if r is None or r.returncode != 0:   # no WirePlumber CLI: PulseAudio's
+        r = as_user(['pactl', 'set-sink-volume', '@DEFAULT_SINK@', '+5%' if step.endswith('+') else '-5%'])
+    log('volume %s -> %s' % (step, 'ok' if r is not None and r.returncode == 0 else 'FAILED %s' % (r.stderr.strip()[:120] if r else '')))
+
+fds = {}
+def reopen():
+    for path, name in devices().items():
+        if path in fds.values(): continue
+        try: fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK); fds[fd] = path; log('listening on %s (%s)' % (path, name))
+        except OSError as e: log('%s: %s' % (path, e))
+reopen()
+if not fds: log('no power / volume button devices found'); raise SystemExit(0)
+# desk-300: Valve's own Frame daemon on our power button, if this SteamOS has it
+STOCK = '/usr/lib/hwsupport/steamos-powerbuttond'
+stock = None
+if os.path.exists(STOCK) and not os.path.exists('/var/lib/q2/ownpower'):
+    pon = [p for p, n in devices().items() if n == 'qpnp_pon' or 'pon' in n]
+    if pon:
+        try:
+            stock = subprocess.Popen(['runuser', '-u', 'steamos', '--', STOCK] + pon, env=ENV,
+                                     stdout=open(LOG, 'a'), stderr=subprocess.STDOUT)
+            log('power button: Valve\'s steamos-powerbuttond (pid %d) on %s' % (stock.pid, ' '.join(pon)))
+        except Exception as e: log('steamos-powerbuttond failed: %s' % e); stock = None
+else: log('power button: %s' % ('own handler (Valve daemon not in this SteamOS)' if not os.path.exists(STOCK) else 'own handler (/var/lib/q2/ownpower)'))
+def start_pc(why):
+    log('PC mode (%s)' % why)
+    try:
+        r = subprocess.run(['systemd-run', '--no-block', '--collect', '--unit=q2-usbpc-req', '/usr/bin/q2usbpc'], capture_output=True, timeout=10)
+        if r.returncode == 0: return
+    except Exception: pass
+    subprocess.Popen(['/usr/bin/q2usbpc'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+try: os.makedirs('/run/q2req', exist_ok=True); os.chmod('/run/q2req', 0o1777)
+except OSError: pass
+REQS = ('/run/q2req/usbpc', '/tmp/q2req-usbpc'); last_reopen = time.time()
+vheld = {KEY_VOLUP: False, KEY_VOLDOWN: False}; both_since = 0.0; combo_done = False
+pressed = 0.0; long_sent = False
+while True:
+    for q in REQS:
+        if os.path.exists(q):
+            try: os.unlink(q)
+            except OSError: pass
+            start_pc('asked by ' + q)
+    if both_since and not combo_done and time.time() - both_since >= 2.0:
+        combo_done = True; start_pc('both volume buttons held 2 s')
+    timeout = 1.0 if not both_since else 0.2
+    if pressed and not long_sent and stock is None: timeout = max(0.0, pressed + 1.0 - time.time())
+    r, _, _ = select.select(list(fds), [], [], timeout)
+    if pressed and not long_sent and stock is None and time.time() - pressed >= 1.0:
+        long_sent = True; log('power button held 1 s -> long press'); steam_url('steam://longpowerpress')
+    if stock is not None and stock.poll() is not None:
+        log('steamos-powerbuttond ended (%s) - own handler from now on' % stock.returncode); stock = None
+    if not r:
+        if time.time() - last_reopen > 30: reopen(); last_reopen = time.time()
+        continue
+    for fd in r:
+        try: data = os.read(fd, EV.size * 64)
+        except OSError: os.close(fd); fds.pop(fd, None); continue
+        for i in range(0, len(data) - EV.size + 1, EV.size):
+            _, _, typ, code, val = EV.unpack_from(data, i)
+            if typ != 1: continue   # EV_KEY
+            if code == KEY_POWER:
+                if stock is not None: log('power button %s (Valve daemon handles it)' % ('down' if val else 'up')); continue
+                if val == 1: pressed = time.time(); long_sent = False
+                elif val == 0 and pressed:
+                    held = time.time() - pressed; pressed = 0.0
+                    if not long_sent: log('power button short press (%.1f s)' % held); steam_url('steam://shortpowerpress')
+            elif code in (KEY_VOLUP, KEY_VOLDOWN):
+                if val in (0, 1): vheld[code] = (val == 1)
+                if vheld[KEY_VOLUP] and vheld[KEY_VOLDOWN]:
+                    if not both_since: both_since = time.time(); combo_done = False
+                    continue
+                both_since = 0.0
+                if val in (1, 2) and not combo_done: volume('5%+' if code == KEY_VOLUP else '5%-')
+                if not vheld[KEY_VOLUP] and not vheld[KEY_VOLDOWN]: combo_done = False

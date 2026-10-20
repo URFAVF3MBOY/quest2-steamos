@@ -1,0 +1,79 @@
+name: repack-quest2-steamos
+
+# FAST path (about 2 minutes): reuse the kernel from an earlier successful
+# "build-quest2-steamos" run and rebuild only the ramdisks + boot images from the files
+# currently in the repo (qscreen, init-steamos, screen-test, ...) and the cmdlines below.
+# Use the full build workflow only when kernel options/patches change.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Run ID of an earlier successful build-quest2-steamos run (number at the end of its URL)"
+        required: true
+      steamos_cmdline:
+        description: "tokens appended to the stock cmdline for the SteamOS image"
+        default: "loglevel=7 qs_rot=0 rootpartuuid=20262026-01 systemd.log_target=kmsg systemd.log_level=info regulator_ignore_unused clk_ignore_unused"
+      ram_cmdline:
+        description: "tokens appended for the RAM-only image"
+        default: "androidboot.q2_ram=1 loglevel=7 regulator_ignore_unused clk_ignore_unused"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  repack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the earlier build
+        uses: actions/download-artifact@v4
+        with:
+          name: quest2-steamos
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          path: prev
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu cpio python3 curl file \
+            qemu-user-static binfmt-support
+
+      - name: Extract the kernel from the earlier image
+        run: |
+          ls -l prev
+          python3 scripts/unpack_boot.py prev/boot_ramonly.img unp
+          ls -l unp/kernel
+          sha256sum unp/kernel
+
+      - name: Build initramfs - SteamOS (USB root)
+        run: INIT_FILE="$PWD/initramfs/init-steamos" bash scripts/build_initramfs.sh initramfs-steamos.cpio.gz
+
+      - name: Build initramfs - RAM-only (serial shell)
+        run: bash scripts/build_initramfs.sh initramfs-ramonly.cpio.gz
+
+      - name: Pack boot images
+        shell: bash
+        run: |
+          python3 scripts/repack_boot.py --header stock/header_page.bin --dtb stock/dtb.bin \
+            --kernel unp/kernel --ramdisk initramfs-steamos.cpio.gz \
+            --cmdline-append "${{ inputs.steamos_cmdline }}" --out boot_steamos.img
+          python3 scripts/repack_boot.py --header stock/header_page.bin --dtb stock/dtb.bin \
+            --kernel unp/kernel --ramdisk initramfs-ramonly.cpio.gz \
+            --cmdline-append "${{ inputs.ram_cmdline }}" --out boot_ramonly.img
+          ls -l boot_steamos.img boot_ramonly.img
+          sha256sum boot_steamos.img boot_ramonly.img
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quest2-steamos-repacked
+          path: |
+            boot_steamos.img
+            boot_ramonly.img
+          if-no-files-found: error

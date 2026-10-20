@@ -1,0 +1,88 @@
+name: probe-steamos-rootfs
+
+# Cheap, read-only probe: downloads only Valve's small RAUC bundle for the Steam Frame
+# ("deckard"), pulls out the casync index + manifest, and reports the size of the rootfs.
+# It does NOT download the rootfs itself. Output is in the job log and the small
+# 'probe' artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_url:
+        description: "RAUC bundle URL"
+        default: "https://steamdeck-images.steamos.cloud/vr/20260921.6090922/deckard-20260921.6090922-0.5.0.raucb"
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y squashfs-tools python3 curl
+
+      - name: Check the bundle URL
+        shell: bash
+        run: |
+          curl -sSI "${{ inputs.bundle_url }}" | head -n 15 | tee probe.txt
+
+      - name: Download the bundle (small)
+        shell: bash
+        run: |
+          curl -fsSL --retry 3 -o bundle.raucb "${{ inputs.bundle_url }}"
+          ls -l bundle.raucb | tee -a probe.txt
+          file bundle.raucb | tee -a probe.txt || true
+          head -c 64 bundle.raucb | od -A d -t x1z | tee -a probe.txt
+
+      - name: Unpack bundle (squashfs with trailing signature data)
+        shell: bash
+        run: |
+          set +e
+          unsquashfs -d bundle bundle.raucb 2>&1 | tail -n 20 | tee -a probe.txt
+          echo "unsquashfs exit: ${PIPESTATUS[0]}" | tee -a probe.txt
+          ls -laR bundle 2>/dev/null | head -n 40 | tee -a probe.txt
+          echo "--- manifest:" | tee -a probe.txt
+          cat bundle/manifest.raucm 2>/dev/null | tee -a probe.txt
+
+      - name: Read the casync index
+        shell: bash
+        run: |
+          python3 - <<'PY' | tee -a probe.txt
+          import glob, struct
+          files = glob.glob("bundle/**/*.caibx", recursive=True)
+          print("caibx files:", files)
+          for p in files:
+              d = open(p, "rb").read()
+              print(p, "bytes:", len(d), "head:", d[:16].hex())
+              # casync index: 48-byte FormatIndex header, then table: 16-byte header, 40-byte items
+              hsize, htype, flags, cmin, cavg, cmax = struct.unpack_from("<6Q", d, 0)
+              print(f"  header size={hsize} type={htype:#x} flags={flags:#x} chunk min/avg/max={cmin}/{cavg}/{cmax}")
+              off = hsize + 16
+              n = (len(d) - off) // 40
+              items = [struct.unpack_from("<Q32s", d, off + 40 * i) for i in range(n)]
+              # the table ends with a tail marker item; find the largest end offset
+              ends = [e for e, _ in items if e < (1 << 60)]
+              total = max(ends) if ends else 0
+              print(f"  approx chunk entries: {n}, image size: {total} bytes = {total/2**30:.2f} GiB")
+          PY
+
+      - name: Check one chunk store is reachable
+        shell: bash
+        run: |
+          for u in \
+            "https://steamdeck-images.steamos.cloud/vr/20260921.6090922/deckard-20260921.6090922-0.5.0.castr" \
+            "https://steamdeck-images.steamos.cloud/vr/chunks.castr"; do
+            echo "== $u" | tee -a probe.txt
+            curl -sSI "$u/" | head -n 3 | tee -a probe.txt
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe
+          path: |
+            probe.txt
+            bundle/manifest.raucm
+            bundle/**/*.caibx
+          if-no-files-found: ignore

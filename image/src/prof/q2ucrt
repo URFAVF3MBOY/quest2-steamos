@@ -1,0 +1,102 @@
+#!/usr/bin/python3
+# q2ucrt <game folder> [<Proton prefix>] (desk-310/312) - Microsoft's own 64-bit ucrtbase.dll for Ruby-based Windows games (RPG Maker / mkxp:
+# OneShot ...) under the ARM64 Proton.
+#   Why: Ruby for Windows finds a private table of the C runtime by scanning the x86-64 machine code of ucrtbase's
+#   _isatty() ("set_pioinfo_extra" in Ruby's win32.c).  ARM64 Proton's own ucrtbase.dll is ARM64EC code, the scan finds
+#   nothing and Ruby quits at once with exit code 1 and no message (OneShot: closes before its first frame).
+#   Fix: the real x64 ucrtbase.dll (from Microsoft's Visual C++ 2015-2019 x64 redistributable, as winetricks'
+#   "ucrtbase2019" does) next to the game's .exe, loaded with WINEDLLOVERRIDES=ucrtbase=n,b (q2launchwrap sets that).
+#   The download (~25 MB, aka.ms) happens once; the DLL is kept in ~/.cache/q2ucrt.
+# Prints "ok" when the game folder has the DLL.  Log: /var/log/q2/proton-fix.txt
+import os, sys, subprocess, shutil, struct, time, glob, hashlib
+
+LOG = '/var/log/q2/proton-fix.txt'
+def log(m):
+    try:
+        with open(LOG, 'a') as f: f.write(time.strftime('%F %T ') + m + '\n')
+    except OSError: pass
+
+CE = '/usr/lib/q2/cabextract'
+# desk-311: the exact redistributable winetricks uses (the current aka.ms one no longer carries ucrtbase.dll - desk-310 log)
+URLS = [('https://download.visualstudio.microsoft.com/download/pr/85d47aa9-69ae-4162-8300-e6b7e4bf3cf3/52B196BBE9016488C735E7B41805B651261FFA5D7AA86EB6A1D0095BE83687B2/VC_redist.x64.exe',
+         '52b196bbe9016488c735e7b41805b651261ffa5d7aa86eb6a1d0095be83687b2'),
+        ('https://aka.ms/vs/16/release/vc_redist.x64.exe', None)]
+C = os.path.expanduser('~/.cache/q2ucrt'); D = os.path.join(C, 'ucrtbase.dll')
+
+def is_x64_pe(p):
+    try:
+        with open(p, 'rb') as f: b = f.read(4096)
+        if b[:2] != b'MZ': return False
+        o = struct.unpack_from('<I', b, 0x3c)[0]
+        return b[o:o + 4] == b'PE\0\0' and struct.unpack_from('<H', b, o + 4)[0] == 0x8664
+    except Exception: return False
+
+def extract(src, dst):
+    os.makedirs(dst, exist_ok=True)
+    r = subprocess.run([CE, '-q', '-d', dst, src], capture_output=True, text=True, timeout=600)
+    n = sum(len(fs) for _, _, fs in os.walk(dst))
+    log('  cabextract %s -> %d files (rc %d)%s' % (os.path.basename(src), n, r.returncode, (': ' + r.stderr.strip()[:160]) if r.returncode else ''))
+
+def fetch():
+    os.makedirs(C, exist_ok=True)
+    for i, (url, sha) in enumerate(URLS):
+        if get(url, sha, os.path.join(C, 'vc_redist%d.x64.exe' % i)): return True
+    return False
+
+def get(url, sha, exe):
+    if not os.path.exists(exe) or os.path.getsize(exe) < 1000000:
+        log('downloading %s' % url)
+        r = subprocess.run(['curl', '-fsSL', '--retry', '2', '-o', exe + '.part', url], capture_output=True, text=True, timeout=900)
+        if r.returncode != 0: log('download failed: %s' % r.stderr.strip()[:200]); return False
+        os.replace(exe + '.part', exe)
+    if sha:
+        h = hashlib.sha256(open(exe, 'rb').read()).hexdigest()
+        if h != sha: log('sha256 mismatch (%s) - not used' % h); os.unlink(exe); return False
+    w = os.path.join(C, 'work'); shutil.rmtree(w, ignore_errors=True)
+    extract(exe, os.path.join(w, '0'))
+    # the redistributable is a bundle of cabinets (a0, a1 ...) holding further cabinets / packages: unpack 3 levels
+    for level in range(3):
+        for f in glob.glob(os.path.join(w, str(level), '**', '*'), recursive=True):
+            if not os.path.isfile(f): continue
+            if os.path.basename(f).lower() == 'ucrtbase.dll' and is_x64_pe(f):
+                shutil.copyfile(f, D + '.part'); os.replace(D + '.part', D)
+                log('x64 ucrtbase.dll found (%s, %d bytes)' % (os.path.relpath(f, w), os.path.getsize(D)))
+                shutil.rmtree(w, ignore_errors=True); return True
+            with open(f, 'rb') as h: head = h.read(4)
+            if head == b'MSCF' or f.lower().endswith(('.cab', '.msu')):
+                extract(f, os.path.join(w, str(level + 1), '%x' % abs(hash(f))))
+    log('no x64 ucrtbase.dll inside the redistributable'); shutil.rmtree(w, ignore_errors=True); return False
+
+def builtin_marked(p):
+    try: return b'Wine builtin DLL' in open(p, 'rb').read(0x200)
+    except OSError: return False
+
+def main():
+    # q2ucrt <game folder> <Proton prefix> <Proton folder>   (desk-314: repair + collect, no fix attempt)
+    # desk-312/313 left Microsoft's x64 ucrtbase.dll in the prefix's system32: Wine's own ARM64 programs cannot load it,
+    # so Proton could not start in that prefix at all.  This puts the Proton's own file back (a copy of its
+    # aarch64-windows ucrtbase.dll, marked as Wine built-in) and removes the copy next to the game.
+    # It also saves the files needed to build a real fix offline (gzip, into /var/log/q2 -> the log export):
+    # the Proton's ucrtbase.dll builds and the game's Ruby DLL.
+    if len(sys.argv) < 4: print('usage: q2ucrt <game folder> <prefix> <Proton folder>'); return 2
+    gd, pfx, proton = sys.argv[1:4]
+    import gzip
+    g = os.path.join(gd, 'ucrtbase.dll')
+    if os.path.exists(g) and not builtin_marked(g):
+        try: os.unlink(g); log('removed %s' % g)
+        except OSError as e: log('could not remove %s: %s' % (g, e))
+    orig = os.path.join(proton, 'files', 'lib', 'wine', 'aarch64-windows', 'ucrtbase.dll')
+    t = os.path.join(pfx, 'drive_c', 'windows', 'system32', 'ucrtbase.dll')
+    if os.path.isfile(t) and not builtin_marked(t):
+        if os.path.isfile(orig):
+            try: shutil.copyfile(orig, t + '.q2tmp'); os.replace(t + '.q2tmp', t); log('prefix repaired: Proton ucrtbase.dll back in %s' % t)
+            except OSError as e: log('repair failed: %s' % e)
+        else: log('repair: %s missing' % orig)
+    # desk-316: the files for the offline fix arrived (desk-315); no more saving
+    for f in os.listdir(os.path.expanduser('~/q2proton')) if os.path.isdir(os.path.expanduser('~/q2proton')) else []:
+        if f.startswith('ruby-') and f.endswith('.gz.bin'):
+            try: os.unlink(os.path.join(os.path.expanduser('~/q2proton'), f))
+            except OSError: pass
+    print('ok'); return 0
+
+sys.exit(main())
