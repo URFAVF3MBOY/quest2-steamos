@@ -181,6 +181,34 @@ jobs:
           tar -C ../modstage -czf ../q2modules.tar.gz lib
           ls -l ../q2modules.tar.gz
 
+      - name: Build the Kona audio modules (techpack/audio -> q2audio.tar.gz)
+        id: audio
+        continue-on-error: true   # audio is being brought up; a failure here must not block the kernel/wlan artifact
+        shell: bash
+        working-directory: src
+        run: |
+          export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$PATH"
+          # CONFIG_ARCH_KONA=y makes techpack/audio/Makefile pull in konaauto.conf (SND_SOC_KONA=m, q6, apr, adsp_loader, ...).
+          # Module.symvers from the kernel build (made in the wlan step) resolves the vmlinux symbol versions.
+          test -f Module.symvers || ./scripts/mod/modpost -m -a -o Module.symvers vmlinux
+          set +e
+          make $MAKEVARS -j"$(nproc)" M=techpack/audio modules \
+            KBUILD_EXTRA_SYMBOLS="$PWD/Module.symvers" 2>&1 | tee ../audio-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" != 0 ]; then
+            echo "=================== UNIQUE ERRORS ==================="
+            grep -E "error:|\*\*\* \[|undefined reference|No such file" ../audio-build.log | sort -u | head -80
+            exit 1
+          fi
+          grep -E "WARNING: .*undefined" ../audio-build.log | sort -u | head -20 || true
+          rm -rf ../audiostage
+          make $MAKEVARS M=techpack/audio INSTALL_MOD_PATH=../audiostage INSTALL_MOD_STRIP=1 modules_install
+          echo "--- audio modules built:"
+          find ../audiostage -name '*.ko' | sort
+          tar -C ../audiostage -czf ../q2audio.tar.gz lib
+          ls -l ../q2audio.tar.gz
+
       - name: Build initramfs - SteamOS (USB root)
         run: INIT_FILE="$PWD/initramfs/init-steamos" bash scripts/build_initramfs.sh initramfs-steamos.cpio.gz
 
@@ -208,6 +236,13 @@ jobs:
             q2modules.tar.gz
           if-no-files-found: error
 
+      - name: Upload audio modules (if they built)
+        uses: actions/upload-artifact@v4
+        with:
+          name: quest2-audio
+          path: q2audio.tar.gz
+          if-no-files-found: warn
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -216,4 +251,5 @@ jobs:
             src/.config
             src/System.map
             kernel-build.log
+            audio-build.log
           if-no-files-found: ignore
