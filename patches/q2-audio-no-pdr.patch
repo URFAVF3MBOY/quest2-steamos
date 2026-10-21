@@ -22,3 +22,16 @@ index ee0cdf767..6cc454f87 100644
  #define CONFIG_MSM_QDSP6_NOTIFIER 1
  #define CONFIG_SND_SOC_MSM_HOSTLESS_PCM 1
  #define CONFIG_SND_SOC_QDSP6V2 1
+diff --git a/techpack/audio/dsp/audio_notifier.c b/techpack/audio/dsp/audio_notifier.c
+index 7a8249dc3..f57a0ff7d 100644
+--- a/techpack/audio/dsp/audio_notifier.c
++++ b/techpack/audio/dsp/audio_notifier.c
+@@ -629,7 +629,7 @@ static int __init audio_notifier_init(void)
+ static int __init audio_notifier_init(void)
+ {
+ 	audio_notifier_subsys_init();
+-	audio_notifier_disable_service(AUDIO_NOTIFIER_PDR_SERVICE);
++	audio_notifer_disable_service(AUDIO_NOTIFIER_PDR_SERVICE);   /* q2: upstream typo in the !PDR branch */
+ 
+ 	audio_notifier_late_init();
+ 
