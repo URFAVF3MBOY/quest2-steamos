@@ -37,3 +37,17 @@ CONFIG_DEVMEM=y
 # not allowed ("failed to sdcardfs_setup" -> Android's storage daemon aborts, VRChat never launches).  Off = Android uses
 # FUSE storage like on the Steam Frame.  SteamOS and Meta's tracker (island) don't use sdcardfs.
 # CONFIG_SDCARD_FS is not set
+# desk-329: Bluetooth (QCA6390 on the HS-UART /dev/ttyHS0, powered by Meta's bt_power rfkill).  The kernel already has
+# the BT core + power driver; this adds the HCI-over-UART transport (incl. the QCA protocol), serdev, and the profiles
+# BlueZ needs for headphones, gamepads and keyboards.
+CONFIG_SERIAL_DEV_BUS=y
+CONFIG_SERIAL_DEV_CTRL_TTYPORT=y
+CONFIG_BT_HCIUART=y
+CONFIG_BT_HCIUART_SERDEV=y
+CONFIG_BT_HCIUART_H4=y
+CONFIG_BT_HCIUART_QCA=y
+CONFIG_BT_RFCOMM=y
+CONFIG_BT_RFCOMM_TTY=y
+CONFIG_BT_BNEP=y
+CONFIG_BT_HIDP=y
+CONFIG_UHID=y

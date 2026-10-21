@@ -105,6 +105,10 @@ jobs:
           # audio: give techpack/audio's LPI pinctrl driver the kernel pinctrl include path (core.h / pinctrl-utils.h)
           git apply --check ../patches/q2-audio-pinctrl-lpi-include.patch
           git apply ../patches/q2-audio-pinctrl-lpi-include.patch; echo "applied q2-audio-pinctrl-lpi-include.patch"
+          # audio: no PDR (Android's pd-mapper locator, absent on SteamOS: audio waited ~5 min for its timeout) -> the audio
+          # notifier uses the plain ADSP subsystem-up event right away
+          git apply --check ../patches/q2-audio-no-pdr.patch
+          git apply ../patches/q2-audio-no-pdr.patch; echo "applied q2-audio-no-pdr.patch"
 
       - name: Configure kernel
         shell: bash
