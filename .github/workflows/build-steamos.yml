@@ -102,6 +102,9 @@ jobs:
           # between Turnip/zink, compositors and the display (pairs with build-q2gpu / patches/turnip-q2-drm.py)
           git apply --check ../patches/q2-dmabuf-sync-file.patch
           git apply ../patches/q2-dmabuf-sync-file.patch; echo "applied q2-dmabuf-sync-file.patch"
+          # audio: give techpack/audio's LPI pinctrl driver the kernel pinctrl include path (core.h / pinctrl-utils.h)
+          git apply --check ../patches/q2-audio-pinctrl-lpi-include.patch
+          git apply ../patches/q2-audio-pinctrl-lpi-include.patch; echo "applied q2-audio-pinctrl-lpi-include.patch"
 
       - name: Configure kernel
         shell: bash
