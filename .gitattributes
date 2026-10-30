@@ -1,0 +1,10 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Linux files must keep LF line endings on Windows checkouts (a CRLF init made the headset boot-loop: "#!/bin/sh")
+image/src/** text eol=lf
+patches/** text eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+kernel/** text eol=lf
+.github/** text eol=lf

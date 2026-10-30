@@ -1,0 +1,107 @@
+name: build-q2gpu
+
+# The Quest 2 GPU stack on KGSL ("custom driver route"): Mesa with Turnip on KGSL paired with the display's DRM node
+# (msm_drm), so GBM / EGL / GLX / DRI3 / Wayland dma-buf all run on the GPU through zink -> Turnip -> KGSL.
+# Patches: patches/turnip-q2-async.py (real compute queue + KGSL priorities, as in q2tu) and patches/turnip-q2-drm.py.
+# Needs the kernel from build-steamos with patches/q2-dmabuf-sync-file.patch for implicit sync between processes.
+# Also builds tools/q2gputest.c (on-headset check of the whole chain; changes nothing on the display).
+# With the q2msm kernel driver: freedreno (native Adreno GL) too - msm_dri.so for GBM / Xwayland glamor / GLX.
+# Built natively on arm64 Ubuntu 24.04 (glibc 2.39 = the SteamOS rootfs).
+# Result: artifact "q2gpu-aarch64" -> q2gpu.tar.gz, unpacks to /opt/q2gpu.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mesa_ref:
+        description: "Mesa commit/branch/tag (gitlab.freedesktop.org/mesa/mesa); patches were checked against 4e1e46921e"
+        default: "4e1e46921e19f071437d67caaeaa0aa91da8a536"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git ninja-build pkg-config bison flex glslang-tools python3-pip python3-dev \
+            libdrm-dev libglvnd-dev libegl-dev libgles-dev libx11-dev libx11-xcb-dev libxext-dev libxfixes-dev libxrandr-dev \
+            libxshmfence-dev libxxf86vm-dev libxcb1-dev libxcb-glx0-dev libxcb-dri2-0-dev libxcb-dri3-dev libxcb-present-dev \
+            libxcb-sync-dev libxcb-shm0-dev libxcb-xfixes0-dev libxcb-randr0-dev libxcb-keysyms1-dev \
+            libexpat1-dev zlib1g-dev libzstd-dev libelf-dev libwayland-dev libwayland-egl-backend-dev wayland-protocols \
+            libvulkan-dev spirv-tools
+          sudo pip install --break-system-packages --ignore-installed meson mako pyyaml packaging pycparser ply
+          meson --version
+
+      - name: Fetch Mesa
+        run: |
+          git clone --filter=blob:none https://gitlab.freedesktop.org/mesa/mesa.git mesa
+          cd mesa
+          git checkout "${{ github.event.inputs.mesa_ref }}"
+          echo "Mesa $(cat VERSION) @ $(git rev-parse --short HEAD)"
+
+      - name: Patch (async queue + KGSL <-> msm_drm pairing)
+        run: |
+          python3 patches/turnip-q2-async.py mesa
+          python3 patches/turnip-q2-drm.py mesa
+          cd mesa && git diff --stat && git diff > "$GITHUB_WORKSPACE/q2gpu-mesa.diff"
+
+      - name: Configure
+        working-directory: mesa
+        run: |
+          meson setup build --prefix=/opt/q2gpu --libdir=lib -Dbuildtype=release -Db_ndebug=true \
+            -Dvulkan-drivers=freedreno -Dfreedreno-kmds=kgsl,msm -Dgallium-drivers=zink,freedreno -Dvulkan-layers= \
+            -Dplatforms=x11,wayland -Dglx=dri -Degl=enabled -Dgbm=enabled -Dglvnd=enabled \
+            -Dopengl=true -Dgles1=disabled -Dgles2=enabled \
+            -Dllvm=disabled -Dvalgrind=disabled -Dtools= -Dlibunwind=disabled -Dlmsensors=disabled -Dbuild-tests=false \
+            -Dvideo-codecs= -Dwerror=false
+
+      - name: Build
+        working-directory: mesa
+        run: ninja -C build
+
+      - name: Install into a staging dir
+        working-directory: mesa
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/stage"
+          DESTDIR="$GITHUB_WORKSPACE/stage" ninja -C build install
+          find "$GITHUB_WORKSPACE/stage" -name '*.so*' -type f -exec strip --strip-unneeded {} \; 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/q2gpu-mesa.diff" "$GITHUB_WORKSPACE/stage/opt/q2gpu/"
+          git rev-parse HEAD > "$GITHUB_WORKSPACE/stage/opt/q2gpu/mesa-commit.txt"
+          find "$GITHUB_WORKSPACE/stage" | sort
+
+      - name: Build q2gputest
+        run: |
+          P="$GITHUB_WORKSPACE/stage/opt/q2gpu"
+          mkdir -p "$P/bin"
+          gcc -O2 -Wall -o "$P/bin/q2gputest" tools/q2gputest.c \
+            -I mesa/src/gbm/main $(pkg-config --cflags libdrm) \
+            -L "$P/lib" -lgbm -lEGL -lGLESv2 -lvulkan -ldrm -Wl,-rpath,/opt/q2gpu/lib
+          strip "$P/bin/q2gputest"; ls -l "$P/bin/q2gputest"; readelf -d "$P/bin/q2gputest" | grep -E 'NEEDED|RPATH|RUNPATH'
+
+      - name: Check what it needs from the system
+        run: |
+          cd "$GITHUB_WORKSPACE/stage/opt/q2gpu/lib"
+          strings libvulkan_freedreno.so | grep -c 'q2-turnip-drm' || { echo "turnip-q2-drm patch missing from the binary"; exit 1; }
+          strings libvulkan_freedreno.so | grep -c 'q2-turnip:' || { echo "turnip-q2-async patch missing from the binary"; exit 1; }
+          for f in libgallium*.so libGLX_mesa.so.0 libEGL_mesa.so.0 libgbm.so.1 libvulkan_freedreno.so gbm/dri_gbm.so dri/msm_dri.so; do
+            [ -e "$f" ] || { echo "MISSING $f"; continue; }
+            echo "=== $f ($(du -h "$f" | cut -f1))"; readelf -d "$f" | grep NEEDED | sed 's/.*Shared library: //' | tr '\n' ' '; echo
+            for p in GLIBC GLIBCXX CXXABI; do objdump -T "$f" | grep -o "${p}_[0-9.]*" | sort -uV | tail -n 1; done
+          done
+          ls -l dri gbm 2>/dev/null || true
+          find "$GITHUB_WORKSPACE/stage" -name '*.json' -exec sh -c 'echo "--- {}"; cat {}' \;
+
+      - name: Pack
+        run: |
+          tar -C "$GITHUB_WORKSPACE/stage" -czf q2gpu.tar.gz opt/q2gpu
+          ls -l q2gpu.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: q2gpu-aarch64
+          path: q2gpu.tar.gz
+          retention-days: 30

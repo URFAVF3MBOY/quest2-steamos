@@ -1,0 +1,53 @@
+# Extra kernel options so Valve's SteamOS userspace (systemd, btrfs rootfs, flatpak-ish tooling) can run.
+# Applied on top of the known-good Quest 2 config; see the workflow's "requested options" report.
+CONFIG_MSDOS_PARTITION=y
+CONFIG_BINFMT_MISC=y
+CONFIG_BTRFS_FS=y
+CONFIG_BTRFS_FS_POSIX_ACL=y
+CONFIG_SQUASHFS=y
+CONFIG_SQUASHFS_ZSTD=y
+CONFIG_SQUASHFS_XZ=y
+CONFIG_TMPFS_POSIX_ACL=y
+CONFIG_TMPFS_XATTR=y
+CONFIG_AUTOFS4_FS=y
+CONFIG_FANOTIFY=y
+CONFIG_FHANDLE=y
+CONFIG_SYSVIPC=y
+CONFIG_POSIX_MQUEUE=y
+CONFIG_USER_NS=y
+CONFIG_PID_NS=y
+CONFIG_IPC_NS=y
+CONFIG_CGROUP_PIDS=y
+CONFIG_CGROUP_DEVICE=y
+CONFIG_HIDRAW=y
+CONFIG_CRYPTO_USER_API_HASH=y
+CONFIG_CRYPTO_USER_API_SKCIPHER=y
+CONFIG_DEVTMPFS_MOUNT=y
+# faster, smaller builds: no debug info / BTF
+# CONFIG_DEBUG_INFO_BTF is not set
+# CONFIG_DEBUG_INFO is not set
+# /dev/mem: lets qscreen draw into the framebuffer the bootloader leaves scanning out (qscreen -S)
+CONFIG_DEVMEM=y
+# CONFIG_STRICT_DEVMEM is not set
+# Lepton (Android apps such as VRChat in rootless podman): Android's "paranoid network" makes every tun ioctl need
+# CAP_NET_ADMIN in the init namespace (pasta: "TUNSETIFF ... Operation not permitted") and internet sockets need group
+# 3003 (lost inside containers).  Off = normal Linux rules, as on SteamOS.
+# CONFIG_ANDROID_PARANOID_NETWORK is not set
+# Lepton: Android 11 in the container uses sdcardfs whenever the kernel has it, and mounting it in a rootless container is
+# not allowed ("failed to sdcardfs_setup" -> Android's storage daemon aborts, VRChat never launches).  Off = Android uses
+# FUSE storage like on the Steam Frame.  SteamOS and Meta's tracker (island) don't use sdcardfs.
+# CONFIG_SDCARD_FS is not set
+# desk-329: Bluetooth (QCA6390 on the HS-UART /dev/ttyHS0, powered by Meta's bt_power rfkill).  The kernel already has
+# the BT core + power driver; this adds the HCI-over-UART transport (incl. the QCA protocol), serdev, and the profiles
+# BlueZ needs for headphones, gamepads and keyboards.
+CONFIG_SERIAL_DEV_BUS=y
+CONFIG_SERIAL_DEV_CTRL_TTYPORT=y
+CONFIG_BT_HCIUART=y
+CONFIG_BT_HCIUART_SERDEV=y
+CONFIG_BT_HCIUART_H4=y
+CONFIG_BT_HCIUART_QCA=y
+CONFIG_BT_RFCOMM=y
+CONFIG_BT_RFCOMM_TTY=y
+CONFIG_BT_BNEP=y
+CONFIG_BT_HIDP=y
+CONFIG_UHID=y

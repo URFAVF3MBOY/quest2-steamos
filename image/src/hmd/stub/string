@@ -1,0 +1,10 @@
+#pragma once
+#include <stddef.h>
+namespace std {
+struct string {
+  string(); string(const char *); string(const char *, size_t); string(size_t, char);
+  const char *c_str() const; char *data(); size_t size() const; size_t length() const; bool empty() const;
+  void resize(size_t); char &operator[](size_t); const char &operator[](size_t) const;
+  string &operator=(const char *); string &operator+=(const char *);
+};
+}

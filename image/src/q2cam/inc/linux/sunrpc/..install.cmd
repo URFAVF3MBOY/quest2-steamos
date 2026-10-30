@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/linux/sunrpc/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/sunrpc /tmp/khsrc/include/uapi/linux/sunrpc debug.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/sunrpc ./include/generated/uapi/linux/sunrpc ; touch /tmp/khdr/include/linux/sunrpc/.install

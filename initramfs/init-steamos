@@ -1,0 +1,738 @@
+#!/bin/sh
+# Quest 2 -> SteamOS first-light init (PID 1).
+#   1. show the kernel log on the headset display (qscreen -k)
+#   2. switch the USB-C port to host mode and wait for the SteamOS drive
+#      (MBR disk signature 0x20262026 = PARTUUID 20262026-01, written by steamos_fetch.py)
+#   3. mount Valve's btrfs rootfs read-only, put a RAM overlay on top, switch_root to systemd
+#   If anything fails: switch the port back to device mode and offer the USB serial shell
+#   (same as the RAM-only image) so the failure can be read.
+
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export HOME=/root
+export TERM=xterm-256color
+
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+mkdir -p /dev/pts /run /tmp /root /mnt/rootfs /mnt/ov /mnt/newroot
+mount -t devpts devpts /dev/pts 2>/dev/null
+mount -t tmpfs tmpfs /run
+mount -t tmpfs tmpfs /tmp
+hostname quest2
+
+log() { echo "q2-init: $*" > /dev/kmsg 2>/dev/null; echo "q2-init: $*"; }
+getarg() { for w in $(cat /proc/cmdline); do case "$w" in "$1="*) echo "${w#*=}"; return 0;; esac; done; return 1; }
+
+M=/sys/devices/platform/soc/a600000.ssusb/mode
+ROT="$(getarg qs_rot)"; [ -n "$ROT" ] || ROT=0
+WANT_SIG="26202620"   # bytes of 0x20262026 at MBR offset 440 (little-endian, palindromic)
+WAIT="$(getarg q2_wait)"; [ -n "$WAIT" ] || WAIT=120
+OVSIZE="$(getarg q2_ovsize)"; [ -n "$OVSIZE" ] || OVSIZE=2g
+
+log "SteamOS init rev=desk-16, kernel $(uname -r), qs_rot=$ROT wait=${WAIT}s"
+
+serial_shell() {
+  log "FALLBACK: switching USB back to device mode, serial shell on ttyGS0"
+  echo peripheral > "$M" 2>/dev/null
+  mount -t configfs none /sys/kernel/config 2>/dev/null
+  UDC=""; i=0
+  while [ $i -lt 30 ]; do UDC="$(ls /sys/class/udc 2>/dev/null | head -n 1)"; [ -n "$UDC" ] && break; i=$((i+1)); sleep 1; done
+  G=/sys/kernel/config/usb_gadget/g1
+  mkdir -p "$G"
+  echo 0x1d6b > "$G/idVendor"; echo 0x0104 > "$G/idProduct"; echo 0x0200 > "$G/bcdUSB"; echo 0x02 > "$G/bDeviceClass"
+  mkdir -p "$G/strings/0x409" "$G/configs/c.1/strings/0x409" "$G/functions/acm.usb0"
+  echo "q2-steamos" > "$G/strings/0x409/serialnumber"
+  echo "Quest 2 serial console" > "$G/strings/0x409/product"
+  echo ACM > "$G/configs/c.1/strings/0x409/configuration"
+  ln -s "$G/functions/acm.usb0" "$G/configs/c.1/" 2>/dev/null
+  echo "$UDC" > "$G/UDC" 2>/dev/null
+  while true; do
+    if [ -c /dev/ttyGS0 ]; then getty -L -n -l /bin/bash 115200 ttyGS0 xterm-256color; else sleep 2; fi
+  done
+}
+
+fail() { log "ERROR: $*"; dmesg | tail -n 25 > /dev/kmsg 2>/dev/null; sleep 5; serial_shell; }
+
+# 1. display
+if [ -x /usr/bin/qscreen ]; then
+  # default: draw straight into the bootloader's splash framebuffer (-S); qs_drm=1 uses the DRM driver instead
+  if [ "$(getarg qs_drm)" = "1" ]; then QSMODE=""; else QSMODE="-S"; fi
+  /usr/bin/qscreen $QSMODE -r "$ROT" -k > /run/qscreen.log 2>&1 &
+  sleep 3
+  while read -r l; do log "qscreen: $l"; done < /run/qscreen.log
+else
+  log "no qscreen binary; display log disabled"
+fi
+
+# 2. USB host + find the drive
+log "switching USB port to host mode"
+echo host > "$M" 2>/dev/null || log "writing $M failed"
+
+find_root() {
+  for d in /sys/block/sd*; do
+    [ -e "$d" ] || continue
+    n="${d##*/}"
+    case "$(readlink -f "$d")" in *usb*) ;; *) continue ;; esac   # skip internal UFS disks
+    sig="$(dd if=/dev/$n bs=1 skip=440 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+    if [ "$sig" = "$WANT_SIG" ]; then
+      echo "$n" > /run/rootdisk
+      if [ -b "/dev/${n}1" ]; then echo "/dev/${n}1"; return 0; fi
+      # Kernel has no MSDOS_PARTITION, so no /dev/sdX1: attach a loop device at the MBR partition-1 start instead.
+      lba="$(od -An -tu4 -j454 -N4 /dev/$n 2>/dev/null | tr -d ' \n')"
+      case "$lba" in ''|0|*[!0-9]*) lba=2048 ;; esac
+      lo="$(losetup -f 2>/dev/null)"
+      if [ -n "$lo" ] && losetup -o $((lba*512)) "$lo" "/dev/$n" 2>/dev/null; then
+        log "no /dev/${n}1 (no MSDOS_PARTITION in kernel); using $lo = /dev/$n at LBA $lba" >&2
+        echo "$lo"; return 0
+      fi
+    fi
+  done
+  return 1
+}
+
+diag() {
+  B="$(ls /sys/block 2>/dev/null | tr '\n' ' ')"
+  log "diag: blockdevs: $B"
+  for s in /sys/bus/scsi/devices/1:*:*:*; do          # only the USB host (scsi host1+), not the UFS LUNs
+    [ -e "$s" ] || continue
+    log "diag: scsi ${s##*/} state=$(cat "$s/state" 2>/dev/null) $(cat "$s/model" 2>/dev/null)"
+  done
+  # kernel messages only (never our own q2-init lines, or the output feeds back on itself)
+  dmesg | grep -v 'q2-init' | grep -E 'sd [0-9]+:|scsi host[1-9]|scsi [1-9]:|usb-storage|usb 1-|xhci|reset|timeout|abort|I/O' | tail -n 12 | while read -r l; do log "diag: $l"; done
+}
+
+ROOTDEV=""; i=0
+while [ $i -lt "$WAIT" ]; do
+  ROOTDEV="$(find_root)" && break
+  ROOTDEV=""
+  i=$((i+2)); sleep 2
+  [ $((i % 20)) -eq 0 ] && diag
+done
+[ -n "$ROOTDEV" ] || { diag; fail "SteamOS drive (disk signature 20262026) not found after ${WAIT}s"; }
+log "rootfs partition: $ROOTDEV (after ${i}s)"
+
+# 2b. persistent log: copy the kernel log (incl. systemd, via systemd.log_target=kmsg) into a raw area of the USB
+# drive, past the end of the rootfs partition (11 GiB). Read it on the PC with tools/read_q2log.py.
+# It keeps running after switch_root. Disable with q2_log=0.
+LOGOFF=11811160064; LOGSIZE=67108864
+RD="$(cat /run/rootdisk 2>/dev/null)"
+if [ "$(getarg q2_log)" = "0" ]; then
+  log "persistent log disabled (q2_log=0)"
+elif [ -z "$RD" ] || [ ! -x /usr/bin/qlog ]; then
+  log "persistent log unavailable (disk='$RD' qlog=$([ -x /usr/bin/qlog ] && echo yes || echo no))"
+elif [ "$(cat /sys/block/$RD/size 2>/dev/null || echo 0)" -le $(( (LOGOFF+LOGSIZE)/512 )) ]; then
+  log "persistent log skipped: /dev/$RD is too small (need > 11.1 GiB)"
+else
+  /usr/bin/qlog "/dev/$RD" "$LOGOFF" "$LOGSIZE" >> /run/qlog.out 2>&1 &
+  sleep 1
+  log "persistent log: /dev/$RD @ 11GiB ($(cat /run/qlog.out 2>/dev/null | tail -n 1))"
+fi
+
+# 3. mount the rootfs.
+# Default (q2_root=rw): mount the btrfs read-WRITE directly. A tmpfs overlay does not work on this 4.19 kernel
+# (copy-up of btrfs xattrs onto tmpfs fails with EOPNOTSUPP, which broke mkdir/chmod/dbus/logind), and a direct rw
+# mount also makes /var, /home and /etc persistent. q2_root=ov forces the old read-only + RAM overlay mode.
+MODE="$(getarg q2_root)"; [ -n "$MODE" ] || MODE=rw
+ROOTMODE=""
+if [ "$MODE" = "rw" ]; then
+  if mount -t btrfs -o rw,noatime "$ROOTDEV" /mnt/newroot; then
+    ROOTMODE=rw; log "btrfs rootfs mounted READ-WRITE (no overlay); $(ls /mnt/newroot | tr '\n' ' ')"
+    # Valve's rootfs is a read-only btrfs *subvolume*: a rw mount still gives EROFS on every write until the flag is cleared
+    log "qrw: $(/usr/bin/qrw /mnt/newroot 2>&1)"
+    if ( : > /mnt/newroot/.q2rw-test ) 2>/dev/null; then rm -f /mnt/newroot/.q2rw-test; log "rootfs is writable"
+    else log "WARNING: rootfs is still NOT writable (EROFS)"; fi
+  else
+    log "rw btrfs mount failed (see kernel messages); falling back to read-only + RAM overlay"
+  fi
+fi
+if [ -z "$ROOTMODE" ]; then
+  mount -t btrfs -o ro "$ROOTDEV" /mnt/rootfs || fail "btrfs mount of $ROOTDEV failed (see kernel messages above)"
+  log "btrfs rootfs mounted read-only; $(ls /mnt/rootfs | tr '\n' ' ')"
+  mount -t tmpfs -o size="$OVSIZE" tmpfs /mnt/ov || fail "tmpfs for overlay failed"
+  mkdir -p /mnt/ov/upper /mnt/ov/work
+  mount -t overlay overlay -o lowerdir=/mnt/rootfs,upperdir=/mnt/ov/upper,workdir=/mnt/ov/work /mnt/newroot \
+    || fail "overlay mount failed"
+  ROOTMODE=ov
+fi
+NR=/mnt/newroot
+
+dumpf() {   # dumpf FILE [MAXLINES]: copy a file from the new root into the persistent log
+  [ -f "$NR$1" ] || { log "---- $1 (missing)"; return; }
+  log "---- $1"
+  head -n "${2:-60}" "$NR$1" | while IFS= read -r l; do log "|$l"; done
+}
+
+# 3b. fix-ups so SteamOS' Steam-Frame-specific setup can run on a Quest 2 with ONE partition (rw root only).
+if [ "$ROOTMODE" = "rw" ] && [ "$(getarg q2_fixups)" != "0" ]; then
+  # (a) Valve's partition-set mounts (home, persist, efi, esp, ...) point at partitions this single-partition drive
+  #     doesn't have; each one costs a 90 s device timeout. fstab: comment those lines out. Mount units
+  #     (/usr/lib/systemd/system/*.mount with What= on by-partsets/by-partlabel/PARTLABEL): override each in /etc with a
+  #     harmless bind of the directory onto itself and drop the fsck/blockdev/device dependencies.
+  mkdir -p $NR/etc/systemd/system
+  if [ -f $NR/etc/fstab ]; then
+    [ -f $NR/etc/fstab.q2orig ] || cp $NR/etc/fstab $NR/etc/fstab.q2orig
+    sed -E '/^[^#[:space:]]+[[:space:]]+\/[[:space:]]/!{/^(\/dev\/disk\/by-part|PARTLABEL=|PARTUUID=)/s/^/# q2: /}' \
+      $NR/etc/fstab.q2orig > $NR/etc/fstab.q2new 2>/dev/null
+    if [ -s $NR/etc/fstab.q2new ]; then cat $NR/etc/fstab.q2new > $NR/etc/fstab; fi
+    rm -f $NR/etc/fstab.q2new
+    log "fixup: fstab: $(grep -c '^# q2:' $NR/etc/fstab) partition entries commented out"
+  fi
+  MOUNTFIX=""
+  for f in $NR/usr/lib/systemd/system/*.mount; do
+    [ -f "$f" ] || continue
+    grep -qE '^What=(/dev/disk/by-part|PARTLABEL=|PARTUUID=)' "$f" || continue
+    u="${f##*/}"
+    w="$(sed -n 's/^Where=//p' "$f" | head -n 1)"
+    [ -n "$w" ] || continue
+    mkdir -p "$NR$w" 2>/dev/null
+    sed -E -e '/^(Requires|After|BindsTo|Wants|Before|Conflicts)=.*(systemd-fsck@|blockdev@|systemd-growfs@|dev-disk-by)/d' \
+           -e '/^(Type|Options)=/d' \
+           -e "s#^What=.*#What=$w\nType=none\nOptions=bind#" "$f" > "$NR/etc/systemd/system/$u" 2>/dev/null \
+      && MOUNTFIX="$MOUNTFIX $u"
+  done
+  log "fixup: mount units overridden with self-binds:$MOUNTFIX"
+  # (b) mask services that only make sense on Steam Frame hardware (they crash-loop or time out here)
+  mkdir -p $NR/etc/systemd/system
+  MASKED=""
+  for f in $NR/usr/lib/systemd/system/*.service; do
+    [ -f "$f" ] || continue
+    u="${f##*/}"
+    case "$u" in deckard-*|steamvr-*|gpu-trace.service|setubootenv.service) hit=1 ;; *) hit=0 ;; esac
+    if [ "$hit" = 0 ] && grep -qE '^Description=.*(Deckard|SteamVR|Predistort|FPGA|Type-C tcpm|Uboot)' "$f"; then hit=1; fi
+    if [ "$hit" = 1 ]; then ln -sf /dev/null "$NR/etc/systemd/system/$u"; MASKED="$MASKED $u"; fi
+  done
+  log "fixup: masked:$MASKED"
+  # (c) no GPU/compositor yet: boot to multi-user instead of the graphical (gamescope/steam) session
+  if [ "$(getarg q2_target)" != "graphical" ]; then
+    ln -sf /usr/lib/systemd/system/multi-user.target $NR/etc/systemd/system/default.target
+    log "fixup: default target = multi-user (q2_target=graphical to keep the graphical session)"
+  fi
+fi
+
+# 3b2. system summary: SteamOS' VR image ships neither neofetch nor fastfetch, so install our own tiny q2fetch
+# (/usr/bin/q2fetch) and run it ~25 s after boot; its output goes to the kernel log -> headset display + persistent log.
+if [ "$ROOTMODE" = "rw" ] && [ "$(getarg q2_fetch)" != "0" ]; then
+  cat > $NR/usr/bin/q2fetch <<'Q2FETCH_EOF'
+#!/bin/sh
+# q2fetch - neofetch-style system summary that only needs /proc, /sys and /etc/os-release.
+# (SteamOS' VR image ships neither neofetch nor fastfetch.)  Works in any POSIX sh.
+. /etc/os-release 2>/dev/null
+rd() { [ -r "$1" ] && tr -d '\0' < "$1" 2>/dev/null; }
+kb() { sed -n "s/^$1:[[:space:]]*\([0-9]*\) kB.*/\1/p" /proc/meminfo | head -n 1; }
+
+host="$(rd /proc/sys/kernel/hostname)"; [ -n "$host" ] || host=$(hostname 2>/dev/null)
+title="root@$host"
+echo "$title"
+printf '%*s\n' "${#title}" '' | tr ' ' '-'
+
+echo "OS: ${PRETTY_NAME:-?} ${VERSION_ID:+$VERSION_ID }${VERSION_CODENAME:+($VERSION_CODENAME${VARIANT_ID:+, $VARIANT_ID}) }$(uname -m)"
+echo "Build: ${BUILD_ID:-?}"
+model="$(rd /proc/device-tree/model)"; [ -n "$model" ] || model="$(rd /sys/firmware/devicetree/base/model)"
+hw="$(sed -n 's/.*androidboot.hardware=\([^ ]*\).*/\1/p' /proc/cmdline | head -n 1)"
+echo "Host: ${model:-unknown}${hw:+ [$hw]}"
+echo "Kernel: $(uname -r)"
+
+up=$(cut -d. -f1 /proc/uptime 2>/dev/null)
+if [ -n "$up" ]; then
+  d=$((up/86400)); h=$((up%86400/3600)); m=$((up%3600/60)); s=$((up%60))
+  u=""; [ $d -gt 0 ] && u="${d}d "; [ $h -gt 0 ] && u="$u${h}h "; [ $m -gt 0 ] && u="$u${m}m "; echo "Uptime: $u${s}s"
+fi
+
+pk=""
+[ -d /var/lib/pacman/local ] && pk="$(ls /var/lib/pacman/local 2>/dev/null | grep -vc '^ALPM_DB_VERSION$') (pacman)"
+[ -n "$pk" ] && echo "Packages: $pk"
+echo "Shell: ${SHELL:-/bin/sh}"
+
+soc="$(rd /sys/devices/soc0/machine)"; sid="$(rd /sys/devices/soc0/soc_id)"
+n=$(grep -c '^processor' /proc/cpuinfo 2>/dev/null); f=$(rd /sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq)
+[ -n "$f" ] || f=$(rd /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq)
+cpuf=""; [ -n "$f" ] && cpuf=" @ $((f/1000))MHz (max)"
+echo "CPU: Qualcomm ${soc:-SoC}${sid:+ (id $sid)} (${n:-?} cores)$cpuf"
+
+gpu="$(rd /sys/class/kgsl/kgsl-3d0/gpu_model)"
+[ -n "$gpu" ] && echo "GPU: Qualcomm $gpu (KGSL)" || echo "GPU: no KGSL device visible"
+
+mt=$(kb MemTotal); mf=$(kb MemAvailable)
+[ -n "$mt" ] && echo "Memory: $(( (mt-${mf:-0})/1024 ))MiB / $((mt/1024))MiB"
+
+df -h / 2>/dev/null | awk 'NR==2{print "Disk (/): " $3 " / " $2 " (" $5 ") " }' 2>/dev/null || true
+
+for m in /sys/class/drm/card*-*/modes; do [ -r "$m" ] && { echo "Display: $(head -n 1 "$m") ($(echo "$m" | cut -d/ -f5))"; break; }; done
+echo "Display (splash fb): 1920x3664 (qscreen)"
+
+nic=""
+for i in /sys/class/net/*; do b="${i##*/}"; [ "$b" = lo ] && continue; a="$(ip -4 -o addr show dev "$b" 2>/dev/null | sed -n 's/.*inet \([0-9.\/]*\).*/\1/p' | head -n 1)"; nic="$nic $b${a:+=$a}"; done
+echo "Network:${nic:- none}"
+Q2FETCH_EOF
+  chmod 755 $NR/usr/bin/q2fetch
+  mkdir -p $NR/etc/systemd/system/multi-user.target.wants
+  cat > $NR/etc/systemd/system/q2-fetch.service <<'UNIT'
+[Unit]
+Description=Quest 2 port: print system info to the kernel log
+[Service]
+Type=simple
+ExecStart=/bin/sh -c 'sleep 25; ( (fastfetch -l none --pipe 2>/dev/null || /usr/bin/q2fetch) 2>&1 ) | while IFS= read -r l; do echo "q2-fetch: $l" > /dev/kmsg; done'
+[Install]
+WantedBy=multi-user.target
+UNIT
+  ln -sf ../q2-fetch.service $NR/etc/systemd/system/multi-user.target.wants/q2-fetch.service
+  log "fixup: q2fetch installed (/usr/bin/q2fetch); output goes to the log ~25 s after boot"
+fi
+
+# 3b3. software desktop: Xvfb -> q2blit -> splash framebuffer (the msm_drm atomic path rejects Xorg), USB input via XTEST.
+# Installs /usr/bin/{q2blit,q2input.py,q2desktop} and a service that starts it ~30 s after boot.  q2_desktop=0 disables it.
+if [ "$ROOTMODE" = "rw" ] && [ "$(getarg q2_desktop)" != "0" ]; then
+  mkdir -p $NR/etc/systemd/system/multi-user.target.wants
+  cp /usr/bin/q2blit $NR/usr/bin/q2blit && chmod 755 $NR/usr/bin/q2blit
+  cat > $NR/usr/bin/q2input.py <<'Q2INPUT_EOF'
+#!/usr/bin/python3
+# q2input - forward USB keyboard / mouse (evdev) into the Xvfb X server via XTEST.  Logs to the kernel log (q2-desk: input: ...).
+import ctypes, glob, os, select, struct, sys, time
+
+def log(m):
+    try:
+        with open('/dev/kmsg', 'w') as f:
+            f.write('q2-desk: input: %s\n' % m)
+    except Exception:
+        pass
+
+try:
+    x11 = ctypes.CDLL('libX11.so.6')
+    xt = ctypes.CDLL('libXtst.so.6')
+except OSError as e:
+    log('missing libX11/libXtst: %s' % e)
+    sys.exit(1)
+
+x11.XOpenDisplay.restype = ctypes.c_void_p
+x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+x11.XFlush.argtypes = [ctypes.c_void_p]
+xt.XTestFakeKeyEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+xt.XTestFakeButtonEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+xt.XTestFakeRelativeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
+
+dpy = None
+for _ in range(60):
+    dpy = x11.XOpenDisplay(b':0')
+    if dpy:
+        break
+    time.sleep(0.5)
+if not dpy:
+    log('cannot open display :0')
+    sys.exit(1)
+log('connected to :0')
+
+BTN = {272: 1, 273: 3, 274: 2}   # BTN_LEFT/RIGHT/MIDDLE -> X buttons
+EVSZ = struct.calcsize('<qqHHi')
+fds = {}                          # fd -> name
+logged = 0
+
+def scan():
+    for ev in glob.glob('/dev/input/event*'):
+        base = os.path.basename(ev)
+        try:
+            real = os.path.realpath('/sys/class/input/%s/device' % base)
+        except Exception:
+            continue
+        if 'usb' not in real or ev in fds.values():
+            continue
+        try:
+            fd = os.open(ev, os.O_RDONLY | os.O_NONBLOCK)
+        except OSError as e:
+            log('cannot open %s: %s' % (ev, e))
+            continue
+        fds[fd] = ev
+        log('using %s' % ev)
+
+scan()
+last_scan = time.time()
+dx = dy = 0
+while True:
+    if time.time() - last_scan > 3:
+        scan()
+        last_scan = time.time()
+    if not fds:
+        time.sleep(0.5)
+        continue
+    r, _, _ = select.select(list(fds), [], [], 1.0)
+    for fd in r:
+        try:
+            data = os.read(fd, EVSZ * 64)
+        except OSError:
+            os.close(fd)
+            log('lost %s' % fds.pop(fd))
+            continue
+        for off in range(0, len(data) - EVSZ + 1, EVSZ):
+            _s, _u, typ, code, val = struct.unpack_from('<qqHHi', data, off)
+            if typ == 1:
+                if code in BTN:
+                    xt.XTestFakeButtonEvent(dpy, BTN[code], 1 if val else 0, 0)
+                elif 0 < code < 256 and val in (0, 1):
+                    xt.XTestFakeKeyEvent(dpy, code + 8, val, 0)
+                    if val and logged < 12:
+                        logged += 1
+                        log('key code %d' % code)
+            elif typ == 2:
+                if code == 0:
+                    dx += val
+                elif code == 1:
+                    dy += val
+                elif code == 8 and val:
+                    b = 4 if val > 0 else 5
+                    for _ in range(abs(val)):
+                        xt.XTestFakeButtonEvent(dpy, b, 1, 0)
+                        xt.XTestFakeButtonEvent(dpy, b, 0, 0)
+            elif typ == 0:
+                if dx or dy:
+                    xt.XTestFakeRelativeMotionEvent(dpy, dx, dy, 0)
+                    dx = dy = 0
+                x11.XFlush(dpy)
+Q2INPUT_EOF
+  chmod 755 $NR/usr/bin/q2input.py
+  cat > $NR/usr/bin/q2desktop <<'Q2DESK_EOF'
+#!/bin/sh
+# q2desktop - software-rendered X desktop on the Quest 2 panel: Xvfb -> q2blit -> splash framebuffer, USB input via XTEST.
+# Cmdline switches: q2_desktop=0 (off), q2_swap=0 (do not swap red/blue), q2_dmode=0 (one 3664x1920 canvas instead of a copy per eye)
+L() { echo "q2-desk: $*" > /dev/kmsg; }
+P() { while IFS= read -r l; do echo "q2-desk: $l" > /dev/kmsg; done; }
+export HOME=/root XDG_RUNTIME_DIR=/run DISPLAY=:0 LANG=C.UTF-8
+CMD=$(cat /proc/cmdline)
+SWAP=bgr; case "$CMD" in *q2_swap=0*) SWAP=rgb;; esac
+MODE=1;   case "$CMD" in *q2_dmode=0*) MODE=0;; esac
+# Canvas size: the lenses only show the middle of each 1832x1920 eye image, so use a smaller desktop centred in each eye
+# with black margins.  Tune from the kernel cmdline: q2_vw=1200 q2_vh=900 (size), q2_ox=/q2_oy= (offset inside the eye).
+arg() { for w in $CMD; do case "$w" in $1=*) echo "${w#*=}";; esac; done | tail -n 1; }
+VW=$(arg q2_vw); VH=$(arg q2_vh); OXA=$(arg q2_ox); OYA=$(arg q2_oy)
+[ -n "$VW" ] || VW=1832; [ -n "$VH" ] || VH=1920
+W=$VW; H=$VH; BLITARGS="-w $VW -h $VH -b 1060d0"
+[ -n "$OXA" ] && BLITARGS="$BLITARGS -x $OXA"; [ -n "$OYA" ] && BLITARGS="$BLITARGS -y $OYA"
+if [ "$MODE" = 0 ]; then W=3664; H=1920; BLITARGS=""; fi
+case "$CMD" in *q2_full=1*) W=1832; H=1920; BLITARGS="";; esac
+# lens pre-warp "virtual monitor" (default on for the stage-1 look); q2_warp=0 disables; q2_mon=<half-width tan x100> q2_tmax=<x100> q2_d=<lens decenter px>
+if [ "$MODE" != 0 ] && [ -n "$BLITARGS" ] && [ "$(arg q2_warp)" != 0 ]; then
+  BLITARGS="$BLITARGS -v"
+  MONA=$(arg q2_mon); [ -z "$MONA" ] && MONA=95
+  BLITARGS="$BLITARGS -s $MONA"
+  [ -n "$(arg q2_tmax)" ] && BLITARGS="$BLITARGS -t $(arg q2_tmax)"
+  [ -n "$(arg q2_d)" ] && BLITARGS="$BLITARGS -d $(arg q2_d)"
+fi
+L "starting desktop: Xvfb ${W}x${H}, blit mode $MODE ($BLITARGS), colors $SWAP"
+
+mkdir -p /tmp/q2fb; rm -f /tmp/q2fb/* /tmp/.X0-lock /tmp/.X11-unix/X0
+Xvfb :0 -screen 0 ${W}x${H}x24 -fbdir /tmp/q2fb -nolisten tcp -ac -extension GLX >/tmp/q2-xvfb.log 2>&1 &
+n=0
+while [ $n -lt 30 ]; do
+  sleep 0.5; n=$((n+1))
+  [ -s /tmp/q2fb/Xvfb_screen0 ] && timeout 5 xdpyinfo >/dev/null 2>&1 && break
+done
+if ! timeout 5 xdpyinfo >/dev/null 2>&1; then
+  L "Xvfb did NOT come up; log:"; tail -n 20 /tmp/q2-xvfb.log | P; ls -l /tmp/q2fb 2>&1 | P; exit 1
+fi
+L "Xvfb is up: $(xdpyinfo 2>/dev/null | grep dimensions | tr -s ' ')"
+
+( /usr/bin/q2blob; sleep 60; /usr/bin/q2mesa ) &
+( sleep 40; /usr/bin/q2sync & )
+( sleep 20; /usr/bin/q2survey & )   # logs what compilers/headers/python modules this image has (for the GPU driver build)                  # unpack the Android GPU libraries from the USB drive (if pack_q2android.py wrote them)
+pkill -x qscreen 2>/dev/null          # stop the kernel-log console; the desktop owns the splash framebuffer now
+/usr/bin/q2blit -m "$MODE" $BLITARGS -f "$SWAP" /tmp/q2fb/Xvfb_screen0 >/tmp/q2-blit.log 2>&1 &
+python3 /usr/bin/q2input.py >/tmp/q2-input.log 2>&1 &
+xsetroot -solid '#1060d0' 2>&1 | P
+openbox >/tmp/q2-openbox.log 2>&1 &
+sleep 3
+L "blit: $(cat /tmp/q2-blit.log | tr '\n' ' ')"
+L "input: $(cat /tmp/q2-input.log | tr '\n' ' ')"
+L "openbox: $(pgrep -x openbox >/dev/null && echo running || echo NOT running) $(tail -n 3 /tmp/q2-openbox.log | tr '\n' ' ')"
+
+case "$CMD" in *q2_steam=0*) ;; *) ( /usr/bin/q2steam & ) ;; esac
+
+fails=0
+while [ $fails -lt 4 ]; do
+  t0=$(cut -d. -f1 /proc/uptime)
+  xterm -fa Monospace -fs 16 -geometry 88x34+326+520 -bg black -fg white \
+        -e sh -c 'echo "Quest 2 / SteamOS desktop - type on the USB keyboard"; echo; /usr/bin/q2fetch; echo; exec bash' >>/tmp/q2-xterm.log 2>&1
+  rc=$?
+  L "xterm exited ($rc): $(tail -n 3 /tmp/q2-xterm.log | tr '\n' ' ')"
+  [ $(( $(cut -d. -f1 /proc/uptime) - t0 )) -lt 5 ] && fails=$((fails+1))
+  sleep 2
+done
+L "giving up restarting xterm"
+Q2DESK_EOF
+  chmod 755 $NR/usr/bin/q2desktop
+  cat > $NR/usr/bin/q2steam <<'Q2STEAM_EOF'
+#!/bin/sh
+# q2steam - start Valve's arm64 Steam client (gamepad UI) on the software X desktop and log what happens.
+# Output -> kernel log as "q2-steam: ..." (headset + persistent log).  Run by q2desktop; can also be run by hand from the xterm.
+# Software rendering only (CEF uses its bundled SwiftShader); no GPU, and offline until networking exists.
+# Valve's launcher (/usr/lib/steam/bin_steam.sh) failed with "/steamrtarm64/steam: No such file", so we unpack
+# /usr/lib/steam/steam.tar.zst ourselves into ~/.local/share/Steam and run its steam.sh.
+L() { echo "q2-steam: $*" > /dev/kmsg; }
+P() { while IFS= read -r l; do echo "q2-steam: $l" > /dev/kmsg; done; }
+export DISPLAY=:0
+
+U=steamos
+if ! id "$U" >/dev/null 2>&1; then
+  U=deck
+  id "$U" >/dev/null 2>&1 || { useradd -m -s /bin/bash -G video,render,input,audio "$U" 2>&1 | P; L "created user $U"; }
+fi
+UIDN=$(id -u "$U"); GIDN=$(id -g "$U"); HOMED=$(getent passwd "$U" | cut -d: -f6)
+[ -d "$HOMED" ] || { mkdir -p "$HOMED"; chown "$UIDN:$GIDN" "$HOMED"; }
+mkdir -p "/run/user/$UIDN"; chown "$UIDN:$GIDN" "/run/user/$UIDN"; chmod 700 "/run/user/$UIDN"
+for g in video render input audio; do usermod -aG $g "$U" 2>/dev/null; done
+SD="$HOMED/.local/share/Steam"
+L "user=$U uid=$UIDN home=$HOMED ; disk: $(df -h / | tail -n 1 | tr -s ' ') ; mem: $(grep MemAvailable /proc/meminfo | tr -s ' ')"
+L "home: $(ls -la "$HOMED" 2>&1 | tr -s ' ' | tr '\n' '|' | cut -c1-400)"
+L "~/.steam: $(ls -la "$HOMED/.steam" 2>&1 | tr -s ' ' | tr '\n' '|' | cut -c1-300)"
+L "Steam dir: $(ls "$SD" 2>&1 | head -n 20 | tr '\n' ' ')"
+
+L "--- /usr/lib/steam/bin_steam.sh (Valve's launcher):"
+cat /usr/lib/steam/bin_steam.sh 2>/dev/null | cut -c1-200 | P
+L "--- end of bin_steam.sh"
+
+if [ ! -x "$SD/steamrtarm64/steam" ] && [ ! -f "$SD/steam.sh" ]; then
+  L "tarball top-level entries:"
+  zstd -dc /usr/lib/steam/steam.tar.zst 2>/dev/null | tar -tf - 2>/dev/null | head -n 25 | P
+  FIRST=$(zstd -dc /usr/lib/steam/steam.tar.zst 2>/dev/null | tar -tf - 2>/dev/null | head -n 1)
+  STRIP=0
+  case "$FIRST" in
+    ./) STRIP=0 ;;
+    ./*/*) STRIP=0 ;;
+    */) STRIP=1 ;;      # single top-level directory such as steam/ -> strip it
+  esac
+  L "first entry '$FIRST' -> strip-components=$STRIP"
+  runuser -u "$U" -- mkdir -p "$SD"
+  ( while true; do sleep 20; L "extracting... $(du -sm "$SD" 2>/dev/null | cut -f1) MiB so far"; done ) &
+  WATCH=$!
+  runuser -u "$U" -- sh -c "zstd -dc /usr/lib/steam/steam.tar.zst | tar -xf - -C '$SD' --strip-components=$STRIP" 2>&1 | head -n 20 | P
+  kill $WATCH 2>/dev/null
+  L "extract done: $(du -sm "$SD" 2>/dev/null | cut -f1) MiB ; $(ls "$SD" | head -n 20 | tr '\n' ' ')"
+fi
+
+runuser -u "$U" -- sh -c "mkdir -p '$HOMED/.steam' && ln -sfn '$SD' '$HOMED/.steam/root' && ln -sfn '$SD' '$HOMED/.steam/steam' && ln -sfn '$SD' '$HOMED/.steam/steamrt'" 2>&1 | P
+BIN="$SD/steamrtarm64/steam"
+L "arm64 client: $(ls -l "$BIN" 2>&1) ; elf: $(head -c 20 "$BIN" 2>/dev/null | od -An -tx1 | tr -s ' ' | head -n 2 | tr '\n' ' ')"
+L "steamrtarm64: $(ls "$SD/steamrtarm64" 2>&1 | tr '\n' ' ' | cut -c1-600)"
+L "linuxarm64: $(ls "$SD/linuxarm64" 2>&1 | tr '\n' ' ' | cut -c1-300)"
+L "ldd missing: $(ldd "$BIN" 2>&1 | grep -i -E 'not found|not a dynamic' | tr -s ' \t' ' ' | tr '\n' ',' | cut -c1-500)"
+pkill -f "$SD/steam.sh" 2>/dev/null; pkill -u "$U" -x zenity 2>/dev/null
+
+cat > /tmp/q2steam-run.sh <<RUN
+#!/bin/sh
+export DISPLAY=:0 HOME="$HOMED" XDG_RUNTIME_DIR="/run/user/$UIDN" USER="$U" LOGNAME="$U" SHELL=/bin/bash LANG=C.UTF-8
+export PATH=/usr/local/bin:/usr/bin:/bin
+export STEAMSCRIPT=/usr/lib/steam/bin_steam.sh STEAM_RUNTIME_LOGGER=0 LIBGL_ALWAYS_SOFTWARE=1 VK_ICD_FILENAMES=/nonexistent
+cd "$SD"
+RUN=""
+command -v dbus-run-session >/dev/null 2>&1 && RUN="dbus-run-session --"
+exec \$RUN "$BIN" -gamepadui -noverifyfiles -nobootstrapupdate -inhibitbootstrap -cef-disable-gpu -no-cef-sandbox
+RUN
+chmod 755 /tmp/q2steam-run.sh
+L "launching steam as $U ..."
+( runuser -u "$U" -- /tmp/q2steam-run.sh >/tmp/q2steam.out 2>&1 & )
+
+# wait for the client to exit (or 3 min), then dump everything useful once
+n=0
+while [ $n -lt 36 ]; do
+  sleep 5; n=$((n+1))
+  pgrep -u "$U" -x steam >/dev/null 2>&1 || [ $n -lt 4 ] || break
+done
+L "[diag] steam running now: $(pgrep -u "$U" -a steam 2>&1 | head -n 3 | cut -c1-200 | tr '\n' '|') after ${n}x5s"
+L "[diag] procs: $(ps -u "$U" -o pid=,comm= 2>/dev/null | head -n 20 | tr -s ' ' | tr '\n' ',')"
+L "[diag] ---- /tmp/q2steam.out ($(wc -l < /tmp/q2steam.out) lines):"
+tail -n 60 /tmp/q2steam.out 2>/dev/null | cut -c1-240 | P
+L "[diag] ---- logs dir: $(ls -l "$SD/logs" 2>&1 | tr -s ' ' | tr '\n' '|' | cut -c1-900)"
+for f in "$SD"/logs/*.txt "$HOMED"/.steam/steam/logs/*.txt; do
+  [ -r "$f" ] || continue
+  L "[diag] ---- $f"
+  tail -n 25 "$f" | cut -c1-240 | P
+done
+for d in /tmp/dumps/*.dmp; do
+  [ -r "$d" ] || continue
+  L "[diag] ---- strings $d"
+  strings -n 6 "$d" | grep -i -E 'assert|fail|error|abort|cannot|unable|sigsegv|\.cpp|\.so' | head -n 25 | cut -c1-200 | P
+done
+WH=$(ls "$SD"/ubuntu12_64/steamwebhelper "$SD"/linuxarm64/steamwebhelper "$SD"/steamrtarm64/steamwebhelper 2>/dev/null | head -n 1)
+L "[diag] webhelper=$WH ; ldd missing: $(ldd "$WH" 2>&1 | grep -i 'not found' | tr -s ' \t' ' ' | tr '\n' ',' | cut -c1-400)"
+L "[diag] unpriv userns: $(cat /proc/sys/kernel/unprivileged_userns_clone 2>&1) maxns=$(cat /proc/sys/user/max_user_namespaces 2>&1) shm=$(df -h /dev/shm | tail -n 1 | tr -s ' ')"
+L "[diag] done"
+Q2STEAM_EOF
+  chmod 755 $NR/usr/bin/q2steam
+  cat > $NR/usr/bin/q2blob <<'Q2BLOB_EOF'
+#!/bin/sh
+# q2blob - unpack archives that the PC tools wrote to raw regions of the USB drive:
+#   12 GiB (pack_q2android.py) -> /opt/q2android      13 GiB (pack_dir.py) -> /opt/q2src
+# Each is unpacked once (sha256 recorded).  Log lines: "q2-blob: ...".   Usage: q2blob [device-or-file]
+L() { echo "q2-blob: $*" > /dev/kmsg 2>/dev/null || echo "q2-blob: $*"; }
+DEV="$1"
+if [ -z "$DEV" ]; then
+  for d in /dev/sd?; do
+    [ -b "$d" ] || continue
+    if [ "$(dd if=$d bs=1 skip=440 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "26202620" ]; then DEV=$d; break; fi
+  done
+fi
+[ -n "$DEV" ] || { L "SteamOS drive not found"; exit 1; }
+BS=4096
+unpack() {  # $1 = offset in GiB, $2 = destination
+  OFF=$(( $1 * 1024 * 1024 * 1024 / BS )); DEST=$2
+  HDR=/tmp/q2blob.hdr
+  dd if="$DEV" of=$HDR bs=$BS skip=$OFF count=1 2>/dev/null
+  if [ "$(head -c 7 $HDR)" != "Q2BLOB1" ]; then L "nothing at $1 GiB (for $DEST)"; return 0; fi
+  LEN=$(od -An -tu8 -j8 -N8 $HDR | tr -d ' ')
+  SHA=$(od -An -tx1 -j16 -N32 $HDR | tr -d ' \n')
+  if [ -f $DEST/.sha ] && [ "$(cat $DEST/.sha)" = "$SHA" ]; then L "$DEST already unpacked"; return 0; fi
+  L "unpacking $LEN bytes -> $DEST"
+  dd if="$DEV" bs=$BS skip=$((OFF+1)) count=$(( (LEN + BS - 1) / BS )) 2>/dev/null | head -c "$LEN" > /tmp/q2blob.tgz
+  GOT=$(sha256sum /tmp/q2blob.tgz | cut -d' ' -f1)
+  [ "$GOT" = "$SHA" ] || { L "checksum mismatch for $DEST (got $GOT want $SHA)"; rm -f /tmp/q2blob.tgz; return 1; }
+  rm -rf $DEST; mkdir -p $DEST
+  tar xzmf /tmp/q2blob.tgz -C $DEST 2>&1 | head -n 5 | while read -r l; do L "$l"; done
+  echo "$SHA" > $DEST/.sha; rm -f /tmp/q2blob.tgz
+  L "done $DEST: $(find $DEST -type f | wc -l) files, $(du -sm $DEST | cut -f1) MiB"
+}
+unpack 12 /opt/q2android
+unpack 13 /opt/q2src
+# Adreno microcode pulled from the stock Android (vendor_firmware) -> /lib/firmware, if present
+if [ -d /opt/q2android/firmware ]; then
+  mkdir -p /lib/firmware && cp -n /opt/q2android/firmware/* /lib/firmware/ 2>/dev/null
+  L "firmware: $(ls /opt/q2android/firmware | tr '\n' ' ' | cut -c1-300)"
+fi
+Q2BLOB_EOF
+  chmod 755 $NR/usr/bin/q2blob
+  cat > $NR/usr/bin/q2survey <<'Q2SURVEY_EOF'
+#!/bin/sh
+# q2survey - what can we build with on this image?  Output -> kernel log as "q2-survey: ..." (persistent log + headset).
+L() { echo "q2-survey: $*" > /dev/kmsg; }
+have() { command -v "$1" 2>/dev/null; }
+T=""; for t in gcc g++ cc c++ clang clang++ ld ld.lld ar make cmake ninja samu meson pkg-config python3 pip pip3 bison flex git curl wget patch xz zstd tar gzip unzip; do p=$(have $t); T="$T $t=${p:-NO}"; done
+L "tools:$T"
+L "versions: cc=$(cc --version 2>&1 | head -n 1) | clang=$(clang --version 2>&1 | head -n 1) | py=$(python3 --version 2>&1) | glibc=$(ldd --version 2>&1 | head -n 1) | make=$(make --version 2>&1 | head -n 1)"
+M=""; for m in mako yaml markupsafe setuptools pip packaging numpy; do python3 -c "import $m" 2>/dev/null && M="$M $m=yes" || M="$M $m=NO"; done
+L "python modules:$M"
+H=""; for h in zlib.h expat.h xf86drm.h libdrm/drm.h xcb/xcb.h xcb/dri3.h xcb/present.h xcb/xfixes.h xcb/randr.h xcb/shm.h xcb/sync.h X11/Xlib.h X11/xshmfence.h xshmfence.h vulkan/vulkan.h vulkan/vulkan_core.h wayland-client.h libelf.h linux/msm_kgsl.h drm/msm_drm.h valgrind/valgrind.h unistd.h pthread.h; do
+  f=""; for d in /usr/include /usr/local/include; do [ -e "$d/$h" ] && f=y; done; H="$H $h=${f:-NO}"; done
+L "headers:$H"
+LB=""; for l in libdrm libxcb libxcb-dri3 libxcb-present libxcb-xfixes libxcb-randr libxcb-shm libxcb-sync libX11 libxshmfence libz libexpat libLLVM libelf libvulkan libwayland-client libstdc++; do
+  f=$(ls /usr/lib/$l.so* /usr/lib/aarch64-linux-gnu/$l.so* 2>/dev/null | head -n 1); LB="$LB $l=${f:+yes}"; [ -z "$f" ] && LB="${LB%=}=NO"; done
+L "libs:$LB"
+L "pkg-config: $(pkg-config --list-all 2>/dev/null | cut -d' ' -f1 | grep -i -E 'drm|xcb|x11|zlib|expat|wayland|vulkan|xshmfence|libelf|glesv2|egl' | tr '\n' ' ' | cut -c1-600)"
+L "usr/include size: $(du -sm /usr/include 2>/dev/null | cut -f1) MiB, entries: $(ls /usr/include 2>/dev/null | wc -l); gcc dirs: $(ls /usr/lib/gcc 2>/dev/null | tr '\n' ' ')"
+L "kgsl: $(ls -l /dev/kgsl-3d0 2>&1 | tr -s ' ') ; fw: $(ls /lib/firmware 2>/dev/null | grep -i -E 'a650|gmu|zap' | tr '\n' ' ')"
+L "disk: $(df -h / | tail -n 1 | tr -s ' ') mem: $(grep MemAvailable /proc/meminfo | tr -s ' ')"
+L "done"
+Q2SURVEY_EOF
+  chmod 755 $NR/usr/bin/q2survey
+  cat > $NR/usr/bin/q2sync <<'Q2SYNC_EOF'
+#!/bin/sh
+# q2sync - probe the SyncBoss MCU (IMU/controllers) from Linux.  Output -> kernel log as "q2-sync: ..."
+L() { echo "q2-sync: $*" > /dev/kmsg; }
+L "---- devices"
+for d in /dev/syncboss* /dev/ttyHS* /dev/spidev* /dev/input/event*; do [ -e "$d" ] && L "$(ls -l $d)"; done
+L "---- dmesg syncboss"
+dmesg | grep -i -E "syncboss|nrf|swd|imu|controller" | grep -v "^q2-sync" | tail -30 | while read -r l; do L "k: $l"; done
+L "---- sysfs"
+for f in /sys/devices/virtual/misc/syncboss0/spi/control/* /sys/devices/virtual/misc/syncboss0/*; do [ -f "$f" ] && L "$f = $(head -c 80 $f 2>/dev/null | tr '\n\0' '  ')"; done
+L "---- firmware"
+ls -l /lib/firmware /lib/firmware/syncboss* 2>/dev/null | head -20 | while read -r l; do L "fw: $l"; done
+L "---- device tree / spi"
+L "spi devices: $(ls /sys/bus/spi/devices 2>&1 | tr '\n' ' ')"
+L "spi drivers: $(ls /sys/bus/spi/drivers 2>&1 | tr '\n' ' ')"
+find /proc/device-tree -iname "*syncboss*" -o -iname "*nrf*" -o -iname "*oculus*" 2>/dev/null | head -20 | while read -r l; do L "dt: $l"; done
+L "dt spi nodes: $(ls /proc/device-tree/soc/ 2>/dev/null | grep -i spi | tr '\n' ' ')"
+for n in /proc/device-tree/soc/spi@*; do [ -d "$n" ] && L "dt $n: status=$(cat $n/status 2>/dev/null | tr -d '\0') children=$(ls $n 2>/dev/null | tr '\n' ' ')"; done
+L "cmdline: $(tr ' ' '\n' < /proc/cmdline | grep -i -E 'dtbo|overlay|slot|boot_devices' | tr '\n' ' ')"
+L "config: $(zcat /proc/config.gz 2>/dev/null | grep -E 'CONFIG_SYNCBOSS|CONFIG_SPI_SPIDEV' | tr '\n' ' ')"
+L "---- nrf node"
+N=/proc/device-tree/soc/spi@894000/oculusnrf@0
+for f in $N/*; do [ -f "$f" ] && L "nrf.$(basename $f) = $(head -c 120 $f | tr '\0\n' '|;' | tr -c '[:print:]' '.')"; done
+L "spi0.0: $(ls -l /sys/bus/spi/devices/spi0.0 2>&1 | tr '\n' ' ')"
+L "spi0.0 uevent: $(cat /sys/bus/spi/devices/spi0.0/uevent 2>&1 | tr '\n' ' ')"
+L "spi1.0 uevent: $(cat /sys/bus/spi/devices/spi1.0/uevent 2>&1 | tr '\n' ' ')"
+L "syncboss_spi driver: $(ls /sys/bus/spi/drivers/syncboss_spi 2>&1 | tr '\n' ' ')"
+L "platform sync: $(ls /sys/bus/platform/devices /sys/bus/platform/drivers 2>/dev/null | grep -i -E 'sync|meta|nrf|oculus' | tr '\n' ' ')"
+L "dt root: $(ls /proc/device-tree | tr '\n' ' ')"
+L "misc: $(cat /proc/misc | tr '\n' ';')"
+dmesg | grep -i -E "spi0|syncboss|oculusnrf|meta," | grep -v "q2-sync" | head -20 | while read -r l; do L "k2: $l"; done
+L "---- raw read (4s) of stream0"
+if [ -e /dev/syncboss_stream0 ]; then
+  timeout 4 dd if=/dev/syncboss_stream0 bs=512 count=16 2>/tmp/sync.err | od -A d -t x1 | head -80 | while read -r l; do L "s0: $l"; done
+  L "dd: $(tail -1 /tmp/sync.err)"
+fi
+L "---- done"
+Q2SYNC_EOF
+  chmod 755 $NR/usr/bin/q2sync
+  cat > $NR/usr/bin/q2mesa <<'Q2MESA_EOF'
+#!/bin/sh
+# q2mesa - build Mesa's Turnip Vulkan driver with the KGSL backend (Adreno 650 via /dev/kgsl-3d0) from /opt/q2src.
+# Log lines "q2-mesa: ..." (also full logs in /var/tmp/q2mesa-*.log).  Installs to /opt/q2mesa.  Re-run by hand: q2mesa
+L() { echo "q2-mesa: $*" > /dev/kmsg 2>/dev/null || echo "q2-mesa: $*"; }
+P() { while IFS= read -r l; do L "$l"; done; }
+S=$(find /opt/q2src -maxdepth 2 -name meson.build 2>/dev/null | head -n 1)
+[ -n "$S" ] || { L "no Mesa source under /opt/q2src (run pack_dir.py on the PC)"; exit 0; }
+S=$(dirname "$S"); OUT=/opt/q2mesa; B=/var/tmp/q2mesa-build
+[ -f $OUT/.done ] && { L "already built"; exit 0; }
+L "disk free: $(df -h / | tail -n 1 | tr -s " " | cut -d" " -f4) (need ~3G)"
+L "source $S ($(cat $S/VERSION 2>/dev/null)), cores=$(nproc), mem=$(grep MemAvailable /proc/meminfo | tr -s ' ')"
+cd "$S" || exit 1
+rm -rf $B
+L "meson setup ..."
+meson setup $B --prefix=$OUT -Dbuildtype=release -Db_ndebug=true \
+  -Dvulkan-drivers=freedreno -Dfreedreno-kmds=kgsl,msm -Dgallium-drivers= -Dvulkan-layers= \
+  -Dplatforms=x11 -Dglx=disabled -Dgbm=disabled -Degl=disabled -Dopengl=false -Dgles1=disabled -Dgles2=disabled \
+  -Dllvm=disabled -Dvalgrind=disabled -Dtools= -Dlibunwind=disabled -Dlmsensors=disabled -Dbuild-tests=false \
+  -Dwerror=false > /var/tmp/q2mesa-setup.log 2>&1
+RC=$?
+if [ $RC -ne 0 ]; then L "meson setup FAILED ($RC); last lines:"; tail -n 40 /var/tmp/q2mesa-setup.log | cut -c1-220 | P; exit 1; fi
+L "meson setup ok; building (takes a while)"
+( while true; do sleep 120; L "building... $(tail -n 1 /var/tmp/q2mesa-ninja.log 2>/dev/null | tr '\r' ' ' | cut -c1-120)"; done ) &
+W=$!
+nice -n 10 ninja -C $B -j"$(nproc)" > /var/tmp/q2mesa-ninja.log 2>&1
+RC=$?; kill $W 2>/dev/null
+if [ $RC -ne 0 ]; then L "ninja FAILED ($RC); errors:"; grep -E "FAILED|error:|undefined reference" /var/tmp/q2mesa-ninja.log | head -n 12 | cut -c1-240 | P; tail -n 15 /var/tmp/q2mesa-ninja.log | cut -c1-220 | P; exit 1; fi
+ninja -C $B install > /var/tmp/q2mesa-install.log 2>&1 || { L "install failed"; tail -n 10 /var/tmp/q2mesa-install.log | P; exit 1; }
+touch $OUT/.done
+L "BUILD OK: $(find $OUT -name 'libvulkan_freedreno*' -o -name 'freedreno_icd*.json' | tr '\n' ' ')"
+# test it: Turnip over KGSL
+ICD=$(find $OUT -name 'freedreno_icd*.json' | head -n 1)
+L "vulkaninfo test with ICD $ICD:"
+VK_ICD_FILENAMES=$ICD TU_FORCE_KGSL=1 timeout 60 vulkaninfo 2>&1 | grep -i -E "deviceName|driverName|driverInfo|apiVersion|ERROR|failed|no valid" | head -n 12 | cut -c1-200 | P
+Q2MESA_EOF
+  chmod 755 $NR/usr/bin/q2mesa
+  rm -f $NR/etc/systemd/system/multi-user.target.wants/q2-probe.service
+  # typing neofetch/fastfetch in the xterm works: the VR image has neither, so point them at our q2fetch
+  for n in neofetch fastfetch; do [ -e $NR/usr/bin/$n ] || ln -s q2fetch $NR/usr/bin/$n; done
+  cat > $NR/etc/systemd/system/q2-desktop.service <<'UNIT'
+[Unit]
+Description=Quest 2 port: software X desktop on the headset panel
+[Service]
+Type=simple
+ExecStart=/bin/sh -c 'sleep 30; exec /usr/bin/q2desktop'
+[Install]
+WantedBy=multi-user.target
+UNIT
+  ln -sf ../q2-desktop.service $NR/etc/systemd/system/multi-user.target.wants/q2-desktop.service
+  log "fixup: q2desktop installed (starts ~30 s after boot; q2_desktop=0 disables)"
+fi
+
+# 3c. dump the config that decides what fails, so it lands in the persistent log (read it with read_q2log.py)
+dumpf /etc/fstab 80
+log "---- mount units:"; ls $NR/usr/lib/systemd/system 2>/dev/null | grep -E '\.mount$|\.automount$' | while IFS= read -r l; do log "|$l"; done
+for f in /usr/lib/systemd/system/home.mount /usr/lib/systemd/system/var.mount /usr/lib/systemd/system/efi.mount \
+         /usr/lib/systemd/system/dbus-broker.service /usr/lib/systemd/system/systemd-logind.service; do dumpf "$f" 40; done
+log "---- generators: $(ls $NR/usr/lib/systemd/system-generators $NR/etc/systemd/system-generators 2>/dev/null | tr '\n' ' ')"
+
+INIT=/usr/lib/systemd/systemd
+[ -x "$NR$INIT" ] || INIT=/sbin/init
+[ -x "$NR$INIT" ] || fail "no init found in rootfs (looked for /usr/lib/systemd/systemd and /sbin/init)"
+log "switching root (mode=$ROOTMODE); init=$INIT"
+
+mkdir -p /mnt/newroot/proc /mnt/newroot/sys /mnt/newroot/dev /mnt/newroot/run /mnt/newroot/tmp
+mount --move /proc /mnt/newroot/proc
+mount --move /sys /mnt/newroot/sys
+mount --move /dev /mnt/newroot/dev
+mount --move /run /mnt/newroot/run
+if [ "$ROOTMODE" = "ov" ]; then
+  mkdir -p /mnt/newroot/run/initramfs/rootfs /mnt/newroot/run/initramfs/ov
+  mount --move /mnt/rootfs /mnt/newroot/run/initramfs/rootfs 2>/dev/null
+  mount --move /mnt/ov /mnt/newroot/run/initramfs/ov 2>/dev/null
+fi
+exec switch_root /mnt/newroot "$INIT"
+log "switch_root failed"
+serial_shell

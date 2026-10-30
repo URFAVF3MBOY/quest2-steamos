@@ -1,0 +1,13 @@
+diff --git a/techpack/audio/soc/Kbuild b/techpack/audio/soc/Kbuild
+index 064dfa208..573850f5c 100644
+--- a/techpack/audio/soc/Kbuild
++++ b/techpack/audio/soc/Kbuild
+@@ -154,6 +154,8 @@ INCS +=		$(COMMON_INC) \
+ 		$(UAPI_INC)
+ 
+ EXTRA_CFLAGS += $(INCS)
++# pinctrl-lpi.c includes the pinctrl subsystem's private core.h / pinctrl-utils.h
++EXTRA_CFLAGS += -I$(srctree)/drivers/pinctrl
+ 
+ 
+ CDEFINES +=	-DANI_LITTLE_BYTE_ENDIAN \

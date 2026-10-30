@@ -1,0 +1,7 @@
+#!/bin/sh
+# Mirror the kernel log onto the headset display (follows new messages).
+# usage: screen-log [-r 0|90|180|270] [-s scale -c cols -n rows]
+killall qscreen 2>/dev/null
+qscreen "$@" -k > /tmp/qscreen.log 2>&1 &
+sleep 3
+cat /tmp/qscreen.log

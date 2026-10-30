@@ -1,0 +1,85 @@
+--- buildkit/src/hmd/driver_q2hmd.cpp	2026-10-11 11:32:23.739160236 -0400
++++ hmd216/driver_q2hmd.cpp	2026-10-13 05:11:29.174042862 -0400
+@@ -279,6 +279,33 @@
+ 	if (have[slot]) { for (int i = 0; i < 16; i++) o[i] = last[slot][i]; return true; }   // same data: counts as stale
+ 	return false;
+ }
++// desk-216: controller POSITION from the tracking cameras (q2ctltrack): /dev/shm/q2ctlpos = seq u32 (seqlock),
++// u32 version, then per hand (left +8, right +72) f64 count, x, y, z (metres, headset frame: x right, y up, z back),
++// dots, cameras.  Used while it keeps updating; otherwise the arm model below takes over again.
++static volatile uint32_t *g_cpos;
++static bool read_ctlpos(int slot, double p[3], double *count)
++{
++	if (!g_cpos) {
++		static int tries;
++		if (tries++ % 500) return false;
++		int fd = open("/dev/shm/q2ctlpos", 0);
++		if (fd < 0) return false;
++		void *m = mmap(0, 4096, 1, 1, fd, 0);
++		close(fd);
++		if (m == (void *)-1) return false;
++		g_cpos = (volatile uint32_t *)m;
++		Log("q2hmd: camera controller positions found (/dev/shm/q2ctlpos)\n");
++	}
++	for (int k = 0; k < 1000; k++) {
++		uint32_t s0 = __atomic_load_n(g_cpos, __ATOMIC_ACQUIRE);
++		if (s0 & 1) continue;
++		volatile double *d = (volatile double *)((volatile char *)g_cpos + 8 + slot * 64);
++		double c = d[0], x = d[1], y = d[2], z = d[3];
++		__atomic_thread_fence(__ATOMIC_ACQUIRE);
++		if (__atomic_load_n(g_cpos, __ATOMIC_ACQUIRE) == s0) { *count = c; p[0] = x; p[1] = y; p[2] = z; return c > 0; }
++	}
++	return false;
++}
+ static void q_yaw(const double q[4], double o[4])        // heading of q (rotation about +y)
+ {
+ 	double f[3]; const double fw[3] = { 0, 0, -1 }; qrot(q, fw, f);
+@@ -324,6 +351,7 @@
+ public:
+ 	explicit Q2Ctl(int s) : slot(s) {}
+ 	int slot;                                              // 0 left, 1 right
++	double camcnt = -1, campos[3] = { 0, 0, 0 }, camw = 0; int camstale = 100000; bool camuse = false; int camdbg = 0, camrej = 0;   // desk-216/219
+ 	uint32_t id = k_unTrackedDeviceIndexInvalid;
+ 	PropertyContainerHandle_t cont = 0;
+ 	enum { NC = 40 };
+@@ -413,6 +441,31 @@
+ 			const double el[3] = { slot ? 0.17 : -0.17, -0.45, -0.05 }, fa[3] = { 0, 0, -0.30 };
+ 			qrot(yq, el, e); qrot(aim, fa, f);
+ 			for (int i = 0; i < 3; i++) pos[i] = hp[i] + e[i] + f[i];
++			// camera position: fresh = its counter moved within the last 0.25 s (this runs at 500 Hz)
++			double cp[3], cc;
++			if (read_ctlpos(slot, cp, &cc)) {
++				if (cc != camcnt) { camcnt = cc; camstale = 0; } else if (camstale < 100000) camstale++;
++				// desk-219: outlier gate - a camera position more than 0.6 m from the arm model is ignored
++				double wp[3]; qrot(qh, cp, wp);
++				double dd = 0; for (int i = 0; i < 3; i++) { double d = hp[i] + wp[i] - pos[i]; dd += d * d; }
++				if (dd > 0.36) { if (camstale < 125) camstale = 125; ++camrej; }
++				if (++camdbg % 2500 == 0) {        // every ~5 s: aim direction vs where the cameras put the controller
++					const double fwd[3] = { 0, 0, -1 }; double af[3]; qrot(aim, fwd, af);
++					double hq[4] = { qh[0], -qh[1], -qh[2], -qh[3] }, rel[3], ar[3], armrel[3];
++					for (int i = 0; i < 3; i++) armrel[i] = pos[i] - hp[i];
++					qrot(hq, af, ar); qrot(hq, armrel, rel);
++					Log("q2hmd: %s axis: aim (head frame) %+.2f %+.2f %+.2f | camera pos (head frame) %+.2f %+.2f %+.2f %s | arm model %+.2f %+.2f %+.2f | rejected %d\n",
++						slot ? "right" : "left", ar[0], ar[1], ar[2], cp[0], cp[1], cp[2], camstale < 125 ? "fresh" : "stale", rel[0], rel[1], rel[2], camrej);
++				}
++				if (camstale < 125) {
++					for (int i = 0; i < 3; i++) campos[i] = hp[i] + wp[i];
++					if (!camuse) { Log("q2hmd: %s hand: position from the cameras\n", slot ? "right" : "left"); camuse = true; }
++				} else if (camuse && camstale > 500) { Log("q2hmd: %s hand: cameras lost it, arm model\n", slot ? "right" : "left"); camuse = false; }
++				// blend: 0.25 s fade between arm model and camera position so a lost/found controller does not jump
++				double target = camstale < 125 ? 1.0 : 0.0;
++				camw += (target - camw) * 0.008;
++				if (camw > 0.001) for (int i = 0; i < 3; i++) pos[i] = pos[i] * (1 - camw) + campos[i] * camw;
++			}
+ 			int b = (int)o[14];
+ 			if (b != lastbatt && b >= 0) { lastbatt = b; setVal<float>(cont, Prop_DeviceBatteryPercentage_Float, b / 100.0f, k_unFloatPropertyTag); }
+ 		} else if (mouse) {
+@@ -587,7 +640,7 @@
+ 		if (frames % 30 == 0 && hmd) hmd->PollIpd();
+ 		// q2vrtest touches /dev/shm/q2ctl-go once vrserver has answered Steam's SetActionManifestPath (fallback: ~90 s)
+ 		bool go = false;
+-		if (!ctl_added && frames % 25 == 0) { int fd = open("/dev/shm/q2ctl-go", 0); if (fd >= 0) { close(fd); go = true; } else if (frames > 9000) go = true; }
++		if (!ctl_added && frames % 25 == 0) { int fd = open("/dev/shm/q2ctl-go", 0); if (fd >= 0) { close(fd); go = true; } else if (frames > 1200) go = true; /* desk-217: 90 s -> ~15 s */ }
+ 		if (!ctl_added && go && envi("Q2VR_CTL", 1)) {
+ 			ctl_added = true;
+ 			for (int s = 0; s < 2; s++) {

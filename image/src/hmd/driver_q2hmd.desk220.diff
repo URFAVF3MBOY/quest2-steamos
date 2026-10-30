@@ -1,0 +1,142 @@
+--- ../hmd216/driver_q2hmd.cpp	2026-10-13 05:11:29.174042862 -0400
++++ src/hmd/driver_q2hmd.cpp	2026-10-13 21:48:45.021646957 -0400
+@@ -306,6 +306,59 @@
+ 	}
+ 	return false;
+ }
++// desk-220 (q2ctltrack v2): per hand at +256 + 64*h: count, qw qx qy qz = rotation LED-model frame -> headset frame;
++// at +512 + 128*h: IMU axis index (-1 = not learned yet), A[9] (v_model = A v_imu)
++static bool read_ctlrot(int slot, double q[4], double A[9], int *axis)
++{
++	if (!g_cpos) return false;
++	for (int k = 0; k < 1000; k++) {
++		uint32_t s0 = __atomic_load_n(g_cpos, __ATOMIC_ACQUIRE);
++		if (s0 & 1) continue;
++		uint32_t ver = g_cpos[1];
++		volatile double *d = (volatile double *)((volatile char *)g_cpos + 256 + slot * 64);
++		volatile double *a = (volatile double *)((volatile char *)g_cpos + 512 + slot * 128);
++		double c = d[0], t[4] = { d[1], d[2], d[3], d[4] }, ax = a[0], m[9]; for (int i = 0; i < 9; i++) m[i] = a[1 + i];
++		__atomic_thread_fence(__ATOMIC_ACQUIRE);
++		if (__atomic_load_n(g_cpos, __ATOMIC_ACQUIRE) != s0) continue;
++		if (ver < 2 || c <= 0) return false;
++		for (int i = 0; i < 4; i++) q[i] = t[i]; for (int i = 0; i < 9; i++) A[i] = m[i]; *axis = (int)ax;
++		return true;
++	}
++	return false;
++}
++// q2headtrack (desk-220): at 2048 + 128*slot of /dev/shm/q2ctl: counter, IMU-frame up, IMU-frame orientation (world)
++static bool read_ctlbody(int slot, double q[4])
++{
++	if (!g_ctl) return false;
++	for (int k = 0; k < 1000; k++) {
++		uint32_t s0 = __atomic_load_n(g_ctl, __ATOMIC_ACQUIRE);
++		if (s0 & 1) continue;
++		volatile double *d = (volatile double *)((volatile char *)g_ctl + 2048 + slot * 128);
++		double c = d[0], t[4] = { d[4], d[5], d[6], d[7] };
++		__atomic_thread_fence(__ATOMIC_ACQUIRE);
++		if (__atomic_load_n(g_ctl, __ATOMIC_ACQUIRE) != s0) continue;
++		if (c <= 0 || t[0] * t[0] + t[1] * t[1] + t[2] * t[2] + t[3] * t[3] < 0.5) return false;
++		for (int i = 0; i < 4; i++) q[i] = t[i];
++		return true;
++	}
++	return false;
++}
++static void m2q(const double R[9], double q[4])
++{
++	double tr = R[0] + R[4] + R[8];
++	if (tr > 0) { double s = __builtin_sqrt(tr + 1) * 2; q[0] = s / 4; q[1] = (R[7] - R[5]) / s; q[2] = (R[2] - R[6]) / s; q[3] = (R[3] - R[1]) / s; }
++	else if (R[0] > R[4] && R[0] > R[8]) { double s = __builtin_sqrt(1 + R[0] - R[4] - R[8]) * 2; q[0] = (R[7] - R[5]) / s; q[1] = s / 4; q[2] = (R[1] + R[3]) / s; q[3] = (R[2] + R[6]) / s; }
++	else if (R[4] > R[8]) { double s = __builtin_sqrt(1 + R[4] - R[0] - R[8]) * 2; q[0] = (R[2] - R[6]) / s; q[1] = (R[1] + R[3]) / s; q[2] = s / 4; q[3] = (R[5] + R[7]) / s; }
++	else { double s = __builtin_sqrt(1 + R[8] - R[0] - R[4]) * 2; q[0] = (R[3] - R[1]) / s; q[1] = (R[2] + R[6]) / s; q[2] = (R[5] + R[7]) / s; q[3] = s / 4; }
++}
++static void qnorm4(double q[4]) { double n = __builtin_sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]); if (n < 1e-12) { q[0] = 1; q[1] = q[2] = q[3] = 0; return; } for (int i = 0; i < 4; i++) q[i] /= n; }
++// a += k * (b - a) on the short arc, normalised (nlerp)
++static void qblend(double a[4], const double b[4], double k)
++{
++	double d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3], s = d < 0 ? -1 : 1;
++	for (int i = 0; i < 4; i++) a[i] += k * (s * b[i] - a[i]);
++	qnorm4(a);
++}
+ static void q_yaw(const double q[4], double o[4])        // heading of q (rotation about +y)
+ {
+ 	double f[3]; const double fw[3] = { 0, 0, -1 }; qrot(q, fw, f);
+@@ -352,6 +405,9 @@
+ 	explicit Q2Ctl(int s) : slot(s) {}
+ 	int slot;                                              // 0 left, 1 right
+ 	double camcnt = -1, campos[3] = { 0, 0, 0 }, camw = 0; int camstale = 100000; bool camuse = false; int camdbg = 0, camrej = 0;   // desk-216/219
++	// desk-220 orientation: IMU (model frame via the learned axes) with its heading corrected by the cameras
++	double yawc[4] = { 1, 0, 0, 0 }; bool yawset = false; double visq[4] = { 1, 0, 0, 0 }; double visrot = -1; int visstale = 100000;
++	int rotmode = -1; unsigned nyaw = 0, ntiltrej = 0; double tiltsum = 0; double m2r_q[4] = { 1, 0, 0, 0 }, m2r_t[3] = { 0, 0, 0 };
+ 	uint32_t id = k_unTrackedDeviceIndexInvalid;
+ 	PropertyContainerHandle_t cont = 0;
+ 	enum { NC = 40 };
+@@ -406,6 +462,17 @@
+ 			qrot(gi, gt, it); it[0] = -it[0]; it[1] = -it[1]; it[2] = -it[2];   // inverse(grip).t
+ 			qmul(r60, gi, dfh_q); qrot(r60, it, dfh_t);
+ 		}
++		{   // desk-220: /var/lib/q2/ctl_model2raw "rx ry rz tx ty tz" (deg, m): LED-model frame -> SteamVR controller frame
++			int fd = open("/var/lib/q2/ctl_model2raw", 0); char b[160]; long n = fd >= 0 ? read(fd, b, sizeof b - 1) : 0; if (fd >= 0) close(fd);
++			double v[6] = { 0, 0, 0, 0, 0, 0 }; int nv = 0;
++			if (n > 0) { b[n] = 0; const char *s = b; while (*s && nv < 6) { while (*s == ' ' || *s == '\n' || *s == '\t') s++; if (!*s) break;
++				double sg = 1, x = 0, sc = 1; if (*s == '-') { sg = -1; s++; } while (*s >= '0' && *s <= '9') x = x * 10 + (*s++ - '0'); if (*s == '.') { s++; while (*s >= '0' && *s <= '9') { x = x * 10 + (*s++ - '0'); sc *= 10; } }
++				v[nv++] = sg * x / sc; while (*s && *s != ' ' && *s != '\n' && *s != '\t') s++; } }
++			const double D = 3.14159265358979 / 360;
++			double qx[4] = { q_cos(v[0] * D), q_sin(v[0] * D), 0, 0 }, qy[4] = { q_cos(v[1] * D), 0, q_sin(v[1] * D), 0 }, qz[4] = { q_cos(v[2] * D), 0, 0, q_sin(v[2] * D) }, t1[4];
++			qmul(qz, qy, t1); qmul(t1, qx, m2r_q); m2r_t[0] = v[3]; m2r_t[1] = v[4]; m2r_t[2] = v[5];
++			if (nv) Log("q2hmd: %s controller: model->controller offset %.1f %.1f %.1f deg, %.3f %.3f %.3f m (ctl_model2raw)\n", slot ? "right" : "left", v[0], v[1], v[2], v[3], v[4], v[5]);
++		}
+ 		Log("q2hmd: %s controller (%s, %s, model %s) activated id %u, %d input components\n", slot ? "right" : "left", type,
+ 		    prof && *prof ? prof : "{oculus}/input/touch_profile.json", rm, id, nc);
+ 		return VRInitError_None;
+@@ -466,6 +533,51 @@
+ 				camw += (target - camw) * 0.008;
+ 				if (camw > 0.001) for (int i = 0; i < 3; i++) pos[i] = pos[i] * (1 - camw) + campos[i] * camw;
+ 			}
++			// desk-220 orientation.  Modes: 2 = controller IMU in the LED-model frame (axes learned by q2ctltrack) with its
++			// heading pulled toward the cameras' heading; 1 = camera orientation alone (IMU axes not learned yet);
++			// 0 = the old IMU aim (no camera orientation yet).
++			{
++				double cq[4], A[9]; int axis = -1; bool vfresh = false;
++				if (read_ctlrot(slot, cq, A, &axis)) {
++					if (camcnt != visrot) { visrot = camcnt; visstale = 0; vfresh = true; } else if (visstale < 100000) visstale++;
++				}
++				bool vok = visstale < 125 && camstale < 125;        // camera pose fresh (0.25 s) and not rejected by the gate
++				double vw[4]; if (vok || vfresh) { qmul(qh, cq, vw); }
++				double bq[4]; int mode = 0;
++				if (axis >= 0 && read_ctlbody(slot, bq)) {
++					double At[9] = { A[0], A[3], A[6], A[1], A[4], A[7], A[2], A[5], A[8] }, qa[4]; m2q(At, qa); qnorm4(qa);
++					double qi[4]; qmul(bq, qa, qi);                  // IMU orientation of the model frame (heading not yet right)
++					if (vfresh && camstale < 125) {
++						double cur[4]; qmul(yawc, qi, cur);
++						double inv[4] = { cur[0], -cur[1], -cur[2], -cur[3] }, D[4]; qmul(vw, inv, D);   // camera * inverse(imu)
++						double tw[4] = { D[0], 0, D[2], 0 }; qnorm4(tw);                      // heading part (about up)
++						double tinv[4] = { tw[0], -tw[1], -tw[2], -tw[3] }, sw[4]; qmul(tinv, D, sw);   // tilt part
++						if (sw[0] * sw[0] > 0.883) {                    // tilt agrees within ~40 deg: correct the heading
++							double ny[4]; qmul(tw, yawc, ny);
++							if (!yawset) { for (int i = 0; i < 4; i++) yawc[i] = ny[i]; yawset = true; } else qblend(yawc, ny, 0.08);
++							nyaw++; tiltsum += 2 * __builtin_sqrt(1 - (sw[0] * sw[0] > 1 ? 1 : sw[0] * sw[0])) * 57.3;
++						} else ntiltrej++;
++					}
++					qmul(yawc, qi, aim); mode = 2;
++				} else if (vok) {
++					if (rotmode != 1) { for (int i = 0; i < 4; i++) visq[i] = vw[i]; }
++					else if (vfresh) qblend(visq, vw, 0.5);
++					for (int i = 0; i < 4; i++) aim[i] = visq[i]; mode = 1;
++				}
++				if (mode != rotmode) {
++					Log("q2hmd: %s controller orientation: %s\n", slot ? "right" : "left", mode == 2 ? "controller IMU, heading from the cameras" :
++					    mode == 1 ? "cameras only (IMU axes not learned yet - move the controller around in view)" : "controller IMU only (old aim)");
++					rotmode = mode;
++				}
++				if (mode) {                                      // aim now holds the LED-model frame: no aim->raw offset
++					p.qDriverFromHeadRotation.w = m2r_q[0]; p.qDriverFromHeadRotation.x = m2r_q[1];
++					p.qDriverFromHeadRotation.y = m2r_q[2]; p.qDriverFromHeadRotation.z = m2r_q[3];
++					for (int i = 0; i < 3; i++) p.vecDriverFromHeadTranslation[i] = m2r_t[i];
++				}
++				if (camdbg % 2500 == 1)
++					Log("q2hmd: %s orientation mode %d, IMU axis %d, heading updates %u (tilt diff avg %.1f deg), rejected %u\n", slot ? "right" : "left",
++					    mode, axis, nyaw, nyaw ? tiltsum / nyaw : 0.0, ntiltrej);
++			}
+ 			int b = (int)o[14];
+ 			if (b != lastbatt && b >= 0) { lastbatt = b; setVal<float>(cont, Prop_DeviceBatteryPercentage_Float, b / 100.0f, k_unFloatPropertyTag); }
+ 		} else if (mouse) {

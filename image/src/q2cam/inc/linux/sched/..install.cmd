@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/linux/sched/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/sched /tmp/khsrc/include/uapi/linux/sched types.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/sched ./include/generated/uapi/linux/sched ; touch /tmp/khdr/include/linux/sched/.install

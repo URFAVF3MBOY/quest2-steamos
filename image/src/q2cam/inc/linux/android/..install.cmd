@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/linux/android/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/android /tmp/khsrc/include/uapi/linux/android binder.h binderfs.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/android ./include/generated/uapi/linux/android ; touch /tmp/khdr/include/linux/android/.install

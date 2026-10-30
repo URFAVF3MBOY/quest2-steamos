@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/linux/nfc/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/nfc /tmp/khsrc/include/uapi/linux/nfc nfcinfo.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/nfc ./include/generated/uapi/linux/nfc ; touch /tmp/khdr/include/linux/nfc/.install

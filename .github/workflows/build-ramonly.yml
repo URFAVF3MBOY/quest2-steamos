@@ -1,0 +1,119 @@
+name: build-quest2-ramonly
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_commit:
+        description: "oculus-linux-kernel commit (oculus-quest2-kernel-master)"
+        default: "6e428607392d72708bc95cb7126768494c6b5ac0"
+      cmdline_extra:
+        description: "extra kernel cmdline tokens appended to the stock cmdline"
+        default: "androidboot.q2_ram=1 loglevel=7"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      MAKEVARS: ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- REAL_CC=clang
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            gcc-aarch64-linux-gnu git curl cpio rsync kmod \
+            device-tree-compiler python3 dwarves zip \
+            qemu-user-static binfmt-support
+
+      - name: Fetch Meta Quest 2 kernel source
+        run: |
+          mkdir src && cd src
+          git init -q
+          git remote add origin https://github.com/facebookincubator/oculus-linux-kernel.git
+          git fetch --depth 1 origin "${{ inputs.kernel_commit }}"
+          git checkout -q FETCH_HEAD
+          git log -1 --format='%H %cd %s'
+
+      - name: Fetch clang r450784e (AOSP prebuilt)
+        run: |
+          mkdir -p toolchain/clang && cd toolchain
+          curl -fsSL -o clang.tar.gz \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master-kernel-build-2022/clang-r450784e.tar.gz"
+          tar -xzf clang.tar.gz -C clang
+          ./clang/bin/clang --version | head -n 1
+
+      - name: Apply source fixes
+        working-directory: src
+        run: |
+          # the fixes patch is per kernel generation: try the newer-commit patch, then the older-commit one
+          if git apply --check ../patches/oculus-kernel-fixes.patch 2>/dev/null; then
+            git apply ../patches/oculus-kernel-fixes.patch; echo "applied oculus-kernel-fixes.patch"
+          else
+            git apply --check ../patches/oculus-kernel-fixes-old.patch
+            git apply ../patches/oculus-kernel-fixes-old.patch; echo "applied oculus-kernel-fixes-old.patch"
+          fi
+
+      - name: Configure kernel
+        working-directory: src
+        run: |
+          export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$PATH"
+          cp ../config/kernel.config .config
+          sed -i 's/^CONFIG_SYSTEM_TRUSTED_KEYS=.*/CONFIG_SYSTEM_TRUSTED_KEYS=""/' .config
+          grep -E '^CONFIG_[A-Z0-9_]+=y$' ../config/ramonly.fragment \
+            | sed -E 's/^CONFIG_([A-Z0-9_]+)=y$/\1/' \
+            | while read -r opt; do ./scripts/config --file .config -e "$opt"; done
+          make $MAKEVARS olddefconfig
+          echo "--- requested options after olddefconfig:"
+          ok=1
+          for opt in DEVTMPFS USB_CONFIGFS_ACM USB_CONFIGFS_ECM USB_CONFIGFS_RNDIS DEBUG_FS; do
+            if grep -q "^CONFIG_${opt}=y" .config; then echo "ok   $opt"; else echo "MISSING $opt"; fi
+          done
+          grep -q '^CONFIG_DEVTMPFS=y' .config && grep -q '^CONFIG_USB_CONFIGFS_ACM=y' .config \
+            || { echo "required options did not stick (unmet dependencies?)"; exit 1; }
+
+      - name: Build kernel Image
+        shell: bash
+        working-directory: src
+        run: |
+          export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$PATH"
+          # shell: bash => pipefail, so a failing make fails the step; full log is streamed live
+          make $MAKEVARS -j"$(nproc)" Image 2>&1 | tee ../kernel-build.log
+          ls -l arch/arm64/boot/Image
+
+      - name: Build initramfs (Alpine + bash + neofetch)
+        run: bash scripts/build_initramfs.sh initramfs.cpio.gz
+
+      - name: Pack boot image
+        run: |
+          python3 scripts/repack_boot.py \
+            --header stock/header_page.bin --dtb stock/dtb.bin \
+            --kernel src/arch/arm64/boot/Image --ramdisk initramfs.cpio.gz \
+            --cmdline-append "${{ inputs.cmdline_extra }}" \
+            --out boot_ramonly.img
+          ls -l boot_ramonly.img
+          sha256sum boot_ramonly.img
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quest2-ramonly
+          path: |
+            boot_ramonly.img
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-debug
+          path: |
+            src/.config
+            src/System.map
+            kernel-build.log
+          if-no-files-found: ignore

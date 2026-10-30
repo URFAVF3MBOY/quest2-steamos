@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/misc/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/misc /tmp/khsrc/include/uapi/misc cxl.h ocxl.h wigig_sensing_uapi.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/misc ./include/generated/uapi/misc ; touch /tmp/khdr/include/misc/.install

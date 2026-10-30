@@ -1,0 +1,62 @@
+#!/bin/bash
+# desk-286/287: poor man's profiler for the VR render path.  Every ~12 s while vrcompositor runs: per-thread CPU of the
+# compositor, Steam's web UI GPU process, vrserver, steam and the display daemons; for the busiest threads, 60 samples of
+# what they are doing (/proc/<tid>/syscall: running in user code, or which syscall on which file) and the library their
+# user PC is in.  Plus GPU busy/clock and temperature.  -> /var/log/q2/vrthreads.txt (last ~40 rounds).  Off: /var/lib/q2/novrprof
+O=/var/log/q2/vrthreads.txt; T=/run/q2vrprof.tmp; : > $O
+pids() { for p in $(pgrep -x vrcompositor) $(pgrep -x vrserver) $(pgrep -f 'steamwebhelper.*type=gpu-process') $(pgrep -x steam) $(pgrep -f 'vrwebhelper.*type=gpu-process') $(pgrep -f q2kmsd) $(pgrep -f q2gpuwarp) $(pgrep -x Xvfb) $(pgrep -f q2metapose); do echo $p; done | sort -u; }
+tick() { local t; for t in /proc/$1/task/*; do [ -r $t/stat ] && awk -v tid=${t##*/} '{s=$0; sub(/.*\) /,"",s); split(s,a," "); print tid, a[12]+a[13]}' $t/stat 2>/dev/null; done; }
+lib() { # $1 pid, $2 hex pc -> mapping name+offset (pure bash: no gawk needed)
+  local pc=$(( $2 )) r perm off dev ino n lo hi
+  while read -r r perm off dev ino n; do lo=$(( 0x${r%-*} )); hi=$(( 0x${r#*-} ))
+    if (( pc >= lo && pc < hi )); then printf '%s+0x%x\n' "${n##*/}" $(( pc - lo + 0x$off )); return; fi
+  done < /proc/$1/maps 2>/dev/null; }
+# executable mappings of one process, loaded once; m <hex> -> lib+offset
+maps() { ML=(); MH=(); MN=(); MO=(); local r perm off dev ino n
+  while read -r r perm off dev ino n; do [[ $perm == *x* ]] || continue; ML+=($(( 0x${r%-*} ))); MH+=($(( 0x${r#*-} ))); MO+=($(( 0x$off ))); n=${n##*/}; MN+=("${n:-anon}"); done < /proc/$1/maps; }
+m() { local pc=$(( $1 )) i; for i in "${!ML[@]}"; do if (( pc >= ML[i] && pc < MH[i] )); then printf '%s+0x%x' "${MN[i]}" $(( pc - ML[i] + MO[i] )); return; fi; done; printf '?'; }
+while :; do
+  [ -e /var/lib/q2/novrprof ] && exit 0
+  if ! pgrep -x vrcompositor >/dev/null; then sleep 5; continue; fi
+  P=$(pids); declare -A A B NAME OWN
+  for p in $P; do while read tid v; do A[$tid]=$v; OWN[$tid]=$p; done < <(tick $p); done
+  b0=$(cat /sys/class/kgsl/kgsl-3d0/gpubusy 2>/dev/null); sleep 10
+  b1=$(cat /sys/class/kgsl/kgsl-3d0/gpubusy 2>/dev/null)
+  for p in $P; do while read tid v; do B[$tid]=$v; done < <(tick $p); done
+  {
+    echo "=== $(date +%T)  gpu clk $(cat /sys/class/kgsl/kgsl-3d0/gpuclk 2>/dev/null)  gpubusy(now) $b1  temp $(cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null | sort -n | tail -1)  load $(cut -d' ' -f1-3 /proc/loadavg)"
+    for tid in "${!B[@]}"; do d=$(( ${B[$tid]} - ${A[$tid]:-${B[$tid]}} )); [ $d -gt 5 ] || continue
+      p=${OWN[$tid]}; echo "$d $p $tid $(cat /proc/$p/comm 2>/dev/null)/$(cat /proc/$p/task/$tid/comm 2>/dev/null)"; done | sort -rn | head -14 | awk '{printf "  %5.1f%% cpu  pid %s tid %s  %s\n", $1/10, $2, $3, $4}' > $T
+    cat $T
+    # what the top 4 threads are doing: 60 samples each
+    head -4 $T | while read pct _ _ p _ tid name; do
+      for i in $(seq 60); do
+        s=$(cat /proc/$p/task/$tid/syscall 2>/dev/null) || break
+        set -- $s
+        if [ "$1" = running ]; then echo "user-code"
+        else n=$1; pc=${!#}; fdn=""
+          case $n in 29|73|7[0-9]|63|64|98|422) fdn=$(readlink /proc/$p/fd/$(( $2 )) 2>/dev/null | sed 's/.*\///');; esac
+          echo "sys$n${fdn:+($fdn)} @$(lib $p $pc)"; fi
+        sleep 0.05
+      done | sort | uniq -c | sort -rn | head -6 | sed "s|^|      [$name] |"
+      # desk-287: where its user code runs - 150 ptrace samples of pc and return address (q2pcsample), by library+offset
+      if [ -x /usr/bin/q2pcsample ] && [ ! -e /var/lib/q2/nopcsample ]; then
+        maps $p
+        /usr/bin/q2pcsample $tid 150 20000 2>/dev/null > $T.raw
+        while read pc lr rest; do echo "$(m $pc) <- $(m $lr)"; done < $T.raw > $T.pc
+        # desk-289: ppoll calls caught: "P t<timeout ms hex> fd:revents-of-the-last-call ..." (revents != 0 = was ready)
+        if grep -q ' P ' $T.raw; then echo "      [$name] ppoll (timeout ms, fd:last revents), $(grep -c ' P ' $T.raw) of 150 samples:"
+          grep -o ' P .*' $T.raw | sort | uniq -c | sort -rn | head -6 | sed 's|^|        |'
+          for f in $(grep -o ' P .*' $T.raw | grep -o '0x[0-9a-f]*:' | tr -d : | sort -u | head -12); do echo "        fd $((f)) = $(readlink /proc/$p/fd/$((f)) 2>/dev/null) $(grep -h -E '^(eventfd-count|clockid)' /proc/$p/fdinfo/$((f)) 2>/dev/null | tr '\n\t' '  ')"; done
+        fi
+        echo "      [$name] by library:"; sed 's/+0x[0-9a-f]* <-.*//' $T.pc | sort | uniq -c | sort -rn | head -6 | sed 's|^|        |'
+        echo "      [$name] hottest spots (pc <- caller):"; sed -E 's/(\+0x[0-9a-f]*)[0-9a-f]( <-)/\10\2/' $T.pc | sort | uniq -c | sort -rn | head -12 > $T.hot
+        if [ -f /usr/bin/q2sym ]; then python3 /usr/bin/q2sym $p < $T.hot 2>/dev/null || sed 's|^|        |' $T.hot; else sed 's|^|        |' $T.hot; fi
+      fi
+      # desk-288: a thread spinning in ppoll (Steam's VizCompositorThread did, at 100% CPU): what it polls and why it wakes
+      case "$name" in *Viz*|*RenderThread*|*Compositor*) [ -x /usr/bin/q2pollfds ] && python3 /usr/bin/q2pollfds $p $tid 60 2>&1 | sed "s|^|  [$name]|";; esac
+    done
+  } >> $O 2>/dev/null
+  unset A B OWN
+  [ $(stat -c %s $O) -gt 400000 ] && { tail -c 250000 $O > $O.n; mv $O.n $O; }
+done

@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/linux/caif/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/caif /tmp/khsrc/include/uapi/linux/caif caif_socket.h if_caif.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/caif ./include/generated/uapi/linux/caif ; touch /tmp/khdr/include/linux/caif/.install

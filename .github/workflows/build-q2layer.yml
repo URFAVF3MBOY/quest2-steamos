@@ -1,0 +1,45 @@
+name: build-q2layer
+
+# The SteamVR display layer (image/src/layer/q2vrdisplay.c -> libq2vrdisplay.so), built as docs/BUILDING.md describes:
+# freestanding, against a stub libc.so.6.  Copy the result to image/prebuilt/ to ship it.
+
+on:
+  push:
+    paths:
+      - image/src/layer/**
+      - .github/workflows/build-q2layer.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Vulkan headers
+        run: git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git vkh
+
+      - name: Install clang + lld
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y clang lld
+
+      - name: Build libq2vrdisplay.so (aarch64)
+        shell: bash
+        run: |
+          cd image/src/layer
+          clang --target=aarch64-linux-gnu -shared -nostdlib -fuse-ld=lld -Wl,-soname,libc.so.6 -o libc.so.6 libcstub.c
+          clang --target=aarch64-linux-gnu -O2 -fPIC -shared -nostdlib -ffreestanding -fno-stack-protector \
+            -fvisibility=hidden -I"$GITHUB_WORKSPACE/vkh/include" -fuse-ld=lld -Wl,-soname,libq2vrdisplay.so \
+            -o libq2vrdisplay.so q2vrdisplay.c libc.so.6
+          ls -l libq2vrdisplay.so; sha256sum libq2vrdisplay.so
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: q2layer
+          path: image/src/layer/libq2vrdisplay.so
+          if-no-files-found: error

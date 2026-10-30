@@ -1,0 +1,138 @@
+--- ../hmd221/driver_q2hmd.cpp	2026-10-13 22:02:51.660492953 -0400
++++ src/hmd/driver_q2hmd.cpp	2026-10-13 22:18:59.858559107 -0400
+@@ -296,7 +296,7 @@
+ 		g_cpos = (volatile uint32_t *)m;
+ 		Log("q2hmd: camera controller positions found (/dev/shm/q2ctlpos)\n");
+ 	}
+-	for (int k = 0; k < 1000; k++) {
++	for (int k = 0; k < 20000; k++) {
+ 		uint32_t s0 = __atomic_load_n(g_cpos, __ATOMIC_ACQUIRE);
+ 		if (s0 & 1) continue;
+ 		volatile double *d = (volatile double *)((volatile char *)g_cpos + 8 + slot * 64);
+@@ -311,7 +311,7 @@
+ static bool read_ctlrot(int slot, double q[4], double A[9], int *axis)
+ {
+ 	if (!g_cpos) return false;
+-	for (int k = 0; k < 1000; k++) {
++	for (int k = 0; k < 20000; k++) {
+ 		uint32_t s0 = __atomic_load_n(g_cpos, __ATOMIC_ACQUIRE);
+ 		if (s0 & 1) continue;
+ 		uint32_t ver = g_cpos[1];
+@@ -326,11 +326,29 @@
+ 	}
+ 	return false;
+ }
++// desk-222 (q2ctltrack v3): at +768 + 64*h: count, position relative to the head (world axes), rotation (world), valid
++static bool read_ctlworld(int slot, double p[3], double q[4])
++{
++	if (!g_cpos) return false;
++	for (int k = 0; k < 20000; k++) {
++		uint32_t s0 = __atomic_load_n(g_cpos, __ATOMIC_ACQUIRE);
++		if (s0 & 1) continue;
++		uint32_t ver = g_cpos[1];
++		volatile double *d = (volatile double *)((volatile char *)g_cpos + 768 + slot * 64);
++		double v[9]; for (int i = 0; i < 9; i++) v[i] = d[i];
++		__atomic_thread_fence(__ATOMIC_ACQUIRE);
++		if (__atomic_load_n(g_cpos, __ATOMIC_ACQUIRE) != s0) continue;
++		if (ver < 3 || v[0] <= 0 || v[8] < 0.5) return false;
++		for (int i = 0; i < 3; i++) p[i] = v[1 + i]; for (int i = 0; i < 4; i++) q[i] = v[4 + i];
++		return true;
++	}
++	return false;
++}
+ // q2headtrack (desk-220): at 2048 + 128*slot of /dev/shm/q2ctl: counter, IMU-frame up, IMU-frame orientation (world)
+ static bool read_ctlbody(int slot, double q[4])
+ {
+ 	if (!g_ctl) return false;
+-	for (int k = 0; k < 1000; k++) {
++	for (int k = 0; k < 20000; k++) {
+ 		uint32_t s0 = __atomic_load_n(g_ctl, __ATOMIC_ACQUIRE);
+ 		if (s0 & 1) continue;
+ 		volatile double *d = (volatile double *)((volatile char *)g_ctl + 2048 + slot * 128);
+@@ -405,6 +423,7 @@
+ 	explicit Q2Ctl(int s) : slot(s) {}
+ 	int slot;                                              // 0 left, 1 right
+ 	double camcnt = -1, campos[3] = { 0, 0, 0 }, camw = 0; int camstale = 100000; bool camuse = false; int camdbg = 0, camrej = 0;   // desk-216/219
++	double fpos[3] = { 0, 0, 0 }, fvel[3] = { 0, 0, 0 }; bool fvalid = false; int sincecam = 100000; unsigned nsnap = 0;   // desk-222 filter
+ 	// desk-220 orientation: IMU (model frame via the learned axes) with its heading corrected by the cameras
+ 	double yawc[4] = { 1, 0, 0, 0 }; bool yawset = false; double visq[4] = { 1, 0, 0, 0 }; double visrot = -1; int visstale = 100000;
+ 	int rotmode = -1; unsigned nyaw = 0, ntiltrej = 0; double tiltsum = 0;
+@@ -510,30 +529,45 @@
+ 			const double el[3] = { slot ? 0.17 : -0.17, -0.45, -0.05 }, fa[3] = { 0, 0, -0.30 };
+ 			qrot(yq, el, e); qrot(aim, fa, f);
+ 			for (int i = 0; i < 3; i++) pos[i] = hp[i] + e[i] + f[i];
+-			// camera position: fresh = its counter moved within the last 0.25 s (this runs at 500 Hz)
+-			double cp[3], cc;
++			// desk-222 camera position.  q2ctltrack (v3) also gives the position and rotation already turned into the world
++			// with the head orientation AT THE MOMENT OF THE FIT (so turning the head does not drag the controllers).
++			// A position+velocity filter runs here at 500 Hz: between camera updates (30/s) the controller keeps moving
++			// at its measured speed instead of stepping, and each update is treated as ~35 ms old (camera + processing).
++			// Lost: it holds where it was (velocity fading out) for 1.5 s, then fades to the arm model over ~1 s.
++			double cp[3], cc, cw[3], cwq[4]; bool haveworld = false;
+ 			if (read_ctlpos(slot, cp, &cc)) {
+-				if (cc != camcnt) { camcnt = cc; camstale = 0; } else if (camstale < 100000) camstale++;
+-				// desk-219: outlier gate - a camera position more than 0.6 m from the arm model is ignored
+-				double wp[3]; qrot(qh, cp, wp);
+-				double dd = 0; for (int i = 0; i < 3; i++) { double d = hp[i] + wp[i] - pos[i]; dd += d * d; }
+-				if (dd > 0.36) { if (camstale < 125) camstale = 125; ++camrej; }
+-				if (++camdbg % 2500 == 0) {        // every ~5 s: aim direction vs where the cameras put the controller
+-					const double fwd[3] = { 0, 0, -1 }; double af[3]; qrot(aim, fwd, af);
+-					double hq[4] = { qh[0], -qh[1], -qh[2], -qh[3] }, rel[3], ar[3], armrel[3];
+-					for (int i = 0; i < 3; i++) armrel[i] = pos[i] - hp[i];
+-					qrot(hq, af, ar); qrot(hq, armrel, rel);
+-					Log("q2hmd: %s axis: aim (head frame) %+.2f %+.2f %+.2f | camera pos (head frame) %+.2f %+.2f %+.2f %s | arm model %+.2f %+.2f %+.2f | rejected %d\n",
+-						slot ? "right" : "left", ar[0], ar[1], ar[2], cp[0], cp[1], cp[2], camstale < 125 ? "fresh" : "stale", rel[0], rel[1], rel[2], camrej);
+-				}
+-				if (camstale < 125) {
+-					for (int i = 0; i < 3; i++) campos[i] = hp[i] + wp[i];
++				haveworld = read_ctlworld(slot, cw, cwq);
++				bool fresh = cc != camcnt;
++				if (fresh) { camcnt = cc; camstale = 0; } else if (camstale < 100000) camstale++;
++				double wp[3]; if (haveworld) for (int i = 0; i < 3; i++) wp[i] = cw[i]; else qrot(qh, cp, wp);
++				const double dt = 0.002, L = 0.035, T = 1.0 / 30;
++				for (int i = 0; i < 3; i++) fpos[i] += fvel[i] * dt;            // predict to now
++				if (fresh) {
++					double m[3]; for (int i = 0; i < 3; i++) m[i] = hp[i] + wp[i];
++					double e2 = 0; for (int i = 0; i < 3; i++) { double d = m[i] - fpos[i]; e2 += d * d; }
++					if (!fvalid || sincecam > 150 || e2 > 0.4 * 0.4) {           // (re)start: jump there
++						for (int i = 0; i < 3; i++) { fpos[i] = m[i]; fvel[i] = 0; } fvalid = true; nsnap++;
++					} else {
++						for (int i = 0; i < 3; i++) {
++							double r = m[i] - (fpos[i] - fvel[i] * L);           // measurement vs the estimate at its own time
++							fpos[i] += 0.55 * r; fvel[i] += 0.35 * r / T;
++							if (fvel[i] > 4) fvel[i] = 4; if (fvel[i] < -4) fvel[i] = -4;
++						}
++					}
++					sincecam = 0;
+ 					if (!camuse) { Log("q2hmd: %s hand: position from the cameras\n", slot ? "right" : "left"); camuse = true; }
+-				} else if (camuse && camstale > 500) { Log("q2hmd: %s hand: cameras lost it, arm model\n", slot ? "right" : "left"); camuse = false; }
+-				// blend: 0.25 s fade between arm model and camera position so a lost/found controller does not jump
+-				double target = camstale < 125 ? 1.0 : 0.0;
+-				camw += (target - camw) * 0.008;
+-				if (camw > 0.001) for (int i = 0; i < 3; i++) pos[i] = pos[i] * (1 - camw) + campos[i] * camw;
++				} else if (sincecam < 100000) sincecam++;
++				if (sincecam > 50) for (int i = 0; i < 3; i++) fvel[i] *= 0.985;     // no update for 0.1 s: stop extrapolating
++				if (camuse && sincecam > 750) { Log("q2hmd: %s hand: cameras lost it for 1.5 s, arm model\n", slot ? "right" : "left"); camuse = false; }
++				double target = fvalid && sincecam <= 750 ? 1.0 : 0.0;
++				camw += (target - camw) * (target > camw ? 0.05 : 0.002);
++				if (fvalid && camw > 0.001) for (int i = 0; i < 3; i++) pos[i] = pos[i] * (1 - camw) + fpos[i] * camw;
++				if (++camdbg % 2500 == 0) {
++					double rel[3], hq[4] = { qh[0], -qh[1], -qh[2], -qh[3] }, d[3]; for (int i = 0; i < 3; i++) d[i] = fpos[i] - hp[i]; qrot(hq, d, rel);
++					Log("q2hmd: %s position: %s, head frame %+.2f %+.2f %+.2f, speed %.2f m/s, restarts %u, world-frame data %s\n", slot ? "right" : "left",
++					    sincecam < 125 ? "tracking" : sincecam <= 750 ? "holding" : "arm model", rel[0], rel[1], rel[2],
++					    __builtin_sqrt(fvel[0] * fvel[0] + fvel[1] * fvel[1] + fvel[2] * fvel[2]), nsnap, haveworld ? "yes" : "no");
++				}
+ 			}
+ 			// desk-220 orientation.  Modes: 2 = controller IMU in the LED-model frame (axes learned by q2ctltrack) with its
+ 			// heading pulled toward the cameras' heading; 1 = camera orientation alone (IMU axes not learned yet);
+@@ -545,8 +579,8 @@
+ 					if (camcnt != visrot) { visrot = camcnt; visstale = 0; vfresh = true; } else if (visstale < 100000) visstale++;
+ 				} else { misrot++; if (ageA < 100000) ageA++; if (visstale < 100000) visstale++; }
+ 				if (ageA < 250) { for (int i = 0; i < 9; i++) A[i] = lastA[i]; for (int i = 0; i < 4; i++) cq[i] = lastcq[i]; axis = lastaxis; }
+-				bool vok = visstale < 125 && camstale < 125;        // camera pose fresh (0.25 s) and not rejected by the gate
+-				double vw[4]; if (vok || vfresh) { qmul(qh, cq, vw); }
++				bool vok = visstale < 125 && camstale < 125;        // camera pose fresh (0.25 s)
++				double vw[4]; if (vok || vfresh) { if (haveworld) for (int i = 0; i < 4; i++) vw[i] = cwq[i]; else qmul(qh, cq, vw); }
+ 				double bq[4]; int mode = 0;
+ 				if (read_ctlbody(slot, bq)) { for (int i = 0; i < 4; i++) lastbq[i] = bq[i]; agebq = 0; }
+ 				else { misbody++; if (agebq < 100000) agebq++; for (int i = 0; i < 4; i++) bq[i] = lastbq[i]; }

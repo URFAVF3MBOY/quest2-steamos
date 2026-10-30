@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/scsi/fc/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/scsi/fc /tmp/khsrc/include/uapi/scsi/fc fc_els.h fc_fs.h fc_gs.h fc_ns.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/scsi/fc ./include/generated/uapi/scsi/fc ; touch /tmp/khdr/include/scsi/fc/.install

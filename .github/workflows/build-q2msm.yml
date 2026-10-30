@@ -1,0 +1,137 @@
+name: build-q2msm
+
+# Builds kernel/q2msm (mainline 5.10 drm/msm, GPU-only port) as an out-of-tree module against the Quest 2 kernel.
+# Fast: only "make modules_prepare" on the kernel (same commit, patches, config and clang as build-steamos), then the
+# module with -k so one run lists every compile error.  Artifact: q2msm.ko + the build log.
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_commit:
+        description: "oculus-linux-kernel commit"
+        default: "6e428607392d72708bc95cb7126768494c6b5ac0"
+  push:
+    paths:
+      - "kernel/q2msm/**"
+      - ".github/workflows/build-q2msm.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      MAKEVARS: ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- REAL_CC=clang
+      KCOMMIT: ${{ github.event.inputs.kernel_commit || '6e428607392d72708bc95cb7126768494c6b5ac0' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential bc bison flex libssl-dev libelf-dev \
+            binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu git curl cpio kmod python3 >/dev/null
+
+      - name: Cache the prepared kernel tree
+        id: kcache
+        uses: actions/cache@v4
+        with:
+          path: src
+          key: q2kprep-${{ env.KCOMMIT }}-${{ hashFiles('patches/**', 'config/**') }}-v1
+
+      - name: Fetch Meta Quest 2 kernel source
+        if: steps.kcache.outputs.cache-hit != 'true'
+        run: |
+          mkdir src && cd src && git init -q
+          git remote add origin https://github.com/facebookincubator/oculus-linux-kernel.git
+          git fetch --depth 1 origin "$KCOMMIT" && git checkout -q FETCH_HEAD
+
+      - name: Cache AOSP clang
+        id: clangcache
+        uses: actions/cache@v4
+        with:
+          path: toolchain/clang
+          key: clang-r450784e-v1
+
+      - name: Fetch clang r450784e (AOSP prebuilt)
+        if: steps.clangcache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p toolchain/clang && cd toolchain
+          curl -fsSL -o clang.tar.gz \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master-kernel-build-2022/clang-r450784e.tar.gz"
+          tar -xzf clang.tar.gz -C clang && rm clang.tar.gz
+
+      - name: Apply the same source fixes as build-steamos
+        if: steps.kcache.outputs.cache-hit != 'true'
+        working-directory: src
+        run: |
+          if git apply --check ../patches/oculus-kernel-fixes.patch 2>/dev/null; then git apply ../patches/oculus-kernel-fixes.patch
+          else git apply ../patches/oculus-kernel-fixes-old.patch; fi
+          git apply --check ../patches/oculus-syncboss-old-driver.patch 2>/dev/null && git apply ../patches/oculus-syncboss-old-driver.patch || true
+          for p in q2-dmabuf-sync-file q2-audio-pinctrl-lpi-include q2-audio-no-pdr q2-bt-hci-qca-ldisc; do git apply ../patches/$p.patch; done
+
+      - name: Configure kernel and prepare for modules
+        if: steps.kcache.outputs.cache-hit != 'true'
+        shell: bash
+        working-directory: src
+        run: |
+          export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$PATH"
+          cp ../config/kernel.config .config
+          sed -i 's/^CONFIG_SYSTEM_TRUSTED_KEYS=.*/CONFIG_SYSTEM_TRUSTED_KEYS=""/' .config
+          for frag in ../config/ramonly.fragment ../config/steamos.fragment; do
+            while IFS= read -r line; do
+              case "$line" in
+                CONFIG_*=y) ./scripts/config --file .config -e "$(echo "$line" | sed -E 's/^CONFIG_([A-Z0-9_]+)=y$/\1/')" ;;
+                "# CONFIG_"*" is not set") ./scripts/config --file .config -d "$(echo "$line" | sed -E 's/^# CONFIG_([A-Z0-9_]+) is not set$/\1/')" ;;
+              esac
+            done < "$frag"
+          done
+          make $MAKEVARS olddefconfig >/dev/null
+          make $MAKEVARS -j"$(nproc)" modules_prepare
+          grep -E '^CONFIG_(DRM|DRM_MSM|IOMMU_API|ARM_SMMU|QCOM_SCM|QCOM_MDT_LOADER|PM_OPP|PM_DEVFREQ|DEVFREQ_GOV_SIMPLE_ONDEMAND|SYNC_FILE|SHMEM|TRACING)=' .config || true
+          # keep only what an external module build needs (headers, Kbuild files, scripts, .config, generated files)
+          rm -rf .git Documentation samples
+          find . -path ./scripts -prune -o -path ./tools -prune -o \( -name '*.c' -o -name '*.S' -o -name '*.o' -o -name '*.dtsi' -o -name '*.dts' \) -type f -print0 | xargs -0 rm -f
+          du -sh .
+
+      - name: Build q2msm.ko
+        shell: bash
+        working-directory: src
+        run: |
+          export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$PATH"
+          set +e
+          make $MAKEVARS -k -j"$(nproc)" M="$GITHUB_WORKSPACE/kernel/q2msm" KBUILD_MODPOST_WARN=1 modules 2>&1 | tee ../q2msm-build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "=================== ERRORS (unique) ==================="
+          grep -E "error:|\*\*\* \[|undefined|No such file" ../q2msm-build.log | sed -E 's#^.*/kernel/q2msm/##' | sort -u | head -150 || true
+          echo "=================== WARNINGS (count) ==================="
+          grep -c "warning:" ../q2msm-build.log || true
+          ls -l "$GITHUB_WORKSPACE"/kernel/q2msm/*.ko 2>/dev/null || true
+          # no Module.symvers from modules_prepare, so modpost can't check imports: list them for a check against the headset's ksymtab
+          llvm-nm -u "$GITHUB_WORKSPACE"/kernel/q2msm/q2msm.ko 2>/dev/null | awk '{print $2}' | sort -u > ../q2msm.undef || true
+          wc -l ../q2msm.undef || true
+          modinfo "$GITHUB_WORKSPACE"/kernel/q2msm/q2msm.ko 2>/dev/null | grep vermagic || true
+          exit $rc
+
+      - name: Build q2vktest (offscreen Vulkan check for q2msm)
+        if: always()
+        working-directory: kernel/q2msm/test
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq glslang-tools libvulkan-dev >/dev/null
+          glslangValidator -V --vn comp_spv fill.comp -o comp.h
+          glslangValidator -V --vn vert_spv tri.vert -o vert.h
+          glslangValidator -V --vn frag_spv tri.frag -o frag.h
+          aarch64-linux-gnu-gcc -O2 -Wall -I. q2vktest.c -ldl -o q2vktest
+          file q2vktest
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: q2msm
+          path: |
+            kernel/q2msm/q2msm.ko
+            kernel/q2msm/test/q2vktest
+            q2msm-build.log
+            q2msm.undef
+          if-no-files-found: warn

@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/linux/nfsd/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/nfsd /tmp/khsrc/include/uapi/linux/nfsd cld.h debug.h export.h nfsfh.h stats.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/nfsd ./include/generated/uapi/linux/nfsd ; touch /tmp/khdr/include/linux/nfsd/.install

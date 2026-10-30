@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/linux/mmc/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/mmc /tmp/khsrc/include/uapi/linux/mmc core.h ioctl.h mmc.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/mmc ./include/generated/uapi/linux/mmc ; touch /tmp/khdr/include/linux/mmc/.install

@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/linux/cifs/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/cifs /tmp/khsrc/include/uapi/linux/cifs cifs_mount.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/cifs ./include/generated/uapi/linux/cifs ; touch /tmp/khdr/include/linux/cifs/.install

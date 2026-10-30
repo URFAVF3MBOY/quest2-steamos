@@ -1,0 +1,37 @@
+diff --git a/techpack/audio/config/konaauto.conf b/techpack/audio/config/konaauto.conf
+index 3b6c9da82..65ad4709e 100644
+--- a/techpack/audio/config/konaauto.conf
++++ b/techpack/audio/config/konaauto.conf
+@@ -4,7 +4,6 @@ export CONFIG_MSM_CDC_PINCTRL=m
+ export CONFIG_MSM_QDSP6_APRV2_RPMSG=m
+ export CONFIG_MSM_ADSP_LOADER=m
+ export CONFIG_MSM_QDSP6_SSR=m
+-export CONFIG_MSM_QDSP6_PDR=m
+ export CONFIG_MSM_QDSP6_NOTIFIER=m
+ export CONFIG_SND_SOC_MSM_HOSTLESS_PCM=m
+ export CONFIG_SND_SOC_MSM_QDSP6V2_INTF=m
+diff --git a/techpack/audio/config/konaautoconf.h b/techpack/audio/config/konaautoconf.h
+index ee0cdf767..6cc454f87 100644
+--- a/techpack/audio/config/konaautoconf.h
++++ b/techpack/audio/config/konaautoconf.h
+@@ -9,7 +9,6 @@
+ #define CONFIG_SND_SOC_MSM_QDSP6V2_INTF 1
+ #define CONFIG_MSM_ADSP_LOADER 1
+ #define CONFIG_MSM_QDSP6_SSR 1
+-#define CONFIG_MSM_QDSP6_PDR 1
+ #define CONFIG_MSM_QDSP6_NOTIFIER 1
+ #define CONFIG_SND_SOC_MSM_HOSTLESS_PCM 1
+ #define CONFIG_SND_SOC_QDSP6V2 1
+diff --git a/techpack/audio/dsp/audio_notifier.c b/techpack/audio/dsp/audio_notifier.c
+index 7a8249dc3..f57a0ff7d 100644
+--- a/techpack/audio/dsp/audio_notifier.c
++++ b/techpack/audio/dsp/audio_notifier.c
+@@ -629,7 +629,7 @@ static int __init audio_notifier_init(void)
+ static int __init audio_notifier_init(void)
+ {
+ 	audio_notifier_subsys_init();
+-	audio_notifier_disable_service(AUDIO_NOTIFIER_PDR_SERVICE);
++	audio_notifer_disable_service(AUDIO_NOTIFIER_PDR_SERVICE);   /* q2: upstream typo in the !PDR branch */
+ 
+ 	audio_notifier_late_init();
+ 

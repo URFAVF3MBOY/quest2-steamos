@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/xen/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/xen /tmp/khsrc/include/uapi/xen evtchn.h gntalloc.h gntdev.h privcmd.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/xen ./include/generated/uapi/xen ; touch /tmp/khdr/include/xen/.install

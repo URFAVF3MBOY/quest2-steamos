@@ -1,0 +1,63 @@
+name: add-qscreen
+
+# Takes the boot_ramonly.img from an earlier successful "build-quest2-ramonly" run,
+# adds the qscreen display tool + helper scripts to its ramdisk, and uploads boot_screen.img.
+# No kernel rebuild: takes about 1-2 minutes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Run ID of the earlier build-quest2-ramonly run (the number at the end of its URL)"
+        required: true
+
+permissions:
+  contents: read
+  actions: read   # needed to download an artifact from an earlier run
+
+jobs:
+  add:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the existing boot image
+        uses: actions/download-artifact@v4
+        with:
+          name: quest2-ramonly
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          path: prev
+
+      - name: Install cross compiler
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+
+      - name: Build qscreen (static aarch64)
+        shell: bash
+        run: |
+          mkdir -p build
+          aarch64-linux-gnu-gcc -O2 -static -Wall -o build/qscreen qscreen/qscreen.c
+          aarch64-linux-gnu-strip build/qscreen
+          file build/qscreen || true
+          ls -l build/qscreen
+
+      - name: Inject into the ramdisk and repack
+        shell: bash
+        run: |
+          ls -l prev
+          python3 scripts/inject_boot.py --in prev/boot_ramonly.img --out boot_screen.img \
+            --file build/qscreen:usr/bin/qscreen:755 \
+            --file initramfs-extra/screen-test:usr/bin/screen-test:755 \
+            --file initramfs-extra/screen-log:usr/bin/screen-log:755
+          ls -l boot_screen.img
+          sha256sum boot_screen.img
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quest2-screen
+          path: boot_screen.img
+          if-no-files-found: error

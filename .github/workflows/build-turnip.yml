@@ -1,0 +1,80 @@
+name: build-turnip
+
+# Builds Mesa's Turnip Vulkan driver (Adreno 6xx, KGSL + MSM backends) natively on an arm64 runner,
+# so the headset does not have to compile it (the on-device build froze the headset).
+# Ubuntu 24.04 has glibc 2.39, the same as the SteamOS rootfs on the headset.
+# Result: artifact "q2mesa-aarch64" -> q2mesa.tar.gz that unpacks to /opt/q2mesa (lib + icd json).
+
+on:
+  workflow_dispatch:
+    inputs:
+      mesa_ref:
+        description: "Mesa git ref (branch, tag or commit) from gitlab.freedesktop.org/mesa/mesa"
+        default: "main"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git ninja-build pkg-config bison flex glslang-tools python3-pip python3-dev \
+            libdrm-dev libx11-dev libx11-xcb-dev libxext-dev libxfixes-dev libxrandr-dev libxshmfence-dev \
+            libxcb1-dev libxcb-dri3-dev libxcb-present-dev libxcb-sync-dev libxcb-shm0-dev libxcb-xfixes0-dev libxcb-randr0-dev \
+            libexpat1-dev zlib1g-dev libzstd-dev libelf-dev libwayland-dev wayland-protocols libvulkan-dev spirv-tools
+          # Mesa wants a newer meson than Ubuntu ships
+          sudo pip install --break-system-packages --ignore-installed meson mako pyyaml packaging pycparser ply
+          meson --version
+
+      - name: Fetch Mesa
+        run: |
+          git clone https://gitlab.freedesktop.org/mesa/mesa.git mesa
+          cd mesa
+          git checkout "${{ github.event.inputs.mesa_ref }}"
+          echo "Mesa $(cat VERSION) @ $(git rev-parse --short HEAD)"
+
+      - name: Configure
+        working-directory: mesa
+        run: |
+          meson setup build --prefix=/opt/q2mesa -Dbuildtype=release -Db_ndebug=true \
+            -Dvulkan-drivers=freedreno -Dfreedreno-kmds=kgsl,msm -Dgallium-drivers= -Dvulkan-layers= \
+            -Dplatforms=x11 -Dglx=disabled -Dgbm=disabled -Degl=disabled -Dopengl=false -Dgles1=disabled -Dgles2=disabled \
+            -Dllvm=disabled -Dvalgrind=disabled -Dtools= -Dlibunwind=disabled -Dlmsensors=disabled -Dbuild-tests=false \
+            -Dwerror=false
+
+      - name: Build
+        working-directory: mesa
+        run: ninja -C build
+
+      - name: Install into a staging dir
+        working-directory: mesa
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/stage"
+          DESTDIR="$GITHUB_WORKSPACE/stage" ninja -C build install
+          find "$GITHUB_WORKSPACE/stage" -type f | head -50
+          strip --strip-unneeded "$GITHUB_WORKSPACE"/stage/opt/q2mesa/lib/*/libvulkan_freedreno.so 2>/dev/null || true
+
+      - name: Check what it needs from the system
+        run: |
+          LIB=$(find "$GITHUB_WORKSPACE/stage" -name 'libvulkan_freedreno.so' | head -n 1)
+          echo "lib: $LIB"; ls -l "$LIB"
+          echo "--- needed libraries"; readelf -d "$LIB" | grep NEEDED
+          echo "--- highest GLIBC / GLIBCXX / CXXABI versions required"
+          objdump -T "$LIB" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n 1
+          objdump -T "$LIB" | grep -o 'GLIBCXX_[0-9.]*' | sort -uV | tail -n 1
+          objdump -T "$LIB" | grep -o 'CXXABI_[0-9.]*' | sort -uV | tail -n 1
+          echo "--- icd json"; find "$GITHUB_WORKSPACE/stage" -name '*icd*.json' -exec sh -c 'echo {}; cat {}' \;
+
+      - name: Pack
+        run: |
+          tar -C "$GITHUB_WORKSPACE/stage" -czf q2mesa.tar.gz opt/q2mesa
+          ls -l q2mesa.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: q2mesa-aarch64
+          path: q2mesa.tar.gz
+          retention-days: 14

@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/linux/raid/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/raid /tmp/khsrc/include/uapi/linux/raid md_p.h md_u.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/raid ./include/generated/uapi/linux/raid ; touch /tmp/khdr/include/linux/raid/.install

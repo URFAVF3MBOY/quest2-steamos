@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/linux/dvb/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/dvb /tmp/khsrc/include/uapi/linux/dvb audio.h ca.h dmx.h frontend.h net.h osd.h version.h video.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/dvb ./include/generated/uapi/linux/dvb ; touch /tmp/khdr/include/linux/dvb/.install

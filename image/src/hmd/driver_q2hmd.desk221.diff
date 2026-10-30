@@ -1,0 +1,43 @@
+--- ../hmd220/driver_q2hmd.cpp	2026-10-13 21:47:21.845199837 -0400
++++ src/hmd/driver_q2hmd.cpp	2026-10-13 22:03:07.711210324 -0400
+@@ -407,7 +407,9 @@
+ 	double camcnt = -1, campos[3] = { 0, 0, 0 }, camw = 0; int camstale = 100000; bool camuse = false; int camdbg = 0, camrej = 0;   // desk-216/219
+ 	// desk-220 orientation: IMU (model frame via the learned axes) with its heading corrected by the cameras
+ 	double yawc[4] = { 1, 0, 0, 0 }; bool yawset = false; double visq[4] = { 1, 0, 0, 0 }; double visrot = -1; int visstale = 100000;
+-	int rotmode = -1; unsigned nyaw = 0, ntiltrej = 0; double tiltsum = 0; double m2r_q[4] = { 1, 0, 0, 0 }, m2r_t[3] = { 0, 0, 0 };
++	int rotmode = -1; unsigned nyaw = 0, ntiltrej = 0; double tiltsum = 0;
++	// desk-221: last good reads, held for a moment (a single failed read no longer flips the orientation source)
++	double lastA[9] = { 0 }, lastbq[4] = { 1, 0, 0, 0 }, lastcq[4] = { 1, 0, 0, 0 }; int lastaxis = -1, ageA = 100000, agebq = 100000, misrot = 0, misbody = 0; double m2r_q[4] = { 1, 0, 0, 0 }, m2r_t[3] = { 0, 0, 0 };
+ 	uint32_t id = k_unTrackedDeviceIndexInvalid;
+ 	PropertyContainerHandle_t cont = 0;
+ 	enum { NC = 40 };
+@@ -539,12 +541,16 @@
+ 			{
+ 				double cq[4], A[9]; int axis = -1; bool vfresh = false;
+ 				if (read_ctlrot(slot, cq, A, &axis)) {
++					for (int i = 0; i < 9; i++) lastA[i] = A[i]; for (int i = 0; i < 4; i++) lastcq[i] = cq[i]; lastaxis = axis; ageA = 0;
+ 					if (camcnt != visrot) { visrot = camcnt; visstale = 0; vfresh = true; } else if (visstale < 100000) visstale++;
+-				}
++				} else { misrot++; if (ageA < 100000) ageA++; if (visstale < 100000) visstale++; }
++				if (ageA < 250) { for (int i = 0; i < 9; i++) A[i] = lastA[i]; for (int i = 0; i < 4; i++) cq[i] = lastcq[i]; axis = lastaxis; }
+ 				bool vok = visstale < 125 && camstale < 125;        // camera pose fresh (0.25 s) and not rejected by the gate
+ 				double vw[4]; if (vok || vfresh) { qmul(qh, cq, vw); }
+ 				double bq[4]; int mode = 0;
+-				if (axis >= 0 && read_ctlbody(slot, bq)) {
++				if (read_ctlbody(slot, bq)) { for (int i = 0; i < 4; i++) lastbq[i] = bq[i]; agebq = 0; }
++				else { misbody++; if (agebq < 100000) agebq++; for (int i = 0; i < 4; i++) bq[i] = lastbq[i]; }
++				if (axis >= 0 && agebq < 250) {
+ 					double At[9] = { A[0], A[3], A[6], A[1], A[4], A[7], A[2], A[5], A[8] }, qa[4]; m2q(At, qa); qnorm4(qa);
+ 					double qi[4]; qmul(bq, qa, qi);                  // IMU orientation of the model frame (heading not yet right)
+ 					if (vfresh && camstale < 125) {
+@@ -575,8 +581,8 @@
+ 					for (int i = 0; i < 3; i++) p.vecDriverFromHeadTranslation[i] = m2r_t[i];
+ 				}
+ 				if (camdbg % 2500 == 1)
+-					Log("q2hmd: %s orientation mode %d, IMU axis %d, heading updates %u (tilt diff avg %.1f deg), rejected %u\n", slot ? "right" : "left",
+-					    mode, axis, nyaw, nyaw ? tiltsum / nyaw : 0.0, ntiltrej);
++					Log("q2hmd: %s orientation mode %d, IMU axis %d, heading updates %u (tilt diff avg %.1f deg), rejected %u, read misses camera %d imu %d\n", slot ? "right" : "left",
++					    mode, axis, nyaw, nyaw ? tiltsum / nyaw : 0.0, ntiltrej, misrot, misbody);
+ 			}
+ 			int b = (int)o[14];
+ 			if (b != lastbatt && b >= 0) { lastbatt = b; setVal<float>(cont, Prop_DeviceBatteryPercentage_Float, b / 100.0f, k_unFloatPropertyTag); }

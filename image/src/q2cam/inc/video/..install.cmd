@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/video/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/video /tmp/khsrc/include/uapi/video edid.h msm_hdmi_hdcp_mgr.h msm_hdmi_modes.h sisfb.h uvesafb.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/video ./include/generated/uapi/video ; touch /tmp/khdr/include/video/.install

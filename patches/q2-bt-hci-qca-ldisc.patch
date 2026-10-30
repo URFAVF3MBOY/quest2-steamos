@@ -1,0 +1,241 @@
+--- a/drivers/bluetooth/hci_qca.c	2026-10-27 15:47:52.764621600 -0400
++++ b/drivers/bluetooth/hci_qca.c	2026-10-27 23:43:36.925002400 -0400
+@@ -969,8 +969,8 @@
+ 	/* Disabling hardware flow control is mandatory while
+ 	 * sending change baudrate request to wcn3990 SoC.
+ 	 */
+-	qcadev = serdev_device_get_drvdata(hu->serdev);
+-	if (qcadev->btsoc_type == QCA_WCN3990)
++	qcadev = hu->serdev ? serdev_device_get_drvdata(hu->serdev) : NULL;  /* q2: NULL in tty ldisc mode (hciattach) */
++	if ((qcadev ? qcadev->btsoc_type : QCA_ROME) == QCA_WCN3990)
+ 		hci_uart_set_flow_control(hu, true);
+ 
+ 	/* Assign commands to change baudrate and packet type. */
+@@ -988,7 +988,7 @@
+ 	schedule_timeout(msecs_to_jiffies(BAUDRATE_SETTLE_TIMEOUT_MS));
+ 	set_current_state(TASK_RUNNING);
+ 
+-	if (qcadev->btsoc_type == QCA_WCN3990)
++	if ((qcadev ? qcadev->btsoc_type : QCA_ROME) == QCA_WCN3990)
+ 		hci_uart_set_flow_control(hu, false);
+ 
+ 	return 0;
+@@ -1063,8 +1063,8 @@
+ {
+ 	struct qca_serdev *qcadev;
+ 
+-	qcadev = serdev_device_get_drvdata(hu->serdev);
+-	if (qcadev->btsoc_type == QCA_WCN3990) {
++	qcadev = hu->serdev ? serdev_device_get_drvdata(hu->serdev) : NULL;  /* q2: NULL in tty ldisc mode (hciattach) */
++	if ((qcadev ? qcadev->btsoc_type : QCA_ROME) == QCA_WCN3990) {
+ 		if (!qca_get_speed(hu, QCA_INIT_SPEED) &&
+ 		    !qca_get_speed(hu, QCA_OPER_SPEED))
+ 			return -EINVAL;
+@@ -1148,7 +1148,7 @@
+ 	int ret;
+ 	int soc_ver = 0;
+ 
+-	qcadev = serdev_device_get_drvdata(hu->serdev);
++	qcadev = hu->serdev ? serdev_device_get_drvdata(hu->serdev) : NULL;  /* q2: NULL in tty ldisc mode (hciattach) */
+ 
+ 	ret = qca_check_speeds(hu);
+ 	if (ret)
+@@ -1157,7 +1157,7 @@
+ 	/* Patch downloading has to be done without IBS mode */
+ 	clear_bit(STATE_IN_BAND_SLEEP_ENABLED, &qca->flags);
+ 
+-	if (qcadev->btsoc_type == QCA_WCN3990) {
++	if ((qcadev ? qcadev->btsoc_type : QCA_ROME) == QCA_WCN3990) {
+ 		bt_dev_info(hdev, "setting up wcn3990");
+ 		ret = qca_wcn3990_init(hu);
+ 		if (ret)
+@@ -1181,7 +1181,7 @@
+ 		qca_baudrate = qca_get_baudrate_value(speed);
+ 	}
+ 
+-	if (qcadev->btsoc_type != QCA_WCN3990) {
++	if ((qcadev ? qcadev->btsoc_type : QCA_ROME) != QCA_WCN3990) {
+ 		/* Get QCA version information */
+ 		ret = qca_read_soc_version(hdev, &soc_ver);
+ 		if (ret)
+@@ -1190,9 +1190,11 @@
+ 
+ 	bt_dev_info(hdev, "QCA controller version 0x%08x", soc_ver);
+ 	/* Setup patch / NVM configurations */
+-	ret = qca_uart_setup(hdev, qca_baudrate, qcadev->btsoc_type, soc_ver);
++	ret = qca_uart_setup(hdev, qca_baudrate, (qcadev ? qcadev->btsoc_type : QCA_ROME), soc_ver);
+ 	if (!ret) {
+-		set_bit(STATE_IN_BAND_SLEEP_ENABLED, &qca->flags);
++		/* q2: no in-band sleep with the QCA6390 (its NVM sleep bits are cleared in btqca) */
++		if (!qca_soc_is_newer())
++			set_bit(STATE_IN_BAND_SLEEP_ENABLED, &qca->flags);
+ 		qca_debugfs_init(hdev);
+ 	} else if (ret == -ENOENT) {
+ 		/* No patch/nvm-config found, run with original fw/config */
+--- a/drivers/bluetooth/btqca.c	2026-10-27 16:07:44.573603700 -0400
++++ b/drivers/bluetooth/btqca.c	2026-10-27 23:43:36.924004300 -0400
+@@ -27,6 +27,10 @@
+ 
+ #define VERSION "0.1"
+ 
++/* q2: QCA6390 / WCN3991 and newer answer the version request with one extra byte before the version data,
++ * and keep the UART baud rate in byte 1 of their NVM HCI tag (as in later upstream btqca) */
++static bool qca_newer_soc;
++
+ int qca_read_soc_version(struct hci_dev *hdev, u32 *soc_version)
+ {
+ 	struct sk_buff *skb;
+@@ -47,12 +51,14 @@
+ 		return err;
+ 	}
+ 
+-	if (skb->len != sizeof(*edl) + sizeof(*ver)) {
++	qca_newer_soc = (skb->len == sizeof(*edl) + sizeof(*ver) + 1);
++	if (skb->len != sizeof(*edl) + sizeof(*ver) && !qca_newer_soc) {
+ 		bt_dev_err(hdev, "QCA Version size mismatch len %d", skb->len);
+ 		err = -EILSEQ;
+ 		goto out;
+ 	}
+ 
++	bt_dev_info(hdev, "QCA version reply (%d bytes): %*ph", skb->len, (int)min_t(unsigned int, skb->len, 32), skb->data);
+ 	edl = (struct edl_event_hdr *)(skb->data);
+ 	if (!edl) {
+ 		bt_dev_err(hdev, "QCA TLV with no header");
+@@ -60,15 +66,17 @@
+ 		goto out;
+ 	}
+ 
++	/* q2: the QCA6390 answers in command-complete style: status 0, then the request code (0x19) echoed */
+ 	if (edl->cresp != EDL_CMD_REQ_RES_EVT ||
+-	    edl->rtype != EDL_APP_VER_RES_EVT) {
++	    (edl->rtype != EDL_APP_VER_RES_EVT &&
++	     !(qca_newer_soc && edl->rtype == EDL_PATCH_VER_REQ_CMD))) {
+ 		bt_dev_err(hdev, "QCA Wrong packet received %d %d", edl->cresp,
+ 			   edl->rtype);
+ 		err = -EIO;
+ 		goto out;
+ 	}
+ 
+-	ver = (struct rome_version *)(edl->data);
++	ver = (struct rome_version *)(edl->data + (qca_newer_soc ? 1 : 0));
+ 
+ 	BT_DBG("%s: Product:0x%08x", hdev->name, le32_to_cpu(ver->product_id));
+ 	BT_DBG("%s: Patch  :0x%08x", hdev->name, le16_to_cpu(ver->patch_ver));
+@@ -81,6 +89,9 @@
+ 	 */
+ 	*soc_version = (le32_to_cpu(ver->soc_id) << 16) |
+ 			(le16_to_cpu(ver->rome_ver) & 0x0000ffff);
++	bt_dev_info(hdev, "QCA version: product 0x%08x patch 0x%04x rom 0x%04x soc 0x%08x -> soc_ver 0x%08x%s",
++		    le32_to_cpu(ver->product_id), le16_to_cpu(ver->patch_ver), le16_to_cpu(ver->rome_ver),
++		    le32_to_cpu(ver->soc_id), *soc_version, qca_newer_soc ? " (newer SoC format)" : "");
+ 	if (*soc_version == 0)
+ 		err = -EILSEQ;
+ 
+@@ -185,10 +196,18 @@
+ 				 * enabling software inband sleep
+ 				 * onto controller side.
+ 				 */
+-				tlv_nvm->data[0] |= 0x80;
+-
+-				/* UART Baud Rate */
+-				tlv_nvm->data[2] = config->user_baud_rate;
++				/* q2: not on the QCA6390 - asleep before the HCI reset after the NVM, it never answered */
++				if (qca_newer_soc)
++					tlv_nvm->data[0] &= ~0x80;
++				else
++					tlv_nvm->data[0] |= 0x80;
++
++				/* UART Baud Rate (q2: byte 1 on QCA6390 / WCN3991 and newer, as in later upstream btqca -
++				 * its NVM default there is 0x11 = 3.2 Mbit/s while the host runs 3 Mbit/s) */
++				if (qca_newer_soc)
++					tlv_nvm->data[1] = config->user_baud_rate;
++				else
++					tlv_nvm->data[2] = config->user_baud_rate;
+ 
+ 				break;
+ 
+@@ -196,7 +215,10 @@
+ 				/* Sleep enable mask
+ 				 * enabling deep sleep feature on controller.
+ 				 */
+-				tlv_nvm->data[0] |= 0x01;
++				if (qca_newer_soc)
++					tlv_nvm->data[0] &= ~0x01;	/* q2: QCA6390 stays awake (see above) */
++				else
++					tlv_nvm->data[0] |= 0x01;
+ 
+ 				break;
+ 			}
+@@ -236,13 +258,28 @@
+ 		return err;
+ 	}
+ 
++	edl = (struct edl_event_hdr *)(skb->data);
++	/* q2: QCA6390 acks each segment command-complete style (status 0, request code 0x1e echoed, then the result) */
++	if (qca_newer_soc && skb->len >= sizeof(*edl) &&
++	    edl->cresp == EDL_CMD_REQ_RES_EVT && edl->rtype == EDL_PATCH_TLV_REQ_CMD) {
++		static int shown;
++		if (shown++ < 2)
++			bt_dev_info(hdev, "QCA TLV ack (%d bytes): %*ph", skb->len, (int)min_t(unsigned int, skb->len, 16), skb->data);
++		/* the ack is often just "00 1e" (status 0 = ok); a result byte, when present, follows */
++		tlv_resp = (struct tlv_seg_resp *)(edl->data);
++		if (skb->len > sizeof(*edl) && tlv_resp->result != 0x00) {
++			bt_dev_err(hdev, "QCA TLV segment result 0x%x", tlv_resp->result);
++			err = -EIO;
++		}
++		goto out;
++	}
++
+ 	if (skb->len != sizeof(*edl) + sizeof(*tlv_resp)) {
+-		bt_dev_err(hdev, "QCA TLV response size mismatch");
++		bt_dev_err(hdev, "QCA TLV response size mismatch (%d bytes): %*ph", skb->len, (int)min_t(unsigned int, skb->len, 16), skb->data);
+ 		err = -EILSEQ;
+ 		goto out;
+ 	}
+ 
+-	edl = (struct edl_event_hdr *)(skb->data);
+ 	if (!edl) {
+ 		bt_dev_err(hdev, "TLV with no header");
+ 		err = -EILSEQ;
+@@ -381,7 +418,7 @@
+ 		return err;
+ 	}
+ 
+-	/* Perform HCI reset */
++	/* Perform HCI reset (q2: straight away - the QCA6390's NVM enables deep sleep with a short idle timer) */
+ 	err = qca_send_reset(hdev);
+ 	if (err < 0) {
+ 		bt_dev_err(hdev, "QCA Failed to run HCI_RESET (%d)", err);
+@@ -394,6 +431,12 @@
+ }
+ EXPORT_SYMBOL_GPL(qca_uart_setup);
+ 
++bool qca_soc_is_newer(void)
++{
++	return qca_newer_soc;
++}
++EXPORT_SYMBOL_GPL(qca_soc_is_newer);
++
+ MODULE_AUTHOR("Ben Young Tae Kim <ytkim@qca.qualcomm.com>");
+ MODULE_DESCRIPTION("Bluetooth support for Qualcomm Atheros family ver " VERSION);
+ MODULE_VERSION(VERSION);
+--- a/drivers/bluetooth/btqca.h	2026-10-27 16:07:44.984115500 -0400
++++ b/drivers/bluetooth/btqca.h	2026-10-27 17:24:03.119446600 -0400
+@@ -140,6 +140,7 @@
+ int qca_uart_setup(struct hci_dev *hdev, uint8_t baudrate,
+ 		   enum qca_btsoc_type soc_type, u32 soc_ver);
+ int qca_read_soc_version(struct hci_dev *hdev, u32 *soc_version);
++bool qca_soc_is_newer(void);
+ 
+ #else
+ 
+@@ -159,4 +160,9 @@
+ 	return -EOPNOTSUPP;
+ }
+ 
++static inline bool qca_soc_is_newer(void)
++{
++	return false;
++}
++
+ #endif

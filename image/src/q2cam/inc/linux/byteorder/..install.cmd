@@ -1,0 +1,1 @@
+cmd_/tmp/khdr/include/linux/byteorder/.install := /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/byteorder /tmp/khsrc/include/uapi/linux/byteorder big_endian.h little_endian.h; /bin/bash /tmp/khsrc/scripts/headers_install.sh /tmp/khdr/include/linux/byteorder ./include/generated/uapi/linux/byteorder ; touch /tmp/khdr/include/linux/byteorder/.install

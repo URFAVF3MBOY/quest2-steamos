@@ -1,0 +1,229 @@
+diff --git a/drivers/clk/qcom/Makefile b/drivers/clk/qcom/Makefile
+index 8834fc9bf..847a1bf3c 100644
+--- a/drivers/clk/qcom/Makefile
++++ b/drivers/clk/qcom/Makefile
+@@ -1,4 +1,6 @@
+ # SPDX-License-Identifier: GPL-2.0
++ccflags-y += -I$(src)
++
+ obj-$(CONFIG_COMMON_CLK_QCOM) += clk-qcom.o
+ 
+ clk-qcom-y += common.o
+diff --git a/drivers/power/supply/bq27xxx_battery.c b/drivers/power/supply/bq27xxx_battery.c
+index 713eac15e..932040814 100644
+--- a/drivers/power/supply/bq27xxx_battery.c
++++ b/drivers/power/supply/bq27xxx_battery.c
+@@ -65,7 +65,7 @@
+ 
+ #include <linux/pmic-voter.h>
+ 
+-#include <power_supply.h>
++#include "power_supply.h"
+ #include <linux/of_batterydata.h>
+ 
+ /* BQ27XXX Flags */
+diff --git a/drivers/soc/qcom/crypto-qti-platform.h b/drivers/soc/qcom/crypto-qti-platform.h
+index b898146d6..26ad2f4b0 100644
+--- a/drivers/soc/qcom/crypto-qti-platform.h
++++ b/drivers/soc/qcom/crypto-qti-platform.h
+@@ -34,7 +34,7 @@ static inline int crypto_qti_invalidate_key(
+ {
+ 	return 0;
+ }
+-static int crypto_qti_tz_raw_secret(u8 *wrapped_key,
++static inline int crypto_qti_tz_raw_secret(const u8 *wrapped_key,
+ 					unsigned int wrapped_key_size,
+ 					u8 *secret, unsigned int secret_size)
+ {
+diff --git a/drivers/soc/qcom/qtee_shmbridge.c b/drivers/soc/qcom/qtee_shmbridge.c
+index d064860c1..823bc3347 100644
+--- a/drivers/soc/qcom/qtee_shmbridge.c
++++ b/drivers/soc/qcom/qtee_shmbridge.c
+@@ -9,6 +9,7 @@
+ #include <linux/device.h>
+ #include <linux/slab.h>
+ #include <linux/genalloc.h>
++#include <linux/of.h>
+ 
+ #include <soc/qcom/scm.h>
+ #include <soc/qcom/qseecomi.h>
+@@ -348,6 +349,16 @@ static int __init qtee_shmbridge_init(void)
+ 		return 0;
+ 	}
+ 
++	/*
++	 * This issues an SMC to the real TrustZone shmbridge TA. Under QEMU
++	 * (no "qcom,kona" compatible root, e.g. its "linux,dummy-virt" virt
++	 * board) there is no EL3 firmware to answer it, and the smc
++	 * instruction itself UNDEFINED-traps instead of returning an error
++	 * — skip it there.
++	 */
++	if (!of_machine_is_compatible("qcom,kona"))
++		return 0;
++
+ 	/* allocate a contiguous page aligned buffer */
+ 	default_bridge.size = DEFAULT_BRIDGE_SIZE;
+ 	default_bridge.vaddr = (void *)__get_free_pages(GFP_KERNEL|__GFP_COMP,
+diff --git a/drivers/thermal/thermal_core.c b/drivers/thermal/thermal_core.c
+index 185db2ddc..0106e9363 100644
+--- a/drivers/thermal/thermal_core.c
++++ b/drivers/thermal/thermal_core.c
+@@ -23,7 +23,7 @@
+ #include <net/genetlink.h>
+ #include <linux/suspend.h>
+ #include <linux/kobject.h>
+-#include <../base/base.h>
++#include "../base/base.h"
+ 
+ #define CREATE_TRACE_POINTS
+ #include <trace/events/thermal.h>
+diff --git a/techpack/camera/drivers/cam_req_mgr/Makefile b/techpack/camera/drivers/cam_req_mgr/Makefile
+index 8ecc89ffd..cb87248e9 100644
+--- a/techpack/camera/drivers/cam_req_mgr/Makefile
++++ b/techpack/camera/drivers/cam_req_mgr/Makefile
+@@ -5,6 +5,7 @@ ccflags-y += -I$(srctree)/techpack/camera/drivers/cam_core
+ ccflags-y += -I$(srctree)/techpack/camera/drivers/cam_smmu/
+ ccflags-y += -I$(srctree)/techpack/camera/drivers/cam_utils
+ ccflags-y += -I$(srctree)/
++ccflags-y += -I$(src)
+ 
+ obj-$(CONFIG_SPECTRA_CAMERA) += cam_req_mgr_core.o\
+ 				cam_req_mgr_dev.o \
+diff --git a/techpack/camera/drivers/cam_sensor_module/cam_cci/Makefile b/techpack/camera/drivers/cam_sensor_module/cam_cci/Makefile
+index a1301bf41..c3f7ab1b1 100644
+--- a/techpack/camera/drivers/cam_sensor_module/cam_cci/Makefile
++++ b/techpack/camera/drivers/cam_sensor_module/cam_cci/Makefile
+@@ -8,5 +8,6 @@ ccflags-y += -I$(srctree)/techpack/camera/drivers/cam_sensor_module/cam_sensor_i
+ ccflags-y += -I$(srctree)/techpack/camera/drivers/cam_sensor_module/cam_sensor_utils
+ ccflags-y += -I$(srctree)/techpack/camera/drivers/cam_smmu
+ ccflags-y += -I$(srctree)
++ccflags-y += -I$(src)
+ 
+ obj-$(CONFIG_SPECTRA_CAMERA) += cam_cci_dev.o cam_cci_core.o cam_cci_soc.o
+diff --git a/techpack/display/pll/Makefile b/techpack/display/pll/Makefile
+index 0b29a90ca..065f7e189 100644
+--- a/techpack/display/pll/Makefile
++++ b/techpack/display/pll/Makefile
+@@ -1,6 +1,6 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+ 
+-ccflags-y := -I$(srctree)/drivers/clk/qcom/
++ccflags-y := -I$(srctree)/drivers/clk/qcom/ -I$(src)
+ 
+ obj-$(CONFIG_QCOM_MDSS_PLL) += pll_util.o
+ obj-$(CONFIG_QCOM_MDSS_PLL) += pll_drv.o
+diff --git a/drivers/staging/oculus/Kconfig b/drivers/staging/oculus/Kconfig
+index cc2a47385..c2b05a8a3 100644
+--- a/drivers/staging/oculus/Kconfig
++++ b/drivers/staging/oculus/Kconfig
+@@ -285,7 +285,6 @@ config VENDOR_DT_OUTPUT_DISABLE
+ 	  VENDOR_DT_OUTPUT_DISABLE is set since we don't need any of these on Meta
+ 	  platforms.
+ 
+-source "drivers/staging/oculus/internal/Kconfig"
+ source "drivers/staging/oculus/mcu/Kconfig"
+ 
+ endif # OCULUS
+diff --git a/drivers/staging/oculus/Makefile b/drivers/staging/oculus/Makefile
+index 6f6372ce3..5431e1e30 100644
+--- a/drivers/staging/oculus/Makefile
++++ b/drivers/staging/oculus/Makefile
+@@ -39,5 +39,4 @@ obj-$(CONFIG_SENSORS_PWM_TACH_FAN)	+= pwm-tach-fan.o
+ obj-$(CONFIG_SPI_STP)			+= stp/
+ obj-$(CONFIG_ST_VD6281_ADAPTER)		+= vd6281/
+ obj-$(CONFIG_UVLO_TLV4021)		+= uvlo_tlv4021.o
+-obj-y					+= internal/
+ obj-y					+= mcu/
+diff --git a/arch/arm64/include/asm/lse.h b/arch/arm64/include/asm/lse.h
+index 90894d8e7..598c98c03 100644
+--- a/arch/arm64/include/asm/lse.h
++++ b/arch/arm64/include/asm/lse.h
+@@ -20,12 +20,7 @@
+ 
+ #else	/* __ASSEMBLER__ */
+ 
+-#ifdef CONFIG_LTO_CLANG
+ #define __LSE_PREAMBLE	".arch_extension lse\n"
+-#else
+-__asm__(".arch_extension	lse");
+-#define __LSE_PREAMBLE
+-#endif
+ 
+ /* Move the ll/sc atomics out-of-line */
+ #define __LL_SC_INLINE		notrace
+diff --git a/arch/arm64/crypto/aes-modes.S b/arch/arm64/crypto/aes-modes.S
+index 483a7130c..496c243de 100644
+--- a/arch/arm64/crypto/aes-modes.S
++++ b/arch/arm64/crypto/aes-modes.S
+@@ -232,17 +232,19 @@ AES_ENTRY(aes_ctr_encrypt)
+ 	bmi		.Lctr1x
+ 	cmn		w6, #4			/* 32 bit overflow? */
+ 	bcs		.Lctr1x
+-	ldr		q8, =0x30000000200000001	/* addends 1,2,3[,0] */
+-	dup		v7.4s, w6
++	add		w7, w6, #1
+ 	mov		v0.16b, v4.16b
+-	add		v7.4s, v7.4s, v8.4s
++	add		w8, w6, #2
+ 	mov		v1.16b, v4.16b
+-	rev32		v8.16b, v7.16b
++	add		w9, w6, #3
+ 	mov		v2.16b, v4.16b
++	rev		w7, w7
+ 	mov		v3.16b, v4.16b
+-	mov		v1.s[3], v8.s[0]
+-	mov		v2.s[3], v8.s[1]
+-	mov		v3.s[3], v8.s[2]
++	rev		w8, w8
++	mov		v1.s[3], w7
++	rev		w9, w9
++	mov		v2.s[3], w8
++	mov		v3.s[3], w9
+ 	ld1		{v5.16b-v7.16b}, [x20], #48	/* get 3 input blocks */
+ 	bl		aes_encrypt_block4x
+ 	eor		v0.16b, v5.16b, v0.16b
+diff --git a/arch/arm64/lib/memcpy.S b/arch/arm64/lib/memcpy.S
+index 676139377..dfedd4ab1 100644
+--- a/arch/arm64/lib/memcpy.S
++++ b/arch/arm64/lib/memcpy.S
+@@ -68,9 +68,8 @@
+ 	stp \ptr, \regB, [\regC], \val
+ 	.endm
+ 
+-	.weak memcpy
+ ENTRY(__memcpy)
+-ENTRY(memcpy)
++WEAK(memcpy)
+ #include "copy_template.S"
+ 	ret
+ ENDPIPROC(memcpy)
+diff --git a/arch/arm64/lib/memmove.S b/arch/arm64/lib/memmove.S
+index a5a445901..e3de8f05c 100644
+--- a/arch/arm64/lib/memmove.S
++++ b/arch/arm64/lib/memmove.S
+@@ -57,9 +57,8 @@ C_h	.req	x12
+ D_l	.req	x13
+ D_h	.req	x14
+ 
+-	.weak memmove
+ ENTRY(__memmove)
+-ENTRY(memmove)
++WEAK(memmove)
+ 	cmp	dstin, src
+ 	b.lo	__memcpy
+ 	add	tmp1, src, count
+diff --git a/arch/arm64/lib/memset.S b/arch/arm64/lib/memset.S
+index f2670a9f2..316263c47 100644
+--- a/arch/arm64/lib/memset.S
++++ b/arch/arm64/lib/memset.S
+@@ -54,9 +54,8 @@ dst		.req	x8
+ tmp3w		.req	w9
+ tmp3		.req	x9
+ 
+-	.weak memset
+ ENTRY(__memset)
+-ENTRY(memset)
++WEAK(memset)
+ 	mov	dst, dstin	/* Preserve return value.  */
+ 	and	A_lw, val, #255
+ 	orr	A_lw, A_lw, A_lw, lsl #8

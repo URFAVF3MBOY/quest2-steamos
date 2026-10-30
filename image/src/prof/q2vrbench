@@ -1,0 +1,68 @@
+#!/bin/bash
+# q2vrbench (desk-291) - one unattended comparison of Steam set-ups in VR, so the next image uses the best one.
+# Runs once (until /var/lib/q2/bench291.done exists; /var/lib/q2/nobench = never).  For each variant: restart Steam
+# with it (/tmp/q2bench.env, read by /tmp/q2steam-run.sh and the steamwebhelper wrapper), let it settle, open the big
+# dashboard (q2vrdash, /tmp/q2dashreq), measure 30 s, close it, measure 15 s.  Measured: CPU of Steam's web UI (and its
+# compositor thread), of Steam, of vrcompositor; SteamVR's frame timing (compositor GPU ms, dropped frames); temperature;
+# whether the web UI's GPU process restarted.  Result: /var/log/q2/vrbench.txt (goes out with Ctrl+Alt+U).
+O=/var/log/q2/vrbench.txt; DASHLOG=/var/log/q2/vrlogs/vrdash.txt; DONE=/var/lib/q2/bench291.done
+[ -e $DONE ] || [ -e /var/lib/q2/nobench ] && exit 0
+log() { echo "$(date +%T) $*" | tee -a $O; }
+temp() { cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null | sort -n | tail -1 | awk '{printf "%d", $1/1000}'; }
+gpuproc() { pgrep -f 'steamwebhelper.*type=gpu-process' | head -1; }
+ticks() { local s=0 p t v; for p in "$@"; do for t in /proc/$p/task/*/stat; do v=$(awk '{s=$0; sub(/.*\) /,"",s); split(s,a," "); print a[12]+a[13]}' $t 2>/dev/null); s=$((s + ${v:-0})); done; done; echo $s; }
+vizt() { local g=$1 t; for t in /proc/$g/task/*; do [ "$(cat $t/comm 2>/dev/null)" = VizCompositorTh ] && { echo ${t##*/}; return; }; done; }
+tticks() { awk '{s=$0; sub(/.*\) /,"",s); split(s,a," "); print a[12]+a[13]}' /proc/$1/task/$2/stat 2>/dev/null || echo 0; }
+SEQ=0
+dash() { SEQ=$((SEQ+1)); echo "$SEQ$$ $1" > /tmp/q2dashreq.n; chmod 644 /tmp/q2dashreq.n; mv -f /tmp/q2dashreq.n /tmp/q2dashreq; }
+cool() { local n=0; while [ "$(temp)" -ge 93 ] && [ $n -lt 40 ]; do [ $n = 0 ] && log "  hot ($(temp) C) - waiting to cool"; sleep 15; n=$((n+1)); done; }
+
+# wait for VR + Steam in VR mode
+n=0; while [ $n -lt 900 ]; do
+  [ "$(cat /tmp/q2vr/state 2>/dev/null)" = running ] && [ -n "$(gpuproc)" ] && pgrep -x vrcompositor >/dev/null && break
+  sleep 5; n=$((n+5)); done
+[ -n "$(gpuproc)" ] || { echo "$(date +%T) VR/Steam never came up - no benchmark" >> $O; exit 0; }
+: > $O
+log "q2vrbench desk-291 - Steam set-ups compared with the big dashboard open (unattended)"
+sleep 60
+HLO="--backend headless"; /tmp/q2gamescope-vr --help 2>&1 | grep -q -- '--backend' || HLO="--headless"
+SUIHZ=$(cat /var/lib/q2/steamuihz 2>/dev/null | tr -cd 0-9); SUIHZ=${SUIHZ:-45}
+V=(
+  "A-baseline|"
+  "B-nonice|B_NICE=0"
+  "C-smallwindow|B_GS='/tmp/q2gamescope-vr $HLO -W 960 -H 540 -r $SUIHZ --'"
+  "D-gpupresent|B_ENV='Q2B_CEFCLEAN=1'"
+  "E-gpubuffers|B_ENV='Q2B_CEFCLEAN=1 Q2B_CEFEXTRA=--enable-native-gpu-memory-buffers'"
+  "F-nonice+small|B_NICE=0; B_GS='/tmp/q2gamescope-vr $HLO -W 960 -H 540 -r $SUIHZ --'"
+  "A-baseline-again|"
+)
+printf '%-18s %8s %8s %8s %8s %9s %8s %6s %5s  %s\n' variant webui% viz% steam% comp% compGPUms dropped temp gpuR closed:webui% | tee -a $O
+for v in "${V[@]}"; do
+  name=${v%%|*}; cfg=${v#*|}
+  cool
+  { echo "B_NAME=$name"; [ -n "$cfg" ] && echo "$cfg"; } > /tmp/q2bench.env; chmod 644 /tmp/q2bench.env
+  g0=$(gpuproc)
+  # restart Steam (the run loop relaunches it in VR mode with the variant)
+  for p in $(pgrep -x steam); do kill $p; done
+  n=0; while pgrep -x steam >/dev/null && [ $n -lt 40 ]; do sleep 1; n=$((n+1)); done
+  pgrep -x steam >/dev/null && { pkill -9 -x steam; sleep 2; }
+  n=0; while [ $n -lt 150 ]; do g=$(gpuproc); [ -n "$g" ] && [ "$g" != "$g0" ] && break; sleep 2; n=$((n+2)); done
+  g=$(gpuproc)
+  if [ -z "$g" ] || [ "$g" = "$g0" ]; then log "$name: Steam's web UI did not come back - skipped"; continue; fi
+  sleep 50
+  dash open; sleep 12
+  g=$(gpuproc); vt=$(vizt $g); W=$(pgrep -f 'steamrtarm64/steamwebhelper' | tr '\n' ' '); S=$(pgrep -x steam); C=$(pgrep -x vrcompositor)
+  l0=$(wc -l < $DASHLOG 2>/dev/null || echo 0)
+  w0=$(ticks $W); v0=$(tticks $g $vt); s0=$(ticks $S); c0=$(ticks $C)
+  sleep 30
+  w1=$(ticks $W); v1=$(tticks $g $vt); s1=$(ticks $S); c1=$(ticks $C); g1=$(gpuproc)
+  ft=$(tail -n +$((l0+1)) $DASHLOG 2>/dev/null | grep 'SteamVR frame timing' | sed -E 's/.*compositor GPU ([0-9.]+) ms.*dropped ([0-9]+),.*/\1 \2/' | awk '{g+=$1; d+=$2; n++} END {if (n) printf "%.1f %d", g/n, d; else print "- -"}')
+  dash close; sleep 8
+  W2=$(pgrep -f 'steamrtarm64/steamwebhelper' | tr '\n' ' '); x0=$(ticks $W2); sleep 15; x1=$(ticks $W2)
+  printf '%-18s %8.0f %8.0f %8.0f %8.0f %9s %8s %6s %5s  %s\n' $name $(( (w1-w0)/30 )) $(( (v1-v0)/30 )) $(( (s1-s0)/30 )) $(( (c1-c0)/30 )) ${ft% *} ${ft#* } $(temp) $([ "$g1" = "$g" ] && echo no || echo YES) $(( (x1-x0)/15 )) | tee -a $O
+  grep -h 'bench:' $DASHLOG 2>/dev/null | tail -2 | sed 's/^/    q2vrdash: /' >> $O
+done
+rm -f /tmp/q2bench.env; touch $DONE
+log "done - back to the normal set-up (Steam restarts once more)"
+for p in $(pgrep -x steam); do kill $p; done
+{ echo; echo "== Steam launches during the benchmark"; grep -E 'benchmark variant|exited with code' /tmp/q2steam-exits.log | tail -30; } >> $O

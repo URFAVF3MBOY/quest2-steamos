@@ -1,0 +1,8 @@
+# q2msm - mainline Linux 5.10 drm/msm, GPU-only (render node), out-of-tree for the Quest 2's 4.19 kernel.
+# The display stays with Meta's SDE driver; KGSL stays built in as the fallback (unbind it before binding this).
+obj-m += q2msm.o
+q2msm-y := msm_drv.o msm_fence.o msm_gem.o msm_gem_prime.o msm_gem_shrinker.o msm_gem_submit.o msm_gem_vma.o \
+           msm_gpu.o msm_gpu_tracepoints.o msm_iommu.o msm_ringbuffer.o msm_submitqueue.o \
+           adreno/adreno_device.o adreno/adreno_gpu.o adreno/a6xx_gpu.o adreno/a6xx_gmu.o adreno/a6xx_hfi.o adreno/a6xx_preempt.o \
+           q2shim.o
+ccflags-y += -include $(src)/q2compat.h -I$(src)/include -I$(src) -I$(src)/adreno -DCONFIG_DRM_MSM_GPU_ONLY=1 -Wno-error
