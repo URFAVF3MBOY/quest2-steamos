@@ -1,76 +1,85 @@
 # Building it yourself
 
-You can rebuild everything in this repository. There are two ways:
+Everything in the release images is built from this repository. You need:
 
-| Way                                    | You need                                                | You get                                                                                                                 |
-| -------------------------------------- | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| **A. Rebuild the release image** | Linux or WSL with `python3`, `sh` and `sha256sum` | The exact same bytes as the released `boot_steamos.img` (about 2 minutes)                                             |
-| **B. From source**               | A GitHub account (for Actions), then way A              | A working image built from fresh source. It won't be byte-identical, because the CI builds stamp times into their files |
+- **GitHub Actions** (a fork of this repository, or the runs of this one) for the compiled parts: kernel, drivers, Mesa.
+- **Linux or WSL** with `python3`, `sh` and `sha256sum` to put the boot image together (about 2 minutes).
+- **The base image** `boot_steamos_desk204_phaseb4_caps_mmu.img` from the [latest release](../../releases/latest).
 
-Either way you finish with `image/out/boot_steamos.img`, which you flash to the **boot partition only** ([INSTALL.md](INSTALL.md)).
+You finish with `image/out/boot_steamos.img` (SteamOS on the internal storage) or `image/out/boot_steamos_usb.img` (SteamOS on the USB drive, for the first install). Flash it to the **boot partition only** ([INSTALL.md](INSTALL.md)).
 
-## A. Rebuild the release image
+Your image won't be byte-identical to the released one: the CI builds stamp build times into the kernel and the modules. It behaves the same.
 
-1. Download `build-inputs.zip` and `build-inputs.z01` from the [latest release](../../releases/latest) and unzip them (7-Zip, or `zip -s 0 build-inputs.zip --out all.zip && unzip all.zip` on Linux). Put the files here:
+## 1. Get the build inputs
 
-   | File                                                                                 | Put it in       |
-   | ------------------------------------------------------------------------------------ | --------------- |
-   | `boot_steamos_desk204_phaseb4_caps_mmu.img`                                        | `image/base/` |
-   | `boot_steamos.img` (the kernel build, not the image you flash)                     | `image/art/`  |
-   | `q2modules.tar.gz`, `q2gpu.tar.gz`, `fuse-overlayfs`, `q2gpu-android.tar.gz` | `image/art/`  |
+Run these workflows in the **Actions** tab (or download the artifacts of their latest runs here) and put the files in `image/art/`:
 
-   `SHA256SUMS` in the zip lists the checksums.
-2. Run:
+| Workflow | Artifact | File(s) for `image/art/` | What it is |
+| --- | --- | --- | --- |
+| `build-quest2-steamos` | `quest2-steamos` | `boot_steamos.img`, `q2modules.tar.gz` | Meta's Quest 2 kernel 4.19 with patches and config (only the kernel is used), plus the Wi-Fi driver built for it |
+| `build-quest2-steamos` | `quest2-audio` | `q2audio.tar.gz` | The Kona sound modules (optional: without them there is no sound) |
+| `build-q2msm` | `q2msm` | `q2msm.ko` (in `kernel/q2msm/`) | The GPU kernel driver: mainline Linux drm/msm ported to this kernel |
+| `build-q2gpu` | `q2gpu-aarch64` | `q2gpu.tar.gz` | Mesa: Turnip (Vulkan) and freedreno (OpenGL) for the Adreno 650, plus zink |
+| `build-fuse-overlayfs` | `fuse-overlayfs-aarch64` | `fuse-overlayfs` | fuse-overlayfs 1.18 (the C version), needed by Lepton on kernel 4.19 |
+| `build-q2gpu-android` | `q2gpu-android` | `q2gpu-android.tar.gz` | The same Mesa built for Android, for Android apps in Lepton (optional) |
 
-   ```
-   cd image
-   sh build.sh
-   ```
+Put the base image in `image/base/`. Its SHA-256 is in `image/inputs.sha256`; `build.sh` checks it.
 
-The script checks every input against `image/inputs.sha256`. It then adds the kernel, the boot script and the port's programs to the base image, refuses anything bigger than the 80 MiB boot partition, and prints the SHA-256 of the result next to the one in `image/output.sha256`. If they match, you have exactly the released image.
+## 2. Build
 
-Other options:
+```
+cd image
+sh build.sh            # out/boot_steamos.img      (SteamOS on the internal storage)
+USB=1 sh build.sh      # out/boot_steamos_usb.img  (SteamOS on the USB drive)
+```
 
-- `USB=1 sh build.sh` builds the first-install image (SteamOS from the USB drive).
-- `REBUILD=1 sh build.sh` also recompiles the tracking tools, the SteamVR driver and the pose reader with `clang` + `lld`. It behaves the same; the bytes differ if your clang version does.
+`build.sh` deletes and recreates `image/out/` every time, so copy the image somewhere else before the next run.
 
-## B. From source with GitHub Actions
+What it does:
 
-1. Fork this repository (or push it to a repository of your own) and enable Actions.
-2. In the **Actions** tab, run these workflows. Each one ends with an artifact to download:| Workflow                 | Artifact                   | Files for `image/art/`                   | What it is                                                                             |
-   | ------------------------ | -------------------------- | ------------------------------------------ | -------------------------------------------------------------------------------------- |
-   | `build-quest2-steamos` | `quest2-steamos`         | `boot_steamos.img`, `q2modules.tar.gz` | Meta's Quest 2 kernel 4.19 with patches and config, plus the Wi-Fi driver built for it |
-   | `build-q2gpu`          | `q2gpu-aarch64`          | `q2gpu.tar.gz`                           | Mesa with patches: Turnip (Vulkan) on Qualcomm's KGSL driver, zink for OpenGL      |
-   | `build-fuse-overlayfs` | `fuse-overlayfs-aarch64` | `fuse-overlayfs`                         | fuse-overlayfs 1.18 (the C version), needed by Lepton on kernel 4.19                   |
-   | `build-q2gpu-android`  | `q2gpu-android`          | `q2gpu-android.tar.gz`                   | The same Mesa built for Android, for Android apps in Lepton (optional)                 |
-3. Unzip each artifact into `image/art/`. Get the base image from the release (see below), then run `sh build.sh` in `image/`. It will say the inputs differ from the release; that's expected.
+1. Adds the kernel, the boot script (`image/src/init/init`), the GPU driver and the port's programs to the base image (`tools/inject_boot.py`).
+2. Merges all ramdisk layers into one (`tools/flatten_boot.py`); the boot partition is only 80 MiB.
+3. Patches Meta's device tree for the stock 587 MHz GPU level (`tools/patch_dtb.py`, two values; it refuses any other device tree).
+4. Sets the kernel command line (`tools/rebase_boot.py`): `initcall_blacklist=kgsl_3d_init` (the GPU runs on q2msm, Qualcomm's KGSL driver never starts), `loglevel=4`, SteamVR starts by itself, and for `USB=1` no `q2_rootdev=userdata`.
+5. Refuses an image bigger than the 80 MiB boot partition and prints its SHA-256.
 
-### The base image
+`REBUILD=1 sh build.sh` also recompiles the SteamVR driver, the pose reader and the camera tools from `image/src/` with `clang` + `lld` instead of using `image/prebuilt/`. The `build-q2tools` workflow does the same in CI.
 
-`image/base/boot_steamos_desk204_phaseb4_caps_mmu.img` is a boot image from an earlier stage of the project, and we keep it frozen because the release hashes depend on it. It provides:
+## Which init?
 
-- the Android boot header and the kernel command line (the build changes `loglevel` and, for `USB=1`, the root device),
-- Meta's device tree (the same one as in `stock/`),
-- the small Alpine Linux ramdisk with busybox, bash, util-linux and  `qscreen`, `qlog`, `qrw` and `q2blit` tools,
+`image/src/init/init` is the boot script of the release images, for both variants. Its `find_root()` uses the internal `userdata` partition when the kernel command line has `q2_rootdev=userdata` (`boot_steamos.img`), and otherwise looks for the SteamOS USB drive (`boot_steamos_usb.img`).
+
+`initramfs/init-steamos` and `scripts/build_initramfs.sh` belong to the images that `build-quest2-steamos` packs for itself (USB only, from the early stage of the project). `build.sh` only takes the kernel from that workflow, so they are not part of the release images.
+
+## The base image
+
+`boot_steamos_desk204_phaseb4_caps_mmu.img` is a boot image from an earlier stage of the project. It stays frozen so builds start from the same point. It provides:
+
+- the Android boot header and the kernel command line (which the build then edits),
+- Meta's device tree (the same one as in `stock/`; the build patches the GPU levels),
+- the small Alpine Linux ramdisk with busybox, bash, util-linux and the `qscreen`, `qlog`, `qrw` and `q2blit` tools,
 - the Adreno 650 GPU firmware (`a650_sqe.fw`, `a650_gmu.bin`, from linux-firmware). The boot script also reads the GPU firmware from the headset's own vendor partition.
 
-The kernel and `init` from the base image are replaced during the build. The ramdisk comes from `initramfs/` and `scripts/build_initramfs.sh`, which the `build-quest2-steamos` workflow also packs.
+Its kernel and `init` are replaced during the build.
 
 ## What gets built where
 
-| Part                        | Source                                                                                                   | Build                                                                             |
-| --------------------------- | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| Kernel                      | `facebookincubator/oculus-linux-kernel` at commit `6e428607392d` + `patches/*.patch` + `config/` | `build-quest2-steamos` with AOSP clang r450784e                                 |
-| Wi-Fi driver                | `qcacld-3.0` in the same kernel tree                                                                   | same workflow                                                                     |
-| GPU driver (`/opt/q2gpu`) | Mesa `4e1e46921e` + `patches/turnip-q2-drm.py` + `patches/turnip-q2-async.py`                      | `build-q2gpu`                                                                   |
-| Boot script                 | `image/src/init/init`                                                                                  | copied into the boot image by `build.sh`                                        |
-| SteamVR driver              | `image/src/hmd/driver_q2hmd.cpp`                                                                       | `REBUILD=1 sh build.sh`                                                         |
-| SteamVR display layer       | `image/src/layer/q2vrdisplay.c`                                                                        | by hand, see below                                                                |
-| Tracking helpers            | `image/src/island/`                                                                                    | `metapose.c` with `REBUILD=1`; `shim.c` and `host.c` need the Android NDK |
-| Ruby/Proton fix             | `image/src/prof/q2rubyfix` (Python)                                                                    | nothing to build                                                                  |
-| cabextract                  | [libmspack](https://github.com/kyz/libmspack) + musl, static aarch64                                      | prebuilt; see below                                                               |
+| Part | Source | Build |
+| --- | --- | --- |
+| Kernel | `facebookincubator/oculus-linux-kernel` at commit `6e428607392d` + `patches/*.patch` + `config/` | `build-quest2-steamos` with AOSP clang r450784e |
+| Wi-Fi driver | `qcacld-3.0` in the same kernel tree | same workflow |
+| Sound modules | `techpack/audio` in the same kernel tree | same workflow |
+| GPU kernel driver (`q2msm.ko`) | `kernel/q2msm/` (mainline drm/msm, adapted) | `build-q2msm` |
+| GPU userspace (`/opt/q2gpu`) | Mesa `4e1e46921e` + `patches/turnip-q2-drm.py` + `patches/turnip-q2-async.py` | `build-q2gpu` |
+| Boot script | `image/src/init/init` | copied into the boot image by `build.sh` |
+| SteamVR driver | `image/src/hmd/driver_q2hmd.cpp` | `build-q2tools`, or `REBUILD=1 sh build.sh` |
+| SteamVR display layer | `image/src/layer/q2vrdisplay.c` | `build-q2layer`; copy the result to `image/prebuilt/` |
+| Tracking helpers | `image/src/island/` | `metapose.c` with `build-q2tools` / `REBUILD=1`; `shim.c` and `host.c` need the Android NDK |
+| Ruby/Proton fix | `image/src/prof/q2rubyfix` (Python) | nothing to build |
+| cabextract | [libmspack](https://github.com/kyz/libmspack) + musl, static aarch64 | prebuilt; see below |
+| Bluetooth attach tool (`q2btattach`) | | prebuilt only (`image/prebuilt/q2btattach`) |
 
-### Rebuilding the Vulkan layer
+### Rebuilding the Vulkan layer by hand
 
 ```
 cd image/src/layer
@@ -81,7 +90,7 @@ clang --target=aarch64-linux-gnu -O2 -fPIC -shared -nostdlib -ffreestanding -fno
 cp libq2vrdisplay.so ../../prebuilt/
 ```
 
-`<vulkan headers>` is any folder with `vulkan/vulkan.h` (for example from the [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) repository).
+`<vulkan headers>` is any folder with `vulkan/vulkan.h` (for example from the [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) repository). The `build-q2layer` workflow runs exactly this.
 
 ### Rebuilding cabextract
 

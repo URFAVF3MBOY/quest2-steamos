@@ -12,3 +12,4 @@ image/art/*
 image/out/
 !image/base/.keep
 !image/art/.keep
+release-files/

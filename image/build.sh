@@ -1,31 +1,33 @@
 #!/bin/sh
 # build.sh - builds the Quest 2 SteamOS boot image from this folder.
 #
-#   sh build.sh              uses the compiled helpers in prebuilt/ (gives the exact released image)
+#   sh build.sh              uses the compiled helpers in prebuilt/
 #   REBUILD=1 sh build.sh    also recompiles the tracking tools, the SteamVR driver and the pose reader from src/
 #                            (needs clang + lld; a different clang version gives different bytes, same behaviour)
 #   USB=1 sh build.sh        image that boots SteamOS from a USB drive instead of the internal storage (first install)
 #
-# Needs these files first (see docs/BUILDING.md - they are attached to every GitHub release, or built by the workflows):
-#   base/boot_steamos_desk204_phaseb4_caps_mmu.img   base boot image: boot header, Meta's device tree, small Alpine ramdisk
+# Needs these files first (see docs/BUILDING.md):
+#   base/boot_steamos_desk204_phaseb4_caps_mmu.img   base boot image (from the GitHub release): boot header, Meta's
+#                               device tree, small Alpine ramdisk.  Frozen - its SHA-256 is in inputs.sha256.
 #   art/boot_steamos.img        kernel           (workflow build-quest2-steamos, artifact quest2-steamos)
 #   art/q2modules.tar.gz        Wi-Fi driver     (same artifact)
-#   art/q2gpu.tar.gz            GPU driver       (workflow build-q2gpu, artifact q2gpu-aarch64)
+#   art/q2audio.tar.gz          sound modules    (same workflow, artifact quest2-audio; optional - no sound without it)
+#   art/q2gpu.tar.gz            GPU userspace    (workflow build-q2gpu, artifact q2gpu-aarch64)
+#   art/q2msm.ko                GPU kernel driver (workflow build-q2msm, artifact q2msm: kernel/q2msm/q2msm.ko)
 #   art/fuse-overlayfs          for Android apps (workflow build-fuse-overlayfs)
 #   art/q2gpu-android.tar.gz    optional: GPU driver for Android apps (workflow build-q2gpu-android)
 #
-# Output: out/boot_steamos.img - flash it to the boot partition only.  Never flash abl or xbl.
+# Output: out/boot_steamos.img (or out/boot_steamos_usb.img with USB=1) - flash it to the boot partition only.
+# Never flash abl or xbl.
 set -e
 cd "$(dirname "$0")"
 BASE=${1:-base/boot_steamos_desk204_phaseb4_caps_mmu.img}
-for f in "$BASE" art/boot_steamos.img art/q2modules.tar.gz art/q2gpu.tar.gz art/fuse-overlayfs; do
+for f in "$BASE" art/boot_steamos.img art/q2modules.tar.gz art/q2gpu.tar.gz art/q2msm.ko art/fuse-overlayfs; do
   [ -f "$f" ] || { echo "missing $f - see docs/BUILDING.md"; exit 1; }
 done
-echo "== input check (inputs.sha256 lists the files the released image was built from)"
-L=""; for f in "$BASE" art/boot_steamos.img art/q2modules.tar.gz art/q2gpu.tar.gz art/fuse-overlayfs art/q2gpu-android.tar.gz; do [ -f "$f" ] && L="$L $f"; done
-sha256sum $L | sed "s#$BASE#base/boot_steamos_desk204_phaseb4_caps_mmu.img#" > out.inputs.tmp 2>/dev/null || true
-if diff -q out.inputs.tmp inputs.sha256 >/dev/null 2>&1; then echo "inputs: same as the release"; else echo "inputs: different from the release (fine for your own builds; the result will not match output.sha256):"; diff out.inputs.tmp inputs.sha256 || true; fi
-rm -f out.inputs.tmp
+echo "== base image check"
+if [ "$(sha256sum "$BASE" | cut -c1-64)" = "$(cut -c1-64 inputs.sha256)" ]; then echo "base: the released base image"
+else echo "base: NOT the released base image ($BASE) - the device-tree patch below may refuse it"; fi
 
 rm -rf out; mkdir -p out/island
 if [ -n "$REBUILD" ]; then
@@ -49,15 +51,20 @@ fi
 sh -n src/init/init
 
 # USB=1: SteamOS from the USB drive instead of the internal "userdata" partition (first install, docs/INSTALL.md)
-USBROOT=""; [ -n "$USB" ] && { USBROOT="--cmdline-drop q2_rootdev=userdata"; echo "== USB=1: SteamOS from the USB drive"; }
-ANDROIDGPU=""
+OUT=out/boot_steamos.img; USBROOT=""
+[ -n "$USB" ] && { OUT=out/boot_steamos_usb.img; USBROOT="--cmdline-drop q2_rootdev"; echo "== USB=1: SteamOS from the USB drive"; }
+OPT=""
 if [ -f art/q2gpu-android.tar.gz ]; then
-  ANDROIDGPU="--file art/q2gpu-android.tar.gz:usr/share/q2gpu-android.tar.gz:644"
+  OPT="$OPT --file art/q2gpu-android.tar.gz:usr/share/q2gpu-android.tar.gz:644"
   echo "== including art/q2gpu-android.tar.gz (GPU driver for Android apps)"
 fi
+if [ -f art/q2audio.tar.gz ]; then
+  OPT="$OPT --file art/q2audio.tar.gz:usr/share/q2audio.tar.gz:644"
+  echo "== including art/q2audio.tar.gz (sound)"
+else echo "== art/q2audio.tar.gz missing - the image will have no sound"; fi
 echo "== image"
-python3 tools/inject_boot.py --in "$BASE" --out out/boot_steamos.img \
-  --kernel art/boot_steamos.img --cmdline-drop q2_vrauto=0 --cmdline-set loglevel=4 $USBROOT \
+python3 tools/inject_boot.py --in "$BASE" --out out/layered.img --kernel art/boot_steamos.img \
+  --file art/q2msm.ko:usr/lib/q2/q2msm.ko:644 --file prebuilt/q2btattach:usr/share/q2vr/q2btattach:755 \
   --file src/q2gpucheck.sh:usr/share/q2vr/q2gpucheck:755 --file src/q2vrpaneltest.sh:usr/share/q2vr/q2vrpaneltest:755 \
   --file art/q2gpu.tar.gz:usr/share/q2gpu.tar.gz:644 --file art/q2modules.tar.gz:usr/share/q2modules.tar.gz:644 --file art/fuse-overlayfs:usr/share/q2fuse/fuse-overlayfs:755 \
   --file src/init/init:init:755 --file prebuilt/q2pcsample:usr/share/q2vr/q2pcsample:755 --file prebuilt/libq2vrdisplay.so:usr/share/q2vr/libq2vrdisplay.so:755 --file prebuilt/cabextract:usr/share/q2vr/cabextract:755 --file src/prof/q2ucrt:usr/share/q2vr/q2ucrt:755 --file src/prof/q2rubyfix:usr/share/q2vr/q2rubyfix:755 \
@@ -72,10 +79,18 @@ python3 tools/inject_boot.py --in "$BASE" --out out/boot_steamos.img \
   --file src/island/q2island-wait.sh:usr/share/q2vr/island/q2island-wait.sh:755 --file src/island/q2logd.py:usr/share/q2vr/island/q2logd.py:755 \
   --file src/island/q2vintf.py:usr/share/q2vr/island/q2vintf.py:755 --file out/island/q2metapose:usr/share/q2vr/island/q2metapose:755 \
   --file src/island/q2ctlinput.py:usr/share/q2vr/island/q2ctlinput:755 \
-  $ANDROIDGPU
-SIZE=$(stat -c %s out/boot_steamos.img)
+  $OPT
+# one ramdisk layer instead of the base's seven + ours (smaller, and newest file wins)
+python3 tools/flatten_boot.py --in out/layered.img --out out/flat.img
+# desk-334: stock 587 MHz GPU level in the device tree
+python3 tools/patch_dtb.py --in out/flat.img --out out/dtb.img
+# kernel command line: q2msm instead of KGSL (KGSL never probes), quiet console, VR starts by itself
+python3 tools/rebase_boot.py --base out/dtb.img --ramdisk-from out/dtb.img --out $OUT \
+  --cmdline-drop q2_vrauto --cmdline-drop kgsl.force_lazy_gpumem --cmdline-set loglevel=4 \
+  --cmdline-add initcall_blacklist=kgsl_3d_init $USBROOT
+rm -f out/layered.img out/flat.img out/dtb.img
+SIZE=$(stat -c %s $OUT)
 [ "$SIZE" -le 83886080 ] || { echo "image is $SIZE bytes - larger than the 80 MiB boot partition"; exit 1; }
 echo "== result"
-sha256sum out/boot_steamos.img
-echo "release image (same inputs, sh build.sh): $(cat output.sha256)"
-echo "done: out/boot_steamos.img - flash it to the boot partition only (never abl/xbl)"
+sha256sum $OUT
+echo "done: $OUT - flash it to the boot partition only (never abl/xbl)"
