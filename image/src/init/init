@@ -5106,6 +5106,41 @@ ExecStart=/usr/bin/q2testguard
 WantedBy=multi-user.target
 UNIT
   ln -sf ../q2-testguard.service $NR/etc/systemd/system/multi-user.target.wants/q2-testguard.service
+  # desk-366: Steam / SteamVR shared-memory segments (/dev/shm/u1000-*) of processes that crashed or were killed stay in
+  # RAM until someone deletes them - ~1 GB after a day (Steam's UI GPU process restarts, Steam restarts), the headset
+  # then swapped and SteamVR missed frames.  Every minute: delete the ones no process has open or mapped, if they were
+  # already unused a minute earlier (a segment handed from one process to the next is never caught in between).
+  cat > $NR/usr/bin/q2shmclean <<'Q2SHM_EOF'
+#!/bin/sh
+LOG=/var/log/q2/shmclean.txt; prev=""
+while true; do
+  now=""
+  for f in /dev/shm/u1000-*; do
+    [ -f "$f" ] || continue
+    fuser -s "$f" 2>/dev/null && continue
+    now="$now $f"
+  done
+  n=0; kb=0
+  for f in $now; do
+    case " $prev " in *" $f "*) s=$(du -k "$f" 2>/dev/null | cut -f1); fuser -s "$f" 2>/dev/null || { rm -f "$f" && n=$((n + 1)) && kb=$((kb + ${s:-0})); };; esac
+  done
+  [ $n -gt 0 ] && echo "$(date '+%F %T') removed $n unused segments, $((kb / 1024)) MB" >> $LOG
+  prev="$now"
+  sleep 60
+done
+Q2SHM_EOF
+  chmod 755 $NR/usr/bin/q2shmclean
+  cat > $NR/etc/systemd/system/q2-shmclean.service <<'UNIT'
+[Unit]
+Description=Quest 2 port: free shared memory left behind by crashed or killed Steam / SteamVR processes
+[Service]
+Type=simple
+Nice=10
+ExecStart=/usr/bin/q2shmclean
+[Install]
+WantedBy=multi-user.target
+UNIT
+  ln -sf ../q2-shmclean.service $NR/etc/systemd/system/multi-user.target.wants/q2-shmclean.service
   mkdir -p $NR/usr/share/q2vr; cat > $NR/usr/share/q2vr/steamvr-wrap.sh <<'Q2WRAP_EOF'
 #!/bin/sh
 # Quest 2 port: SteamVR launched from Steam.  The real start happens in the root service q2vrd (SteamVR needs a private
