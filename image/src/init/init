@@ -1640,7 +1640,13 @@ while [ \$k -lt 30 ]; do
   # ("vkAcquireNextImageKHR() hangs" -> "Exiting GPU process") whenever gamescope stalls (Steam start, Theater), and the
   # GPU process restarts.  Without the switch there are no restarts, but on q2msm Xwayland then piles up ~100 MB/min of
   # window buffers for Steam's GL presents and never frees them (out of memory in ~15 min).  So the switch stays.
-  if [ -n "\$VRA" ] && [ ! -e /var/lib/q2/novkui ] && [ ! -e /tmp/q2novkui ]; then CEFA="\$CEFA -cef-use-vulkan"; fi
+  # desk-365 (cefshm): Quest1-SteamOS-style Steam UI in VR mode.  No Chromium-side Vulkan swapchain (-cef-use-vulkan is what
+  # hangs in vkAcquireNextImageKHR); the GPU process instead runs ANGLE-Vulkan with GL compositing and presents by CPU copy
+  # (MESA_VK_WSI_DEBUG=sw, see q2-webhelper-gpu below), so nothing waits on gamescope.  Off: touch /var/lib/q2/nocefshm
+  # or boot with q2_cefshm=0 (back to desk-364: -cef-use-vulkan).
+  CEFSHM=1; { [ -e /var/lib/q2/nocefshm ] || grep -q q2_cefshm=0 /proc/cmdline; } && CEFSHM=
+  if [ -n "\$VRA" ] && [ -z "\$CEFSHM" ] && [ ! -e /var/lib/q2/novkui ] && [ ! -e /tmp/q2novkui ]; then CEFA="\$CEFA -cef-use-vulkan"; fi
+  [ -n "\$VRA" ] && [ -n "\$CEFSHM" ] && echo "[\$(date '+%F %T')] q2: cefshm mode (no -cef-use-vulkan; GPU process = ANGLE-Vulkan + CPU-copy WSI)" >> /tmp/q2steam-exits.log
   echo "[\$(date '+%F %T')] q2: Steam CEF switches: \$CEFA" >> /tmp/q2steam-exits.log
   # desk-305: the Frame's Steam command line and environment (RUNSTEAM.sh: -deckard -steamdeck -steamos3; games on CPUs
   # 2-6 here, the Frame uses 0xf8; Proton may use the OpenXR runtime inside its container).  Off: /var/lib/q2/noframeargs
@@ -1704,6 +1710,13 @@ A=""
 for w in $(cat /var/lib/q2/cefflags 2>/dev/null); do
   case "$w" in gpu:*) w="${w#gpu:}"; case "$w" in -*) A="$A $w";; unset:*) unset "${w#unset:}";; *=*) export "$w";; esac;; esac
 done
+# desk-365 (cefshm): in VR mode the GPU process runs ANGLE-Vulkan and presents by CPU copy (XPutImage/SHM) instead of
+# Chromium's own Vulkan swapchain.  Off: /var/lib/q2/nocefshm or q2_cefshm=0 on the kernel command line.
+if [ -n "$Q2VR_LAYER" ] && [ ! -e /var/lib/q2/nocefshm ] && ! grep -q q2_cefshm=0 /proc/cmdline; then
+  export MESA_VK_WSI_DEBUG=sw
+  A="$A --use-angle=vulkan --disable-angle-features=supportsExtendedDynamicState --enable-angle-features=disableFlippingBlitWithCommand"
+  echo "q2-webhelper-gpu: cefshm ($A)" >>/tmp/q2-gpuproc.log
+fi
 exec "$@" $A 2>>/tmp/q2-gpuproc.log
 GPUL
 chmod 755 /usr/local/bin/q2-webhelper-gpu; ln -sfn q2-webhelper-gpu "/usr/local/bin/'q2-webhelper-gpu'"
@@ -2914,6 +2927,7 @@ cat > "$HOMED/.config/openvr/openvrpaths.vrpath" <<EOF
 EOF
 [ -f "$CFG/steamvr.vrsettings" ] && [ ! -f "$CFG/steamvr.vrsettings.q2bak" ] && cp "$CFG/steamvr.vrsettings" "$CFG/steamvr.vrsettings.q2bak"
 SSCALE=$(cat /var/lib/q2/vrscale 2>/dev/null | tr -cd 0-9.); SSCALE=${SSCALE:-1.0}   # render resolution scale (1.0 = 1440x1542 per eye; desk-140 default 0.7 so frames keep up; Ctrl+Alt+O cycles)
+# desk-366: the dashboard's allowSystem* settings decide which entries Steam's power menu shows (sleep, shutdown, restart device), as on a Steam Frame
 cat > "$CFG/steamvr.vrsettings" <<'EOF'
 {
   "steamvr": { "forcedDriver": "q2hmd", "activateMultipleDrivers": false, "requireHmd": true, "useFacetRenderer": false,
@@ -2924,7 +2938,8 @@ cat > "$CFG/steamvr.vrsettings" <<'EOF'
   "driver_q2hmd": { "enable": true },
   "driver_cv": { "enable": false },
   "driver_lighthouse": { "enable": false },
-  "dashboard": { "enableDashboard": true, "steamMatchesHMDFramerate": DASHMATCH }
+  "dashboard": { "enableDashboard": true, "steamMatchesHMDFramerate": DASHMATCH,
+                 "allowSystemSleep": true, "allowSystemShutdown": true, "allowSystemRestart": true }
 }
 EOF
 # desk-170: SteamVR's timing showed no GPU gain from these (10-11 ms either way) - full quality again unless asked
