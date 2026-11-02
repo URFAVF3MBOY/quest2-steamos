@@ -33,7 +33,12 @@ Most of them apply at the next boot. The Steam ones apply at the next Steam rest
 | `novkui`             | Steam's interface without Vulkan                                                                     |
 | `vroldcef`           | Steam's interface with the old, pre-Vulkan settings                                                  |
 | `nobinsem`           | Turn off the synchronisation emulation for Steam's VR panels                                         |
-| `dashmatch` (`0`)  | Steam's VR panels don't follow the headset frame rate                                                |
+| `dashmatch` (`1`)  | Steam's VR panels follow the headset frame rate (off by default since desk-350: slower compositor with a game running) |
+| `nocefshm`           | Steam's VR interface draws with `-cef-use-vulkan` instead of ANGLE-Vulkan with a CPU-copy present (`q2_cefshm=0` on the kernel command line does the same) |
+| `vrsysdistort` (`1`) | SteamVR `renderSystemLayerInDistortPass` on (the Steam Frame sets it). Restart SteamVR to apply; for testing |
+| `vrscanout` (`1`)    | SteamVR `enableScanoutScaling` on (the Steam Frame sets it). Restart SteamVR to apply; for testing |
+| `vrfacet` (`1`)      | SteamVR's newer "facet" compositor renderer (the Steam Frame uses it). Experimental: the compositor may crash; look for `Using Facet Renderer` in its log |
+| `steamsentinel`      | Give Steam the SteamOS shutdown/restart sentinel files; when Steam exits after Shut down or Restart in its power menu, run `systemctl poweroff` / `reboot`. Experimental |
 | `steamwin` (`WxH`) | Size of Steam's own window in headless mode (default `960x540`)                                    |
 | `steamuihz`          | Steam interface frame rate in headless mode (default 45)                                             |
 | `compositor_tu`      | `TU_DEBUG` value for the SteamVR compositor (`-` means none)                                     |

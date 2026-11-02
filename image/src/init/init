@@ -1653,13 +1653,25 @@ while [ \$k -lt 30 ]; do
   FRA=""; if [ -n "\$VRA" ] && [ ! -e /var/lib/q2/noframeargs ]; then FRA="-deckard -steamdeck -steamos3"
     export STEAM_LAUNCH_WRAPPER_AFFINITY_LIST=0x7c STEAM_LAUNCH_WRAPPER_SCOPE=true PRESSURE_VESSEL_IMPORT_OPENXR_1_RUNTIMES=1 PRESSURE_VESSEL_IMPORT_OPENXR_1_LAYERS=1
   fi
-  nice -n \${B_NICE:-10} \$RUN \$VENV \$WRAP env \$LAY \$B_ENV "$BIN" -gamepadui -noverifyfiles -nobootstrapupdate -inhibitbootstrap \$CEFA -no-cef-sandbox \$VRA \$FRA \$(cat /var/lib/q2/steamargs 2>/dev/null)
+  # desk-318 (opt-in: touch /var/lib/q2/steamsentinel): SteamOS's gamescope session gives Steam two sentinel files; with them set,
+  # Steam's power menu Shut Down / Restart write the file and the client exits (seen on another SteamOS port, not verified here).
+  # The code after the exit below then runs systemctl poweroff / reboot (polkit rule above lets user steamos do that).
+  rm -f /tmp/q2-steam-shutdown /tmp/q2-steam-reboot; SEN=""
+  [ -n "\$VRA" ] && [ -e /var/lib/q2/steamsentinel ] && SEN="STEAMOS_STEAM_SHUTDOWN_SENTINEL=/tmp/q2-steam-shutdown STEAMOS_STEAM_REBOOT_SENTINEL=/tmp/q2-steam-reboot"
+  nice -n \${B_NICE:-10} \$RUN \$VENV \$WRAP env \$LAY \$B_ENV \$SEN "$BIN" -gamepadui -noverifyfiles -nobootstrapupdate -inhibitbootstrap \$CEFA -no-cef-sandbox \$VRA \$FRA \$(cat /var/lib/q2/steamargs 2>/dev/null)
   rc=\$?
   kill \$LW 2>/dev/null
   case "\$WRAP" in *"--backend openvr"*) if [ \$((\$(date +%s) - T0)) -lt 90 ]; then ovf=\$((\${ovf:-0}+1)); [ \$ovf -ge 2 ] && { touch /tmp/q2gsheadless; echo "[\$(date '+%F %T')] q2: Steam died young twice in gamescope's OpenVR mode - headless gamescope until reboot" >> /tmp/q2steam-exits.log; }; fi;; esac
   case "\$WRAP\$CEFA" in *"--backend openvr"*) ;; *-cef-use-vulkan*) if [ \$((\$(date +%s) - T0)) -lt 90 ]; then vkf=\$((\${vkf:-0}+1)); [ \$vkf -ge 2 ] && { touch /tmp/q2novkui; echo "[\$(date '+%F %T')] q2: Steam died young twice with -cef-use-vulkan - dropped until reboot" >> /tmp/q2steam-exits.log; }; fi;; esac
   echo "[\$(date '+%F %T')] q2: Steam client exited with code \$rc" | tee -a /tmp/q2steam-exits.log
   [ -e /tmp/q2steam-stopping ] && break
+  if [ -e /tmp/q2-steam-shutdown ] || [ -e /tmp/q2-steam-reboot ]; then
+    PA=poweroff; [ -e /tmp/q2-steam-reboot ] && PA=reboot
+    rm -f /tmp/q2-steam-shutdown /tmp/q2-steam-reboot
+    echo "[\$(date '+%F %T')] q2: Steam asked for \$PA (sentinel) - systemctl \$PA" | tee -a /tmp/q2steam-exits.log
+    systemctl \$PA >> /tmp/q2steam-exits.log 2>&1 && break
+    echo "[\$(date '+%F %T')] q2: systemctl \$PA failed - relaunching Steam" | tee -a /tmp/q2steam-exits.log
+  fi
   NOW=""; [ "\$(cat /tmp/q2vr/state 2>/dev/null)" = running ] && [ ! -e /var/lib/q2/novrgamepadui ] && NOW="-vrgamepadui"
   # outside VR, a quit or crash without a mode change ends the loop (as before); 42 = Steam asked for a restart
   if [ -z "\$NOW" ] && [ -z "\$VRA" ] && [ \$rc -ne 42 ]; then break; fi
@@ -2930,9 +2942,9 @@ SSCALE=$(cat /var/lib/q2/vrscale 2>/dev/null | tr -cd 0-9.); SSCALE=${SSCALE:-1.
 # desk-366: the dashboard's allowSystem* settings decide which entries Steam's power menu shows (sleep, shutdown, restart device), as on a Steam Frame
 cat > "$CFG/steamvr.vrsettings" <<'EOF'
 {
-  "steamvr": { "forcedDriver": "q2hmd", "activateMultipleDrivers": false, "requireHmd": true, "useFacetRenderer": false,
+  "steamvr": { "forcedDriver": "q2hmd", "activateMultipleDrivers": false, "requireHmd": true, "useFacetRenderer": @FACET@,
                "motionSmoothing": false, "enableLinuxVulkanAsync": VASYNC, "preferredRefreshRate": PREFHZ, "enableHomeApp": false, "mirrorView": 0,
-               "renderSystemLayerInDistortPass": false, "enableAchromaticDistortion": ACHRO, "enableSimplifiedShaders": SIMPL,
+               "renderSystemLayerInDistortPass": @SYSD@, @SCANLINE@ "enableAchromaticDistortion": ACHRO, "enableSimplifiedShaders": SIMPL,
                "supersampleManualOverride": true, "supersampleScale": SSCALE, "overlayRenderQuality_2": OVLQ },
   POWERJSON
   "driver_q2hmd": { "enable": true },
@@ -2971,6 +2983,14 @@ DASHMATCH=false; [ "$(cat /var/lib/q2/dashmatch 2>/dev/null)" = 1 ] && DASHMATCH
 # desk-353: back to low.  desk-351's high quality was cheap with a game on the theater screen but took the dashboard
 # from 7 to ~12 ms per frame (every other frame dropped).  echo 3 > /var/lib/q2/overlayq = high.
 OVLQ=$(cat /var/lib/q2/overlayq 2>/dev/null | tr -cd 0-3 | head -c 1); OVLQ=${OVLQ:-1}
+# desk-318: A/B switches for three compositor keys that the Steam Frame sets (frame_hmd_additional.vrsettings: useFacetRenderer,
+# renderSystemLayerInDistortPass, enableScanoutScaling).  All OFF = exactly the previous behaviour (the scanout key is only
+# written when on).  echo 1 > /var/lib/q2/vrfacet | vrsysdistort | vrscanout, then restart SteamVR; rm the file to undo.
+# Facet needs timeline semaphores + host query reset + dynamic rendering: check "Using Facet Renderer" in vrcompositor's log.
+FACETV=false; [ "$(cat /var/lib/q2/vrfacet 2>/dev/null)" = 1 ] && FACETV=true
+SYSDV=false; [ "$(cat /var/lib/q2/vrsysdistort 2>/dev/null)" = 1 ] && SYSDV=true
+SCANV=""; [ "$(cat /var/lib/q2/vrscanout 2>/dev/null)" = 1 ] && SCANV='"enableScanoutScaling": true,'
+sed -i -e "s/@FACET@/$FACETV/" -e "s/@SYSD@/$SYSDV/" -e "s/@SCANLINE@/$SCANV/" "$CFG/steamvr.vrsettings"
 sed -i -e "s/DASHMATCH/$DASHMATCH/" -e "s/OVLQ/$OVLQ/" "$CFG/steamvr.vrsettings"
 # desk-305: like the Frame's steamvr_first_init.sh: SteamVR is the OpenXR runtime (~/.config/openxr/1/active_runtime.json
 # -> /opt/steamvr/steamxr_linuxarm64.json).  Proton's VR helper found none ("xrCreateInstance failed").
