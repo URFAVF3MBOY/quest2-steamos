@@ -109,6 +109,8 @@ struct inst {
 	void *key; VkInstance inst; PFN_vkGetInstanceProcAddr gipa;
 	PFN_vkDestroyInstance DestroyInstance;
 	PFN_vkGetPhysicalDeviceMemoryProperties GetPhysicalDeviceMemoryProperties;
+	PFN_vkGetPhysicalDeviceMemoryProperties2 GetPhysicalDeviceMemoryProperties2;
+	PFN_vkGetPhysicalDeviceMemoryProperties2KHR GetPhysicalDeviceMemoryProperties2KHR;
 	PFN_vkGetPhysicalDeviceSurfaceSupportKHR SurfaceSupport;
 	PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR SurfaceCaps;
 	PFN_vkGetPhysicalDeviceSurfaceFormatsKHR SurfaceFormats;
@@ -157,6 +159,7 @@ struct dev {
 	F(GetSemaphoreCounterValueKHR) F(SignalSemaphore) F(SignalSemaphoreKHR)
 	F(WaitForPresentKHR) F(GetSwapchainStatusKHR) F(GetRefreshCycleDurationGOOGLE) F(GetPastPresentationTimingGOOGLE)
 	F(ReleaseSwapchainImagesEXT) F(ImportFenceFdKHR) F(BindImageMemory2) F(BindImageMemory2KHR) F(GetMemoryFdKHR)
+	F(GetBufferMemoryRequirements2) F(GetBufferMemoryRequirements2KHR) F(GetImageMemoryRequirements2) F(GetImageMemoryRequirements2KHR)
 #undef F
 	// display_control
 	qmutex evlock; VkFence pending[32]; int npending;
@@ -1320,9 +1323,88 @@ static VKAPI_ATTR void VKAPI_CALL q_CmdCopyImageToBuffer(VkCommandBuffer cb, VkI
 	}
 	d->CmdCopyImageToBuffer(cb, im, l, b, n, r);
 }
+// ---- facetmem: a host-cached + coherent memory type for SteamVR's Facet renderer ----
+// Turnip here offers only two types: device-local+host-visible+coherent, and device-local+host-visible+cached (not coherent).
+// Facet's first buffer wants a type that is host-visible, coherent AND cached, finds none and fails with "AllocateMemory:
+// Failed to determine a compatible memory type".  For vrcompositor only, and only while /var/lib/q2/vrfacet exists (or
+// Q2VR_FACETMEM=1), the app-visible memory properties get one more type = the coherent type's flags + HOST_CACHED, and
+// allocations from it are made from the real coherent type.  Coherence is real; only the "cached" hint is not, which costs
+// CPU read speed, never correctness.  Everything else (and every other process) sees the driver's own list.
+static uint32_t g_fm_idx = 0xffffffffu, g_fm_base;
+static int fmem_on(void)
+{
+	static int on = -1;
+	if (on >= 0) return on;
+	on = 0;
+	char c[32]; long n = 0; int f = open("/proc/self/comm", 0);
+	if (f >= 0) { n = read(f, c, sizeof c - 1); close(f); }
+	if (n > 0 && c[n - 1] == '\n') n--;
+	c[n > 0 ? n : 0] = 0;
+	if (strstr(c, "vrcompositor") == c) {
+		if (envi("Q2VR_FACETMEM", 0)) on = 1;
+		else { int g = open("/var/lib/q2/vrfacet", 0); if (g >= 0) { close(g); on = 1; } }
+	}
+	qlog("memshim: %s (process '%s')", on ? "on" : "off", c);
+	return on;
+}
+static void fmem_patch(VkPhysicalDeviceMemoryProperties *p)
+{
+	if (!fmem_on()) return;
+	const VkMemoryPropertyFlags vc = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+	const VkMemoryPropertyFlags vcc = vc | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+	uint32_t n = p->memoryTypeCount, base = n;
+	for (uint32_t i = 0; i < n; i++) {
+		VkMemoryPropertyFlags f = p->memoryTypes[i].propertyFlags;
+		if ((f & vcc) == vcc) return;                       // the driver already has one
+		if (base == n && (f & vcc) == vc) base = i;          // first coherent, uncached type
+	}
+	if (base == n || n >= VK_MAX_MEMORY_TYPES) return;
+	p->memoryTypes[n].propertyFlags = p->memoryTypes[base].propertyFlags | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+	p->memoryTypes[n].heapIndex = p->memoryTypes[base].heapIndex;
+	p->memoryTypeCount = n + 1;
+	if (g_fm_idx != n) qlog("memshim: advertising memory type %u (flags 0x%x), backed by real type %u", n, (unsigned)p->memoryTypes[n].propertyFlags, base);
+	g_fm_idx = n; g_fm_base = base;
+}
+static void fmem_req(VkMemoryRequirements *r)
+{
+	if (g_fm_idx != 0xffffffffu && fmem_on() && (r->memoryTypeBits & (1u << g_fm_base))) r->memoryTypeBits |= 1u << g_fm_idx;
+}
+static void fmem_pdprops(VkPhysicalDevice pd, VkPhysicalDeviceMemoryProperties2 *p)
+{
+	struct inst *in = inst_of(pd);
+	if (!in) return;
+	if (in->GetPhysicalDeviceMemoryProperties2) in->GetPhysicalDeviceMemoryProperties2(pd, p);
+	else if (in->GetPhysicalDeviceMemoryProperties2KHR) in->GetPhysicalDeviceMemoryProperties2KHR(pd, p);
+	else if (in->GetPhysicalDeviceMemoryProperties) in->GetPhysicalDeviceMemoryProperties(pd, &p->memoryProperties);
+	fmem_patch(&p->memoryProperties);
+}
+static VKAPI_ATTR void VKAPI_CALL q_GetPhysicalDeviceMemoryProperties(VkPhysicalDevice pd, VkPhysicalDeviceMemoryProperties *p)
+{
+	struct inst *in = inst_of(pd);
+	if (!in || !in->GetPhysicalDeviceMemoryProperties) return;
+	in->GetPhysicalDeviceMemoryProperties(pd, p);
+	fmem_patch(p);
+}
+static VKAPI_ATTR void VKAPI_CALL q_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice pd, VkPhysicalDeviceMemoryProperties2 *p) { fmem_pdprops(pd, p); }
+static VKAPI_ATTR void VKAPI_CALL q_GetPhysicalDeviceMemoryProperties2KHR(VkPhysicalDevice pd, VkPhysicalDeviceMemoryProperties2 *p) { fmem_pdprops(pd, p); }
+static VKAPI_ATTR void VKAPI_CALL q_GetBufferMemoryRequirements(VkDevice dv, VkBuffer b, VkMemoryRequirements *r)
+{ struct dev *d = dev_of(dv); d->GetBufferMemoryRequirements(dv, b, r); fmem_req(r); }
+static VKAPI_ATTR void VKAPI_CALL q_GetImageMemoryRequirements(VkDevice dv, VkImage im, VkMemoryRequirements *r)
+{ struct dev *d = dev_of(dv); d->GetImageMemoryRequirements(dv, im, r); fmem_req(r); }
+static VKAPI_ATTR void VKAPI_CALL q_GetBufferMemoryRequirements2(VkDevice dv, const VkBufferMemoryRequirementsInfo2 *i, VkMemoryRequirements2 *r)
+{ struct dev *d = dev_of(dv); if (d->GetBufferMemoryRequirements2) d->GetBufferMemoryRequirements2(dv, i, r); else if (d->GetBufferMemoryRequirements2KHR) d->GetBufferMemoryRequirements2KHR(dv, i, r); else return; fmem_req(&r->memoryRequirements); }
+static VKAPI_ATTR void VKAPI_CALL q_GetBufferMemoryRequirements2KHR(VkDevice dv, const VkBufferMemoryRequirementsInfo2 *i, VkMemoryRequirements2 *r)
+{ q_GetBufferMemoryRequirements2(dv, i, r); }
+static VKAPI_ATTR void VKAPI_CALL q_GetImageMemoryRequirements2(VkDevice dv, const VkImageMemoryRequirementsInfo2 *i, VkMemoryRequirements2 *r)
+{ struct dev *d = dev_of(dv); if (d->GetImageMemoryRequirements2) d->GetImageMemoryRequirements2(dv, i, r); else if (d->GetImageMemoryRequirements2KHR) d->GetImageMemoryRequirements2KHR(dv, i, r); else return; fmem_req(&r->memoryRequirements); }
+static VKAPI_ATTR void VKAPI_CALL q_GetImageMemoryRequirements2KHR(VkDevice dv, const VkImageMemoryRequirementsInfo2 *i, VkMemoryRequirements2 *r)
+{ q_GetImageMemoryRequirements2(dv, i, r); }
+
 static VKAPI_ATTR VkResult VKAPI_CALL q_AllocateMemory(VkDevice dv, const VkMemoryAllocateInfo *ai, const VkAllocationCallbacks *a, VkDeviceMemory *m)
 {
 	struct dev *d = dev_of(dv);
+	VkMemoryAllocateInfo fmc;
+	if (g_fm_idx != 0xffffffffu && ai->memoryTypeIndex == g_fm_idx) { fmc = *ai; fmc.memoryTypeIndex = g_fm_base; ai = &fmc; }   // facetmem: the extra type is the coherent type underneath
 	VkResult r = d->AllocateMemory(dv, ai, a, m);
 	if (!r) rb_note_alloc(d, *m, ai);   // desk-296
 	if (xt_on()) {
@@ -2006,6 +2088,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL q_CreateInstance(const VkInstanceCreateInf
 	in->key = dkey(*out); in->inst = *out; in->gipa = gipa;
 #define G(field, name) in->field = (void *)gipa(*out, name)
 	G(DestroyInstance, "vkDestroyInstance"); G(GetPhysicalDeviceMemoryProperties, "vkGetPhysicalDeviceMemoryProperties");
+	G(GetPhysicalDeviceMemoryProperties2, "vkGetPhysicalDeviceMemoryProperties2"); G(GetPhysicalDeviceMemoryProperties2KHR, "vkGetPhysicalDeviceMemoryProperties2KHR");
 	G(SurfaceSupport, "vkGetPhysicalDeviceSurfaceSupportKHR"); G(SurfaceCaps, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
 	G(SurfaceFormats, "vkGetPhysicalDeviceSurfaceFormatsKHR"); G(SurfaceModes, "vkGetPhysicalDeviceSurfacePresentModesKHR");
 	G(SurfaceCaps2, "vkGetPhysicalDeviceSurfaceCapabilities2KHR"); G(SurfaceFormats2, "vkGetPhysicalDeviceSurfaceFormats2KHR");
@@ -2128,6 +2211,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL q_CreateDevice(VkPhysicalDevice pd, const 
 	F(GetSemaphoreCounterValueKHR) F(SignalSemaphore) F(SignalSemaphoreKHR)
 	F(WaitForPresentKHR) F(GetSwapchainStatusKHR) F(GetRefreshCycleDurationGOOGLE) F(GetPastPresentationTimingGOOGLE)
 	F(ReleaseSwapchainImagesEXT) F(ImportFenceFdKHR) F(BindImageMemory2) F(BindImageMemory2KHR) F(GetMemoryFdKHR)
+	F(GetBufferMemoryRequirements2) F(GetBufferMemoryRequirements2KHR) F(GetImageMemoryRequirements2) F(GetImageMemoryRequirements2KHR)
 #undef F
 	in->GetPhysicalDeviceMemoryProperties(pd, &d->memprops);
 	d->cpufence = fencefd && d->ImportFenceFdKHR && envi("Q2VR_CPUFENCE", 1);
@@ -2187,11 +2271,13 @@ static const struct fn device_fns[] = {
 	E(GetSemaphoreCounterValueKHR) E(SignalSemaphore) E(SignalSemaphoreKHR)
 	E(WaitForPresentKHR) E(GetSwapchainStatusKHR) E(GetRefreshCycleDurationGOOGLE) E(GetPastPresentationTimingGOOGLE)
 	E(ReleaseSwapchainImagesEXT) E(WaitForFences) E(DestroyFence)
+E(GetBufferMemoryRequirements) E(GetBufferMemoryRequirements2) E(GetBufferMemoryRequirements2KHR) E(GetImageMemoryRequirements) E(GetImageMemoryRequirements2) E(GetImageMemoryRequirements2KHR)
 E(AllocateMemory) E(MapMemory) E(CmdCopyImageToBuffer) E(BindImageMemory) E(BindImageMemory2) E(BindImageMemory2KHR) E(GetMemoryFdKHR)
 };
 static const struct fn instance_fns[] = {
 	E(CreateInstance) E(DestroyInstance) E(CreateDevice) E(EnumerateInstanceLayerProperties) E(EnumerateInstanceExtensionProperties)
 	E(EnumerateDeviceExtensionProperties)
+	E(GetPhysicalDeviceMemoryProperties) E(GetPhysicalDeviceMemoryProperties2) E(GetPhysicalDeviceMemoryProperties2KHR)
 	E(GetPhysicalDeviceQueueFamilyProperties) E(GetPhysicalDeviceQueueFamilyProperties2) E(GetPhysicalDeviceQueueFamilyProperties2KHR)
 	E(GetPhysicalDeviceExternalSemaphoreProperties) E(GetPhysicalDeviceExternalSemaphorePropertiesKHR)
 	E(GetPhysicalDeviceDisplayPropertiesKHR) E(GetPhysicalDeviceDisplayProperties2KHR) E(GetPhysicalDeviceDisplayPlanePropertiesKHR)
@@ -2231,6 +2317,10 @@ EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL q2vr_GetDeviceProcAddr(VkDevice 
 		if (!strcmp(name, "vkBindImageMemory2") && !d->BindImageMemory2) return 0;
 		if (!strcmp(name, "vkBindImageMemory2KHR") && !d->BindImageMemory2KHR) return 0;
 		if (!strcmp(name, "vkGetMemoryFdKHR") && !d->GetMemoryFdKHR) return 0;
+		if (!strcmp(name, "vkGetBufferMemoryRequirements2") && !d->GetBufferMemoryRequirements2) return 0;
+		if (!strcmp(name, "vkGetBufferMemoryRequirements2KHR") && !d->GetBufferMemoryRequirements2KHR) return 0;
+		if (!strcmp(name, "vkGetImageMemoryRequirements2") && !d->GetImageMemoryRequirements2) return 0;
+		if (!strcmp(name, "vkGetImageMemoryRequirements2KHR") && !d->GetImageMemoryRequirements2KHR) return 0;
 		return (PFN_vkVoidFunction)f;
 	}
 	PFN_vkVoidFunction nf = d->gdpa(dv, name);
