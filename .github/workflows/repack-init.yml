@@ -1,0 +1,56 @@
+name: repack-init
+
+# FAST path (about a minute): take the released boot image(s) and swap in image/src/init/init from this
+# repository.  Kernel, device tree, cmdline and the rest of the ramdisk stay byte for byte as released.
+# Use build.sh / the full workflows only when the kernel, GPU drivers or prebuilt tools change.
+#
+# Output: artifact "boot-images" with boot_steamos.img (internal storage) and boot_steamos_usb.img (USB first install),
+# whichever the release has.  Flash to the boot partition only (docs/INSTALL.md).
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release to take the base boot images from"
+        default: "v0.1"
+  push:
+    paths:
+      - image/src/init/init
+      - tools/repack_init.py
+      - .github/workflows/repack-init.yml
+
+permissions:
+  contents: read
+
+jobs:
+  repack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the init script parses
+        run: sh -n image/src/init/init
+
+      - name: Download the released boot images
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag || 'v0.1' }}
+        run: |
+          mkdir -p base out
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p 'boot_steamos.img' -p 'boot_steamos_usb.img' -D base
+          ls -l base
+
+      - name: Put the repo's init into each image
+        run: |
+          for f in base/*.img; do
+            python3 tools/repack_init.py --in "$f" --init image/src/init/init --out "out/$(basename "$f")"
+          done
+          sha256sum out/*.img | tee out/SHA256SUMS
+          ls -l out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: boot-images
+          path: out/
+          if-no-files-found: error
