@@ -711,6 +711,7 @@ static void tw_predict(const double o[8], double t, double q[4])
 static void tw_pose(struct swapchain *c, uint32_t i, int kk)
 {
 	static int on = -1, tofs, gpu_ns, scan_ns; static uint64_t n, miss, nopose; static double asum, amax; static uint64_t tlog;
+	static double nsum[3]; static uint64_t nn[3];   // the same for the ticks before / after (which tick matches the render)
 	if (on < 0) {
 		on = tw_mode() == 1 && envi("Q2VR_TWPOSE", 1);
 		tofs = envi("Q2VR_TWTICK", 1) - 1;                          // which tick's pose: acquire tick + this
@@ -740,6 +741,12 @@ static void tw_pose(struct swapchain *c, uint32_t i, int kk)
 		rot[2][0] = (float)(2 * (x * z - w * y)); rot[2][1] = (float)(2 * (y * z + w * x)); rot[2][2] = (float)(1 - 2 * (x * x + y * y));
 		double ang = 2 * tw_sqrt(x * x + y * y + z * z) * 57.29578;   // degrees (small angles)
 		asum += ang; if (ang > amax) amax = ang;
+		for (int j = 0; j < 3; j++) {   // the angle had we used tick T - 1, T, T + 1
+			double qj[4], rj[4];
+			if (!tw_slot(T + (uint64_t)(int64_t)(j - 1), qj)) continue;
+			qj[1] = -qj[1]; qj[2] = -qj[2]; qj[3] = -qj[3]; q_mul(qj, qn, rj);
+			nsum[j] += 2 * tw_sqrt(rj[1] * rj[1] + rj[2] * rj[2] + rj[3] * rj[3]) * 57.29578; nn[j]++;
+		}
 	}
 	float *u = (float *)c->tumap[kk];   // struct twp: rot[6][4] first, both eyes the same rotation
 	for (int e = 0; e < 2; e++) for (int a = 0; a < 3; a++) for (int b = 0; b < 3; b++) u[(e * 3 + a) * 4 + b] = rot[a][b];
@@ -748,7 +755,11 @@ static void tw_pose(struct swapchain *c, uint32_t i, int kk)
 		uint64_t ok = n - miss - nopose;
 		qlog("timewarp: %llu frames: correction avg %.2f deg, max %.2f deg; %llu without a render pose, %llu without a head pose",
 		     (unsigned long long)n, ok ? asum / (double)ok : 0.0, amax, (unsigned long long)miss, (unsigned long long)nopose);
+		qlog("timewarp: avg correction with the render pose of tick -1 / 0 / +1: %.2f / %.2f / %.2f deg (%llu / %llu / %llu frames)",
+		     nn[0] ? nsum[0] / (double)nn[0] : -1.0, nn[1] ? nsum[1] / (double)nn[1] : -1.0, nn[2] ? nsum[2] / (double)nn[2] : -1.0,
+		     (unsigned long long)nn[0], (unsigned long long)nn[1], (unsigned long long)nn[2]);
 		tlog = t; n = miss = nopose = 0; asum = amax = 0;
+		for (int j = 0; j < 3; j++) { nsum[j] = 0; nn[j] = 0; }
 	}
 }
 static int tw_setup(struct dev *d, struct swapchain *c, int nb, uint32_t pitch, int erows)
