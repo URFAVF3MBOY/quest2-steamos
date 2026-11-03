@@ -348,6 +348,8 @@ struct swapchain {
 	VkImageView tview[MAXIMG]; VkDescriptorSet tset[MAXIMG][4]; VkBuffer tubo[4]; VkDeviceMemory tumem[4]; void *tumap[4];
 	VkBuffer tlut; VkDeviceMemory tlmem;
 	volatile uint64_t acq_tick[MAXIMG];    // desk-368: vblank tick when the compositor acquired the image (= its render pose)
+	volatile uint64_t acq_tns[MAXIMG], ktns[4];   // desk-371: that tick's time, per image and per scanout buffer it went to
+	volatile uint64_t t2p_hist[32];        // desk-371: tick -> on the panel (flip), 1 ms bins
 	int held; int qr[MAXIMG * 2];          // desk-369: image of the newest finished frame (-1 none); queue entry is a re-warp
 	volatile uint64_t rewarps, rwskip; qthread twthr;
 };
@@ -495,6 +497,14 @@ static void *status_thread(void *arg)
 			     df ? (double)(c->klat_ns - kl0) / 1e6 / (double)df : 0.0);
 		  }
 		  kf0 = c->kflips; ks0 = c->kskips; kn0 = c->knofree; kl0 = c->klat_ns; (void)kt0; }
+		{ // desk-371: vsync tick (the compositor's frame start; it predicts the head pose to tick + Q2VR_PHOTON_MS) ->
+		  // that frame's flip onto the panel.  Should be ONE value; a spread = the photon time SteamVR assumes is off for
+		  // some frames = small jitters in head turns.
+		  char hb[400]; int o = 0; uint64_t tot = 0;
+		  for (int b = 0; b < 32; b++) { uint64_t v = c->t2p_hist[b]; c->t2p_hist[b] = 0; tot += v;
+			if (v && o < 360) o += snprintf(hb + o, sizeof hb - o, " %d:%llu", b, (unsigned long long)v); }
+		  hb[o] = 0;
+		  if (tot) qlog("tick -> on the panel (ms: frames):%s", hb); }
 		{ static uint64_t r0, s0, n0, t0, h0[6];
 		  qlog("vblank events (compositor's vsync thread): %llu registered, %llu signalled, %llu waits (%llu timed out); wait ms <2:%llu 2-8:%llu 8-16:%llu 16-30:%llu 30-48:%llu 48+:%llu ; flips seen %llu",
 		       (unsigned long long)(g_ev_reg - r0), (unsigned long long)(g_ev_sig - s0), (unsigned long long)(g_evw_n - n0), (unsigned long long)(g_evw_to - t0),
@@ -578,6 +588,7 @@ static void *kms_reader(void *arg)
 					uint64_t ft = 0; const char *q = line + 3; while (*q == ' ') q++;
 					while (*q >= '0' && *q <= '9') ft = ft * 10 + (uint64_t)(*q++ - '0');
 					uint64_t nw = now_ns(); if (!ft || ft > nw || nw - ft > 100000000ull) ft = nw;   // sanity: must be a recent MONOTONIC time
+					if (c->ktns[k] && ft > c->ktns[k]) { uint64_t b = (ft - c->ktns[k]) / 1000000ull; c->t2p_hist[b > 31 ? 31 : b]++; }
 					g_flip_ns = ft; __atomic_add_fetch(&g_flip_seq, 1, __ATOMIC_RELEASE);
 				} else { c->kstate[k] = 0; c->kskips++; }
 				if (c->kpid[k] > c->done_id) c->done_id = c->kpid[k];   // present-wait: done when it reached (or was replaced on) the panel
@@ -1459,6 +1470,7 @@ static VkResult acquire(struct dev *d, struct swapchain *c, uint64_t timeout, Vk
 		pthread_cond_timedwait(&c->cond, &c->lock, &ts);
 	}
 	c->state[found] = 1; c->next = (uint32_t)(found + 1) % c->n; c->acquires++;
+	c->acq_tns[found] = g_tick_ns;
 	c->acq_tick[found] = g_twm ? __atomic_load_n((volatile uint64_t *)(g_twm + 24), __ATOMIC_ACQUIRE) : __atomic_load_n(&g_tick, __ATOMIC_ACQUIRE);
 	pthread_mutex_unlock(&c->lock);
 	*idx = (uint32_t)found;
@@ -1539,6 +1551,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL q_QueuePresentKHR(VkQueue q, const VkPrese
 				pthread_mutex_unlock(&c->lock);
 			}
 			if (kk >= 0 && c->tw) tw_pose(c, i, kk);   // desk-368: this frame's correction rotation, as late as we can
+			if (kk >= 0) c->ktns[kk] = c->acq_tns[i];
 			VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO, 0, nw, pi->pWaitSemaphores, st, 1, kk >= 0 ? &c->kcmd[i][kk] : &c->cmd[i], 0, 0 };
 			{ struct qlk_e *L = qlk(q, "present copy"); r = d->QueueSubmit(q, 1, &si, c->fence[i]); qulk(L); }
 			if (r != VK_SUCCESS && kk >= 0) { pthread_mutex_lock(&c->lock); c->kstate[kk] = 0; pthread_mutex_unlock(&c->lock); }
