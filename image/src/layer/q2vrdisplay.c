@@ -645,6 +645,7 @@ static void tw_write(struct swapchain *c, int k, const float rot[2][3][3], uint3
 // u64 seq (odd while written), u64 tick, f64 qw qx qy qz.  The newest pose: /dev/shm/q2pose (q2headtrack / q2metapose):
 // u32 seq, +8 f64 qw qx qy qz, t (s, CLOCK_MONOTONIC), wx wy wz (rad/s, head frame).
 static volatile uint8_t *g_twm, *g_posem;
+static int tw_newest_read(double o[8]);
 static void tw_tick(uint64_t tick, uint64_t tns)
 {
 	if (!g_twm) return;
@@ -660,7 +661,14 @@ static void tw_shm(void)
 	void *m = mmap(0, 4096, 3, 1, fd, 0); close(fd);
 	if (m != (void *)-1) g_twm = m;
 }
-static int tw_newest(double o[8])   // seqlock read of /dev/shm/q2pose
+static int tw_newest(double o[8])   // seqlock read of /dev/shm/q2pose; while the writer holds it, the last good one
+{
+	static double last[8]; static int have;
+	if (tw_newest_read(o)) { for (int i = 0; i < 8; i++) last[i] = o[i]; have = 1; return 1; }
+	if (have) for (int i = 0; i < 8; i++) o[i] = last[i];
+	return have;
+}
+static int tw_newest_read(double o[8])
 {
 	if (!g_posem) {
 		static uint64_t tried; uint64_t t = now_ns(); if (t - tried < 1000000000ull) return 0; tried = t;
