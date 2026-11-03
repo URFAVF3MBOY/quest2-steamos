@@ -3093,7 +3093,7 @@ L "controller type: ${CTLTYPE:-oculus_touch (default)} ${CTLPROF}"
 IPDPOS=$(cat /var/lib/q2/ipdpos 2>/dev/null | tr -cd 123 | head -c 1); IPDPOS=${IPDPOS:-2}
 OLDLENS=$(cat /var/lib/q2/oldlens 2>/dev/null | tr -cd 01 | head -c 1); OLDLENS=${OLDLENS:-0}
 VRHZ=$(cat /var/lib/q2/vrhz 2>/dev/null | tr -cd 0-9); VRHZ=${VRHZ:-90}   # desk-178: 90 by default (holds 88-90 fps since the vsync fix)         # panel is 90 Hz: 45 = every frame shown twice
-PDEF=22; [ -e /run/q2kms.ready ] && PDEF=16   # desk-161: zero-copy page flips reach the panel ~10 ms sooner than the old copies
+PDEF=22; [ -e /run/q2kms.ready ] && PDEF=25   # desk-371: zero-copy with the 13 ms vsync lead: tick -> on the panel measured 24 ms (desk-161 had 16)
 PHOTON=$(cat /var/lib/q2/photonms 2>/dev/null | tr -cd 0-9); PHOTON=${PHOTON:-$PDEF}   # desk-140: 16 -> 22 ms (layer copy + panel copy + scan-out measured ~20 ms); Ctrl+Alt+P cycles
 # real-time scheduling for the compositor (it asks for priority 80 and was refused) and for the panel copy
 mkdir -p /etc/security/limits.d; printf '%s - rtprio 95\n%s - nice -20\n' $U $U > /etc/security/limits.d/90-q2vr.conf
@@ -3154,15 +3154,18 @@ $DISPENV
 export VRCOMPOSITOR_TU_DEBUG="$CTU"
 # desk-363: vsync ticks this many us ahead of the real refresh, so the compositor starts early enough for our copy +
 # flip; /var/lib/q2/vblead (us).  Raise /var/lib/q2/photonms by the same amount so head prediction still lands right.
-# desk-371: default 10000 - the compositor's frame (7-8 ms of GPU + the copy) then makes the refresh it is meant for:
-# vsync tick -> on the panel ~19 ms, matching the 20 ms photon time SteamVR predicts the head pose for.  4000 gave 26 ms
-# (every frame missed its refresh by ~2 ms; head pose predicted 6+ ms short); 8000 left ~1.7 ms of slack and 3-7% of
-# frames still missed (stutter while looking around); 10000: well under 1%.
-export Q2VR_VBLEAD_US=$(cat /var/lib/q2/vblead 2>/dev/null | tr -cd 0-9 | grep . || echo 10000)
-# desk-367: late reprojection (timewarp) in the display layer; /var/lib/q2/tw: 2 (default) = plain shader copy (exact
-# pixels), 1 = timewarp (render pose held per tick, re-aimed at the newest pose; resamples the finished picture),
-# 0 = the old transfer copy (with Facet it stalls to ~9 fps while Steam is attached)
-export Q2VR_TW=$(cat /var/lib/q2/tw 2>/dev/null | tr -cd 0-9 | grep . || echo 2)
+# desk-371: default 13000 - the compositor's frame + our copy is done 17-20 ms after its tick (more under load: Steam's
+# UI, the dashboard), so the refresh it aims at comes at tick + 24 ms with ~7 ms to spare; photonms defaults to 25 to
+# match.  4000 gave 26 ms with every frame ~2 ms late; 8000 (the old cap; 10000 silently ran as 8000) left 1.7 ms and
+# up to a third of the frames missed their refresh while the headset was in use.
+export Q2VR_VBLEAD_US=$(cat /var/lib/q2/vblead 2>/dev/null | tr -cd 0-9 | grep . || echo 13000)
+# desk-371: drop a frame after N in a row queued behind an unfinished flip (layer); 0 (default) = never - with the lead
+# above the queue no longer builds up, and every drop was a visible hitch
+export Q2VR_KMSTRIM=$(cat /var/lib/q2/kmstrim 2>/dev/null | tr -cd 0-9 | grep . || echo 0)
+# desk-367: late reprojection (timewarp) in the display layer; /var/lib/q2/tw: 0 (default) = the transfer copy (1.45 ms
+# of GPU a frame; it stalled to ~9 fps only under Facet), 2 = plain shader copy (exact pixels, ~2.0 ms), 1 = timewarp
+# (render pose held per tick, re-aimed at the newest pose; resamples the finished picture)
+export Q2VR_TW=$(cat /var/lib/q2/tw 2>/dev/null | tr -cd 0-9 | grep . || echo 0)
 ${TUPRIO:+export TU_KGSL_PRIO=$TUPRIO}
 export Q2VR_EYESWAP=$EYESWAP Q2VR_IPDPOS=$IPDPOS Q2VR_OLDLENS=$OLDLENS Q2VR_HZ=$VRHZ Q2VR_PHOTON_MS=$PHOTON Q2VR_CTLTYPE="$CTLTYPE" Q2VR_CTLPROFILE="$CTLPROF" Q2VR_CTLCOMP="$CTLCOMP" Q2VR_CTLMODEL="$CTLMODEL"
 cd $B
@@ -6093,10 +6096,20 @@ Q2PK_EOF
   printf '[keyfile]\nunmanaged-devices=interface-name:p2p*;interface-name:wifi-aware*\n' > $NR/etc/NetworkManager/conf.d/90-q2-wifi.conf
   # Android "paranoid network" kernel: only members of aid_inet(3003)/aid_net_raw(3004) may open IP sockets.
   # Give the system network daemons those groups (timesyncd could not reach NTP -> wrong clock -> TLS/Steam login fails).
-  for svc in systemd-timesyncd systemd-resolved systemd-networkd NetworkManager wpa_supplicant polkit; do
+  for svc in systemd-timesyncd systemd-resolved systemd-networkd NetworkManager wpa_supplicant polkit sshd; do
     mkdir -p $NR/etc/systemd/system/$svc.service.d
     printf '[Service]\nSupplementaryGroups=3003 3004 3005\n' > $NR/etc/systemd/system/$svc.service.d/q2-inet.conf
   done
+  # desk-372: SSH over Wi-Fi, opt-in: put public keys in /var/lib/q2/authorized_keys (one per line) and reboot -> they
+  # become root's keys and sshd starts (key login only, as sshd's default allows for root).  rm the file + reboot = off.
+  if [ -s $NR/var/lib/q2/authorized_keys ] && [ -e $NR/usr/lib/systemd/system/sshd.service ]; then
+    mkdir -p $NR/root/.ssh $NR/etc/systemd/system/multi-user.target.wants; chmod 700 $NR/root/.ssh
+    cp $NR/var/lib/q2/authorized_keys $NR/root/.ssh/authorized_keys; chmod 600 $NR/root/.ssh/authorized_keys
+    ln -sf /usr/lib/systemd/system/sshd.service $NR/etc/systemd/system/multi-user.target.wants/sshd.service
+    log "ssh: sshd enabled, $(grep -c . $NR/var/lib/q2/authorized_keys) key(s) for root (/var/lib/q2/authorized_keys)"
+  else
+    rm -f $NR/etc/systemd/system/multi-user.target.wants/sshd.service
+  fi
   cat > $NR/usr/bin/q2-qrtr-ns <<'Q2NS_EOF'
 #!/usr/bin/python3
 # q2-qrtr-ns - QRTR name service (Python port of linux-msm/qrtr src/ns.c, BSD-3).
