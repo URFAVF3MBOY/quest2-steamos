@@ -349,7 +349,7 @@ struct swapchain {
 	VkBuffer tlut; VkDeviceMemory tlmem;
 	volatile uint64_t acq_tick[MAXIMG];    // desk-368: vblank tick when the compositor acquired the image (= its render pose)
 	int held; int qr[MAXIMG * 2];          // desk-369: image of the newest finished frame (-1 none); queue entry is a re-warp
-	volatile uint64_t rewarps; qthread twthr;
+	volatile uint64_t rewarps, rwskip; qthread twthr;
 };
 #define SC_MAGIC 0x51325643484149ull
 static struct swapchain *sc_of(VkSwapchainKHR s) { struct swapchain *c = (struct swapchain *)(uintptr_t)s; return (c && c->magic == SC_MAGIC) ? c : 0; }
@@ -781,11 +781,11 @@ static void tw_pose_l(struct swapchain *c, uint32_t i, int kk)
 	uint64_t t = now_ns();
 	if (t - tlog > 10000000000ull) {
 		uint64_t ok = n - miss - nopose;
-		static uint64_t rw0; uint64_t rw = c->rewarps;
-		qlog("timewarp: %llu frames (%llu late re-warps of a missed frame, %llu exact copies): correction avg %.3f deg, max %.2f deg; %llu without a render pose, %llu without a head pose",
-		     (unsigned long long)n, (unsigned long long)(rw - rw0), (unsigned long long)nsnap, ok ? asum / (double)ok : 0.0, amax,
+		static uint64_t rw0, sk0; uint64_t rw = c->rewarps, sk = c->rwskip;
+		qlog("timewarp: %llu frames (%llu late re-warps of a missed frame, %llu not done for lack of a spare buffer; %llu exact copies): correction avg %.3f deg, max %.2f deg; %llu without a render pose, %llu without a head pose",
+		     (unsigned long long)n, (unsigned long long)(rw - rw0), (unsigned long long)(sk - sk0), (unsigned long long)nsnap, ok ? asum / (double)ok : 0.0, amax,
 		     (unsigned long long)miss, (unsigned long long)nopose);
-		rw0 = rw; nsnap = 0;
+		rw0 = rw; sk0 = sk; nsnap = 0;
 		qlog("timewarp: avg correction with the render pose of tick -1 / 0 / +1: %.2f / %.2f / %.2f deg (%llu / %llu / %llu frames)",
 		     nn[0] ? nsum[0] / (double)nn[0] : -1.0, nn[1] ? nsum[1] / (double)nn[1] : -1.0, nn[2] ? nsum[2] / (double)nn[2] : -1.0,
 		     (unsigned long long)nn[0], (unsigned long long)nn[1], (unsigned long long)nn[2]);
@@ -825,7 +825,11 @@ static void *rewarp_thread(void *arg)
 		int missed = c->presents == seen, i = c->held, kk = -1;
 		seen = c->presents;
 		if (missed && i >= 0 && c->state[i] == 3) {
-			for (int j = 0; j < c->kn && kk < 0; j++) if (c->kstate[j] == 0) kk = j;
+			// never take the compositor's buffer: with none free its present waits, it misses more, we re-warp more...
+			// (desk-370: that spiral took the panel down to 37 frames/s) - so only when 2+ scanout buffers are free
+			int nfree = 0;
+			for (int j = 0; j < c->kn; j++) if (c->kstate[j] == 0) { nfree++; if (kk < 0) kk = j; }
+			if (nfree < 2) { kk = -1; c->rwskip++; }
 			if (kk >= 0) { c->kstate[kk] = 1; c->state[i] = 2; }
 		}
 		if (kk >= 0) {   // (still under c->lock: destroy_swapchain cannot tear things down under this submit)
