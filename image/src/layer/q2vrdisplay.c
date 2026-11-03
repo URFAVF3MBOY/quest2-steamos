@@ -778,7 +778,11 @@ static void tw_pose_l(struct swapchain *c, uint32_t i, int kk)
 		on = tw_mode() == 1 && envi("Q2VR_TWPOSE", 1);
 		tofs = envi("Q2VR_TWTICK", 1) - 1;                          // which tick's pose: acquire tick + this
 		gpu_ns = envi("Q2VR_TWGPU_US", 3000) * 1000;                // present -> warp done on the GPU
-		scan_ns = envi("Q2VR_TWSCAN_US", 5000) * 1000;              // flip -> photons (the panel's scan + backlight)
+		// flip -> photons.  desk-371: by default the same photon time the render pose was predicted for (Q2VR_PHOTON_MS
+		// after the tick; a frame that keeps its timing flips at tick + vblead + 1 refresh), so an on-time frame with a
+		// steady head turn gets no correction and only what changed since the render is re-aimed (fixed 5 ms was 4 ms more)
+		{ long sd = (long)envi("Q2VR_PHOTON_MS", 20) * 1000000L - (long)g_vblead - 11111111L; if (sd < 0) sd = 0;
+		  scan_ns = envi("Q2VR_TWSCAN_US", (int)(sd / 1000)) * 1000; }
 		qlog("timewarp: head-pose correction %s (render pose of the acquire tick %+d; photons = flip after present + %d us + %d us)",
 		     on ? "ON" : "off (Q2VR_TWPOSE=0)", tofs, gpu_ns / 1000, scan_ns / 1000);
 	}
