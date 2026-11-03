@@ -1047,6 +1047,8 @@ static VkResult create_swapchain(struct dev *d, const VkSwapchainCreateInfoKHR *
 	if (!c) return VK_ERROR_OUT_OF_HOST_MEMORY;
 	c->magic = SC_MAGIC; c->d = d; c->ext = ci->imageExtent; c->fmt = ci->imageFormat;
 	c->n = ci->minImageCount < 2 ? 2 : ci->minImageCount; if (c->n > 3) c->n = 3;
+	// desk-369: the late warp keeps the newest frame's image; with the compositor's 2 it would have only one left to draw in
+	if (tw_mode() == 1 && file_int("/var/lib/q2/twlate", 1) && c->n < 3) c->n = 3;
 	pthread_mutex_init(&c->lock, 0); pthread_cond_init(&c->cond, 0);
 	VkResult r;
 	VkCommandPoolCreateInfo pci = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, 0, 0, 0 };
