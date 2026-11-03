@@ -349,7 +349,8 @@ struct swapchain {
 	VkBuffer tlut; VkDeviceMemory tlmem;
 	volatile uint64_t acq_tick[MAXIMG];    // desk-368: vblank tick when the compositor acquired the image (= its render pose)
 	volatile uint64_t acq_tns[MAXIMG], ktns[4];   // desk-371: that tick's time, per image and per scanout buffer it went to
-	volatile uint64_t t2p_hist[32];        // desk-371: tick -> on the panel (flip), 1 ms bins
+	volatile uint64_t t2p_hist[48];        // desk-371: tick -> on the panel (flip), 1 ms bins
+	int kqstreak; volatile uint64_t ktrims; // desk-371: frames in a row that queued behind an unfinished flip; drops
 	int held; int qr[MAXIMG * 2];          // desk-369: image of the newest finished frame (-1 none); queue entry is a re-warp
 	volatile uint64_t rewarps, rwskip; qthread twthr;
 };
@@ -369,6 +370,28 @@ static uint32_t find_mem(struct dev *d, uint32_t bits, VkMemoryPropertyFlags wan
 	return best < 0 ? 0xffffffffu : (uint32_t)best;
 }
 
+// desk-371: q2kmsd keeps one flip pending; a frame sent while the one before has not reached the panel yet waits for
+// that flip and goes out a refresh later.  At 90 frames/s for 90 refreshes that queue never drains by itself, so the
+// pipeline sat for minutes at a time one (26 ms tick -> panel) or two (37 ms) refreshes behind the 15 ms it can do -
+// SteamVR predicts the head pose for tick + Q2VR_PHOTON_MS (20), so the picture lagged the head and jittered whenever
+// the depth changed.  After Q2VR_KMSTRIM (default 3) frames in a row that had to queue, one frame is dropped (one
+// repeated picture) and the queue is empty again.  0 = off.
+static int trim_queue(struct swapchain *c, int kk, uint64_t pid)
+{
+	static int lim = -1; if (lim < 0) lim = envi("Q2VR_KMSTRIM", 3);
+	pthread_mutex_lock(&c->lock);
+	int behind = 0;
+	for (int j = 0; j < c->kn; j++) if (j != kk && c->kstate[j] == 2) behind = 1;   // sent, not on the panel yet
+	c->kqstreak = behind ? c->kqstreak + 1 : 0;
+	int drop = lim > 0 && c->kqstreak >= lim;
+	if (drop) {
+		c->kqstreak = 0; c->ktrims++; c->kstate[kk] = 0;
+		if (pid > c->done_id) c->done_id = pid;
+		pthread_cond_broadcast(&c->cond);
+	}
+	pthread_mutex_unlock(&c->lock);
+	return drop;
+}
 static void *worker_thread(void *arg)
 {
 	struct swapchain *c = arg; struct dev *d = c->d;
@@ -394,6 +417,7 @@ static void *worker_thread(void *arg)
 		uint64_t tc0 = now_ns();
 		uint8_t *shm = kk != -1 ? 0 : shm_map();
 		if (kk == -2) { /* dropped (see above) */ }
+		else if (kk >= 0 && trim_queue(c, kk, pid)) { /* dropped to get the flip queue back to one frame (desk-371) */ }
 		else if (kk >= 0) {   // zero-copy: the frame is in scanout buffer kk; ask q2kmsd to show it
 			char m[16]; int ml = snprintf(m, sizeof m, "F %d\n", kk);
 			pthread_mutex_lock(&c->lock); c->kstate[kk] = 2; c->ksent_t[kk] = now_ns(); c->kpid[kk] = pid; c->ksent++; pthread_mutex_unlock(&c->lock);
@@ -501,10 +525,12 @@ static void *status_thread(void *arg)
 		  // that frame's flip onto the panel.  Should be ONE value; a spread = the photon time SteamVR assumes is off for
 		  // some frames = small jitters in head turns.
 		  char hb[400]; int o = 0; uint64_t tot = 0;
-		  for (int b = 0; b < 32; b++) { uint64_t v = c->t2p_hist[b]; c->t2p_hist[b] = 0; tot += v;
+		  static uint64_t tr0;
+		  for (int b = 0; b < 48; b++) { uint64_t v = c->t2p_hist[b]; c->t2p_hist[b] = 0; tot += v;
 			if (v && o < 360) o += snprintf(hb + o, sizeof hb - o, " %d:%llu", b, (unsigned long long)v); }
 		  hb[o] = 0;
-		  if (tot) qlog("tick -> on the panel (ms: frames):%s", hb); }
+		  if (tot) qlog("tick -> on the panel (ms: frames):%s; %llu frames dropped to shorten the flip queue", hb, (unsigned long long)(c->ktrims - tr0));
+		  tr0 = c->ktrims; }
 		{ static uint64_t r0, s0, n0, t0, h0[6];
 		  qlog("vblank events (compositor's vsync thread): %llu registered, %llu signalled, %llu waits (%llu timed out); wait ms <2:%llu 2-8:%llu 8-16:%llu 16-30:%llu 30-48:%llu 48+:%llu ; flips seen %llu",
 		       (unsigned long long)(g_ev_reg - r0), (unsigned long long)(g_ev_sig - s0), (unsigned long long)(g_evw_n - n0), (unsigned long long)(g_evw_to - t0),
@@ -588,7 +614,7 @@ static void *kms_reader(void *arg)
 					uint64_t ft = 0; const char *q = line + 3; while (*q == ' ') q++;
 					while (*q >= '0' && *q <= '9') ft = ft * 10 + (uint64_t)(*q++ - '0');
 					uint64_t nw = now_ns(); if (!ft || ft > nw || nw - ft > 100000000ull) ft = nw;   // sanity: must be a recent MONOTONIC time
-					if (c->ktns[k] && ft > c->ktns[k]) { uint64_t b = (ft - c->ktns[k]) / 1000000ull; c->t2p_hist[b > 31 ? 31 : b]++; }
+					if (c->ktns[k] && ft > c->ktns[k]) { uint64_t b = (ft - c->ktns[k]) / 1000000ull; c->t2p_hist[b > 47 ? 47 : b]++; }
 					g_flip_ns = ft; __atomic_add_fetch(&g_flip_seq, 1, __ATOMIC_RELEASE);
 				} else { c->kstate[k] = 0; c->kskips++; }
 				if (c->kpid[k] > c->done_id) c->done_id = c->kpid[k];   // present-wait: done when it reached (or was replaced on) the panel
