@@ -214,6 +214,7 @@ static uint64_t g_t0;
 static qthread g_vbthr;
 static int g_vbstarted;
 static uint8_t *shm_map(void);
+static void tw_tick(uint64_t tick, uint64_t tns);
 // The panel's real refresh (q2blit -V publishes it in the frame header: [8..9] last refresh start ns, [10] period ns).
 // Our vblank ticks land on real refresh starts, every Nth one for DHZ = panel rate / N (90 Hz panel: 45 Hz -> N = 2),
 // so each frame stays on the panel for exactly N refreshes.  Without that info: a free-running DHZ timer.
@@ -250,6 +251,7 @@ static void *vblank_thread(void *arg)
 		last = next;
 		g_tick_ns = vs ? next : now_ns();   // the grid time of this vblank (not our wake-up time)
 		__atomic_add_fetch(&g_tick, 1, __ATOMIC_RELEASE);
+		tw_tick(g_tick, g_tick_ns);
 		for (int i = 0; i < MAXI; i++) {
 			struct dev *d = &devs[i];
 			if (!d->key || !d->queue) continue;
@@ -345,6 +347,7 @@ struct swapchain {
 	int tw; VkPipeline tpipe; VkPipelineLayout tpl; VkDescriptorSetLayout tdsl; VkDescriptorPool tpool; VkSampler tsamp;
 	VkImageView tview[MAXIMG]; VkDescriptorSet tset[MAXIMG][4]; VkBuffer tubo[4]; VkDeviceMemory tumem[4]; void *tumap[4];
 	VkBuffer tlut; VkDeviceMemory tlmem;
+	volatile uint64_t acq_tick[MAXIMG];    // desk-368: vblank tick when the compositor acquired the image (= its render pose)
 };
 #define SC_MAGIC 0x51325643484149ull
 static struct swapchain *sc_of(VkSwapchainKHR s) { struct swapchain *c = (struct swapchain *)(uintptr_t)s; return (c && c->magic == SC_MAGIC) ? c : 0; }
@@ -634,6 +637,120 @@ static void tw_write(struct swapchain *c, int k, const float rot[2][3][3], uint3
 	p.canvas[0] = 1832.0f; p.canvas[1] = 1920.0f; p.canvas[2] = TW_RSQ; p.canvas[3] = tw_tmax();
 	memcpy(c->tumap[k], &p, sizeof p);
 }
+// ---- desk-368 timewarp step 2: the pose the frame was rendered with, and the newest one ----
+// /dev/shm/q2tw (made by whoever comes first, the driver or us): +8 vblank tick, +16 its time (ns, CLOCK_MONOTONIC),
+// both written here; +64 + 64 * (tick % 32): the driver's slot for that tick = the head rotation it gave SteamVR for
+// the whole tick (predicted to the tick + Q2VR_PHOTON_MS, zero angular velocity, so SteamVR renders exactly it):
+// u64 seq (odd while written), u64 tick, f64 qw qx qy qz.  The newest pose: /dev/shm/q2pose (q2headtrack / q2metapose):
+// u32 seq, +8 f64 qw qx qy qz, t (s, CLOCK_MONOTONIC), wx wy wz (rad/s, head frame).
+static volatile uint8_t *g_twm, *g_posem;
+static void tw_tick(uint64_t tick, uint64_t tns)
+{
+	if (!g_twm) return;
+	*(volatile uint64_t *)(g_twm + 16) = tns;
+	__atomic_store_n((volatile uint64_t *)(g_twm + 8), tick, __ATOMIC_RELEASE);
+}
+static void tw_shm(void)
+{
+	if (g_twm) return;
+	int fd = open("/dev/shm/q2tw", Q_O_RDWR | Q_O_CREAT | Q_O_CLOEXEC, 0666);
+	if (fd < 0) { qlog("timewarp: cannot open /dev/shm/q2tw - no head-pose correction"); return; }
+	ftruncate(fd, 4096);   // same size as the driver's: never cuts anything
+	void *m = mmap(0, 4096, 3, 1, fd, 0); close(fd);
+	if (m != (void *)-1) g_twm = m;
+}
+static int tw_newest(double o[8])   // seqlock read of /dev/shm/q2pose
+{
+	if (!g_posem) {
+		static uint64_t tried; uint64_t t = now_ns(); if (t - tried < 1000000000ull) return 0; tried = t;
+		int fd = open("/dev/shm/q2pose", 0); if (fd < 0) return 0;
+		void *m = mmap(0, 4096, 1, 1, fd, 0); close(fd);
+		if (m == (void *)-1) return 0;
+		g_posem = m;
+	}
+	for (int k = 0; k < 2000; k++) {
+		uint32_t s0 = __atomic_load_n((volatile uint32_t *)g_posem, __ATOMIC_ACQUIRE);
+		if (s0 & 1 || !s0) continue;
+		for (int i = 0; i < 8; i++) o[i] = ((volatile double *)(g_posem + 8))[i];
+		__atomic_thread_fence(__ATOMIC_ACQUIRE);
+		if (__atomic_load_n((volatile uint32_t *)g_posem, __ATOMIC_ACQUIRE) == s0) return 1;
+	}
+	return 0;
+}
+static int tw_slot(uint64_t tick, double q[4])
+{
+	volatile uint8_t *s = g_twm + 64 + 64 * (tick % 32);
+	for (int k = 0; k < 100; k++) {
+		uint64_t s0 = __atomic_load_n((volatile uint64_t *)s, __ATOMIC_ACQUIRE);
+		if (s0 & 1) continue;
+		uint64_t t = *(volatile uint64_t *)(s + 8);
+		for (int i = 0; i < 4; i++) q[i] = ((volatile double *)(s + 16))[i];
+		__atomic_thread_fence(__ATOMIC_ACQUIRE);
+		if (__atomic_load_n((volatile uint64_t *)s, __ATOMIC_ACQUIRE) == s0) return s0 && t == tick;
+	}
+	return 0;
+}
+static double tw_sqrt(double x) { if (x <= 0) return 0; double y = x > 1 ? x : 1; for (int i = 0; i < 30; i++) y = 0.5 * (y + x / y); return y; }
+static void q_mul(const double a[4], const double b[4], double r[4])
+{
+	r[0] = a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3];
+	r[1] = a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2];
+	r[2] = a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1];
+	r[3] = a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0];
+}
+// head rotation o[0..3] as of o[4] (s), turning at o[5..7] (rad/s, head frame), carried on to time t (s); same as the driver's
+static void tw_predict(const double o[8], double t, double q[4])
+{
+	double dt = t - o[4]; if (!(dt > 0)) dt = 0; if (dt > 0.08) dt = 0.08;
+	double a[3] = { o[5] * dt, o[6] * dt, o[7] * dt }, aa = a[0] * a[0] + a[1] * a[1] + a[2] * a[2];
+	double dq[4] = { 1 - aa / 8, a[0] / 2, a[1] / 2, a[2] / 2 };
+	q_mul(o, dq, q);
+	double n = tw_sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+	if (n > 0) for (int i = 0; i < 4; i++) q[i] /= n;
+}
+static void tw_pose(struct swapchain *c, uint32_t i, int kk)
+{
+	static int on = -1, tofs, gpu_ns, scan_ns; static uint64_t n, miss, nopose; static double asum, amax; static uint64_t tlog;
+	if (on < 0) {
+		on = tw_mode() == 1 && envi("Q2VR_TWPOSE", 1);
+		tofs = envi("Q2VR_TWTICK", 1) - 1;                          // which tick's pose: acquire tick + this
+		gpu_ns = envi("Q2VR_TWGPU_US", 3000) * 1000;                // present -> warp done on the GPU
+		scan_ns = envi("Q2VR_TWSCAN_US", 5000) * 1000;              // flip -> photons (the panel's scan + backlight)
+		qlog("timewarp: head-pose correction %s (render pose of the acquire tick %+d; photons = flip after present + %d us + %d us)",
+		     on ? "ON" : "off (Q2VR_TWPOSE=0)", tofs, gpu_ns / 1000, scan_ns / 1000);
+	}
+	if (!on || !g_twm) return;
+	double qo[4], o[8], qn[4], qi[4], r[4];
+	uint64_t T = c->acq_tick[i] + (uint64_t)(int64_t)tofs;
+	float rot[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
+	n++;
+	if (!tw_slot(T, qo)) miss++;
+	else if (!tw_newest(o)) nopose++;
+	else {
+		// the flip this frame gets: the first panel refresh after the warp is done (ticks run g_vblead ahead of refreshes)
+		uint64_t P = 11111111ull, ref = g_tick_ns + g_vblead, ready = now_ns() + (uint64_t)gpu_ns;
+		uint64_t flip = ready > ref ? ref + ((ready - ref + P - 1) / P) * P : ref;
+		tw_predict(o, (double)(flip + (uint64_t)scan_ns) * 1e-9, qn);
+		qi[0] = qo[0]; qi[1] = -qo[1]; qi[2] = -qo[2]; qi[3] = -qo[3];
+		q_mul(qi, qn, r);   // new-head view direction -> old-head (rendered) view direction
+		if (r[0] < 0) for (int j = 0; j < 4; j++) r[j] = -r[j];
+		double w = r[0], x = r[1], y = r[2], z = r[3];
+		rot[0][0] = (float)(1 - 2 * (y * y + z * z)); rot[0][1] = (float)(2 * (x * y - w * z)); rot[0][2] = (float)(2 * (x * z + w * y));
+		rot[1][0] = (float)(2 * (x * y + w * z)); rot[1][1] = (float)(1 - 2 * (x * x + z * z)); rot[1][2] = (float)(2 * (y * z - w * x));
+		rot[2][0] = (float)(2 * (x * z - w * y)); rot[2][1] = (float)(2 * (y * z + w * x)); rot[2][2] = (float)(1 - 2 * (x * x + y * y));
+		double ang = 2 * tw_sqrt(x * x + y * y + z * z) * 57.29578;   // degrees (small angles)
+		asum += ang; if (ang > amax) amax = ang;
+	}
+	float *u = (float *)c->tumap[kk];   // struct twp: rot[6][4] first, both eyes the same rotation
+	for (int e = 0; e < 2; e++) for (int a = 0; a < 3; a++) for (int b = 0; b < 3; b++) u[(e * 3 + a) * 4 + b] = rot[a][b];
+	uint64_t t = now_ns();
+	if (t - tlog > 10000000000ull) {
+		uint64_t ok = n - miss - nopose;
+		qlog("timewarp: %llu frames: correction avg %.2f deg, max %.2f deg; %llu without a render pose, %llu without a head pose",
+		     (unsigned long long)n, ok ? asum / (double)ok : 0.0, amax, (unsigned long long)miss, (unsigned long long)nopose);
+		tlog = t; n = miss = nopose = 0; asum = amax = 0;
+	}
+}
 static int tw_setup(struct dev *d, struct swapchain *c, int nb, uint32_t pitch, int erows)
 {
 	VkResult r = VK_ERROR_INITIALIZATION_FAILED; const char *what = "functions";
@@ -714,8 +831,9 @@ static int tw_setup(struct dev *d, struct swapchain *c, int nb, uint32_t pitch, 
 		d->UpdateDescriptorSets(d->dev, 4, w, 0, 0);
 	}
 	c->tw = 1;
+	if (tw_mode() == 1) tw_shm();
 	qlog("timewarp: scanout copy is the q2warp compute shader (Q2VR_TW=%d: %s; source %s)", tw_mode(),
-	     tw_mode() == 1 ? "lens round trip, identity rotation" : "plain copy", fmt_is_srgb(c->fmt) ? "sRGB" : "UNORM");
+	     tw_mode() == 1 ? "lens round trip + head-pose correction" : "plain copy", fmt_is_srgb(c->fmt) ? "sRGB" : "UNORM");
 	return 0;
 fail:
 	qlog("timewarp: setup failed at %s (%d) - plain copy", what, (int)r);
@@ -1241,6 +1359,7 @@ static VkResult acquire(struct dev *d, struct swapchain *c, uint64_t timeout, Vk
 		pthread_cond_timedwait(&c->cond, &c->lock, &ts);
 	}
 	c->state[found] = 1; c->next = (uint32_t)(found + 1) % c->n; c->acquires++;
+	c->acq_tick[found] = __atomic_load_n(&g_tick, __ATOMIC_ACQUIRE);
 	pthread_mutex_unlock(&c->lock);
 	*idx = (uint32_t)found;
 	if (fence && !cpu_signal(d, fence)) fence = VK_NULL_HANDLE;   // signalled already, from the CPU
@@ -1319,6 +1438,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL q_QueuePresentKHR(VkQueue q, const VkPrese
 				if (kk >= 0) c->kstate[kk] = 1; else c->knofree++;
 				pthread_mutex_unlock(&c->lock);
 			}
+			if (kk >= 0 && c->tw) tw_pose(c, i, kk);   // desk-368: this frame's correction rotation, as late as we can
 			VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO, 0, nw, pi->pWaitSemaphores, st, 1, kk >= 0 ? &c->kcmd[i][kk] : &c->cmd[i], 0, 0 };
 			{ struct qlk_e *L = qlk(q, "present copy"); r = d->QueueSubmit(q, 1, &si, c->fence[i]); qulk(L); }
 			if (r != VK_SUCCESS && kk >= 0) { pthread_mutex_lock(&c->lock); c->kstate[kk] = 0; pthread_mutex_unlock(&c->lock); }

@@ -15,6 +15,7 @@ int open(const char *, int, ...);
 int close(int);
 long read(int, void *, unsigned long);
 void *mmap(void *, size_t, int, int, int, long);
+int ftruncate(int, long);
 struct q2ts { long tv_sec, tv_nsec; };
 int nanosleep(const q2ts *, q2ts *);
 int clock_gettime(int, q2ts *);
@@ -220,6 +221,64 @@ static bool read_pose(double o[8])
 	}
 	if (have) { for (int i = 0; i < 8; i++) o[i] = last[i]; return true; }
 	return false;
+}
+
+// ---- desk-368 timewarp: the display layer (in vrcompositor) re-aims each finished frame at the newest head pose, so it
+// must know the pose the frame was rendered with.  With Q2VR_TW=1 the head rotation is held for a whole vblank tick
+// (predicted to the tick + Q2VR_PHOTON_MS) and sent with zero angular velocity, so SteamVR renders exactly that, and
+// each tick's rotation goes into /dev/shm/q2tw (layout: q2vrdisplay.c, "timewarp step 2").  Q2VR_TWPOSE=0: off.
+static volatile uint8_t *g_tw;
+static bool tw_map()
+{
+	if (g_tw) return true;
+	static int tries;
+	if (tries++ % 500) return false;
+	int fd = open("/dev/shm/q2tw", 2 /*O_RDWR*/ | 0100 /*O_CREAT*/ | 02000000 /*O_CLOEXEC*/, 0666);
+	if (fd < 0) return false;
+	ftruncate(fd, 4096);
+	void *m = mmap(0, 4096, 3 /*PROT_READ|PROT_WRITE*/, 1 /*MAP_SHARED*/, fd, 0);
+	close(fd);
+	if (m == (void *)-1) return false;
+	g_tw = (volatile uint8_t *)m;
+	Log("q2hmd: timewarp: render pose held per vblank tick (/dev/shm/q2tw)\n");
+	return true;
+}
+// head rotation o[0..3] as of o[4] (s), turning at o[5..7] (rad/s, head frame), carried on to time t (s); as the layer does it
+static void tw_predict(const double o[8], double t, double q[4])
+{
+	double dt = t - o[4]; if (!(dt > 0)) dt = 0; if (dt > 0.08) dt = 0.08;
+	double a[3] = { o[5] * dt, o[6] * dt, o[7] * dt }, aa = a[0] * a[0] + a[1] * a[1] + a[2] * a[2];
+	double d[4] = { 1 - aa / 8, a[0] / 2, a[1] / 2, a[2] / 2 };
+	q[0] = o[0] * d[0] - o[1] * d[1] - o[2] * d[2] - o[3] * d[3];
+	q[1] = o[0] * d[1] + o[1] * d[0] + o[2] * d[3] - o[3] * d[2];
+	q[2] = o[0] * d[2] - o[1] * d[3] + o[2] * d[0] + o[3] * d[1];
+	q[3] = o[0] * d[3] + o[1] * d[2] - o[2] * d[1] + o[3] * d[0];
+	double n = __builtin_sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+	if (n > 0) for (int i = 0; i < 4; i++) q[i] /= n;
+}
+// the rotation to send now: the one held for the layer's current tick (computed on the first call in the tick)
+static bool tw_held(const double o[8], double q[4])
+{
+	static int on = -1, photon; static uint64_t held = ~0ull; static double hq[4];
+	if (on < 0) { on = envi("Q2VR_TW", 0) == 1 && envi("Q2VR_TWPOSE", 1); photon = envi("Q2VR_PHOTON_MS", 16); }
+	if (!on || !tw_map()) return false;
+	uint64_t tick = __atomic_load_n((volatile uint64_t *)(g_tw + 8), __ATOMIC_ACQUIRE), tns = *(volatile uint64_t *)(g_tw + 16);
+	q2ts n; clock_gettime(1 /*CLOCK_MONOTONIC*/, &n);
+	uint64_t now = (uint64_t)n.tv_sec * 1000000000ull + (uint64_t)n.tv_nsec;
+	if (!tick || !tns || now < tns || now - tns > 200000000ull) return false;   // no layer ticking: SteamVR predicts as before
+	if (tick != held) {
+		tw_predict(o, tns * 1e-9 + photon * 1e-3, hq);
+		volatile uint8_t *s = g_tw + 64 + 64 * (tick % 32);
+		volatile uint64_t *sq = (volatile uint64_t *)s;
+		uint64_t s0 = *sq;
+		__atomic_store_n(sq, s0 | 1, __ATOMIC_RELEASE); __atomic_thread_fence(__ATOMIC_SEQ_CST);
+		*(volatile uint64_t *)(s + 8) = tick;
+		for (int i = 0; i < 4; i++) ((volatile double *)(s + 16))[i] = hq[i];
+		__atomic_store_n(sq, (s0 | 1) + 1, __ATOMIC_RELEASE);
+		held = tick;
+	}
+	for (int i = 0; i < 4; i++) q[i] = hq[i];
+	return true;
 }
 
 // ---- mouse/keyboard pointer from q2input: /dev/shm/q2ptr = seq u32, then at +8: yaw pitch (rad), buttons, stick x, stick y
@@ -791,6 +850,8 @@ public:
 		double o[8];
 		if (read_pose(o)) {
 			double w = o[0], x = o[1], y = o[2], z = o[3];
+			double hq[4]; bool held = tw_held(o, hq);   // desk-368: timewarp - the tick's rotation, no angular velocity
+			if (held) { w = hq[0]; x = hq[1]; y = hq[2]; z = hq[3]; }
 			p.qRotation.w = w; p.qRotation.x = x; p.qRotation.y = y; p.qRotation.z = z;
 			// desk-357: the pose is as of o[4] (writer's CLOCK_MONOTONIC time), 0.5-5 ms before this call, a different
 			// amount every time.  Tell SteamVR, so it predicts from the pose's real time (with the velocities below)
@@ -802,7 +863,7 @@ public:
 				if (pto && age > 0 && age < 0.1) p.poseTimeOffset = -age;
 			}
 			// angular velocity: head frame -> world (rotate by q) so SteamVR can predict ahead
-			double vx = o[5], vy = o[6], vz = o[7];
+			double vx = held ? 0 : o[5], vy = held ? 0 : o[6], vz = held ? 0 : o[7];
 			double tx = 2 * (y * vz - z * vy), ty = 2 * (z * vx - x * vz), tz = 2 * (x * vy - y * vx);
 			p.vecAngularVelocity[0] = vx + w * tx + (y * tz - z * ty);
 			p.vecAngularVelocity[1] = vy + w * ty + (z * tx - x * tz);
