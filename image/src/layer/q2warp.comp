@@ -1,0 +1,81 @@
+#version 450
+// q2warp.comp - the zero-copy frame copy as a compute shader, with late reprojection (timewarp).
+//
+// For every scanout pixel: panel position -> view direction through the Quest 2 lens model (the same formula as
+// driver_q2hmd.cpp meta_distort, green channel), rotate it by this eye's correction (old head pose -> newest head pose),
+// back through the inverse lens model to a panel position, and sample the frame SteamVR's compositor rendered there.
+// With an identity rotation it is the plain copy (same texels).  Eye shift (/var/lib/q2/eyeshift) as the copy did it.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D src;
+layout(set = 0, binding = 1, std430) writeonly buffer Dst { uint px[]; } dst;
+layout(set = 0, binding = 2, std140) uniform P {
+	vec4 rot[6];     // per eye: 3 rows of the rotation (xyz), eye 0 = left
+	ivec4 dim;       // buffer width, height, pitch in 32-bit words, eye shift in rows
+	vec4 lens;       // panel pixel pitch (m), metres per tangent, lens offset toward the nose (m), lens offset up (m)
+	ivec4 flags;     // x: left eye on the lower half, y: source is sRGB, z: warp on (0 = plain copy)
+	vec4 canvas;     // eye canvas width (panel rows per eye), height (panel columns)
+} p;
+
+const float LA[11] = float[](1.0, 1.0374, 1.0810, 1.1330, 1.1970, 1.2754, 1.3771, 1.5133, 1.7018, 1.9732, 2.3);
+
+// Oculus SDK CatmullRom10 lens curve (driver_q2hmd.cpp cr10)
+float cr10(float rsq)
+{
+	float f = 10.0 * rsq; int k = int(f); if (k < 0) k = 0; if (k > 10) k = 10; float t = f - float(k);
+	float p0, m0, p1, m1;
+	if (k == 0) { p0 = 1.0; m0 = LA[1] - LA[0]; p1 = LA[1]; m1 = 0.5 * (LA[2] - LA[0]); }
+	else if (k < 9) { p0 = LA[k]; m0 = 0.5 * (LA[k + 1] - LA[k - 1]); p1 = LA[k + 1]; m1 = 0.5 * (LA[k + 2] - LA[k]); }
+	else if (k == 9) { p0 = LA[9]; m0 = 0.5 * (LA[10] - LA[8]); p1 = LA[10]; m1 = LA[10] - LA[9]; }
+	else { p0 = LA[10]; m0 = LA[10] - LA[9]; p1 = p0 + m0; m1 = m0; }
+	float omt = 1.0 - t;
+	return (p0 * (1.0 + 2.0 * t) + m0 * t) * omt * omt + (p1 * (1.0 + 2.0 * omt) - m1 * omt) * t * t;
+}
+
+vec3 srgb_encode(vec3 c)
+{
+	c = clamp(c, 0.0, 1.0);
+	return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
+}
+
+void main()
+{
+	ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+	int W = p.dim.x, H = p.dim.y, H2 = p.dim.y / 2;
+	if (g.x >= W || g.y >= H) return;
+	uint o = uint(g.y * p.dim.z + g.x);
+	bool top = g.y < H2;
+	int eye = (top != (p.flags.x != 0)) ? 0 : 1;
+	float y0 = top ? 0.0 : float(H2);
+	vec2 uv;
+	if (p.flags.z != 0) {
+		float EW = p.canvas.x, EH = p.canvas.y, PITCH = p.lens.x, MPT = p.lens.y, LUP = p.lens.w;
+		float lx = eye == 0 ? p.lens.z : -p.lens.z;
+		// scanout pixel -> eye viewport (u across, v down) -> eye canvas px -> lens-centred tangent units
+		float u = (float(g.x) + 0.5) / float(W), v = (float(top ? g.y : g.y - H2) + 0.5) / float(H2);
+		float cx = (EW - 1.0) - v * EW, cy = u * EH;
+		vec2 q = vec2(((cx + 0.5 - EW * 0.5) * PITCH - lx) / MPT, ((EH * 0.5 - (cy + 0.5)) * PITCH - LUP) / MPT);
+		vec3 d = vec3(q * cr10(dot(q, q)), -1.0);            // view direction (x right, y up, -z ahead)
+		int r0 = eye * 3;
+		vec3 d2 = vec3(dot(p.rot[r0].xyz, d), dot(p.rot[r0 + 1].xyz, d), dot(p.rot[r0 + 2].xyz, d));
+		if (d2.z > -1e-3) { dst.px[o] = 0xff000000u; return; }
+		vec2 t2 = d2.xy / -d2.z;
+		// inverse lens: solve r * cr10(r^2) = |t| (cr10 >= 1 and smooth: fixed point converges)
+		float rt = length(t2), r = rt;
+		for (int k = 0; k < 8; k++) r = rt / cr10(r * r);
+		vec2 q2 = rt > 1e-7 ? t2 * (r / rt) : vec2(0.0);
+		float cx2 = (q2.x * MPT + lx) / PITCH + EW * 0.5 - 0.5, cy2 = EH * 0.5 - (q2.y * MPT + LUP) / PITCH - 0.5;
+		float v2 = ((EW - 1.0) - cx2) / EW, u2 = cy2 / EH;
+		if (u2 < 0.0 || u2 > 1.0 || v2 < 0.0 || v2 > 1.0) { dst.px[o] = 0xff000000u; return; }
+		uv = vec2(u2, (y0 + v2 * float(H2)) / float(H));
+	} else {
+		uv = (vec2(g) + 0.5) / vec2(float(W), float(H));
+	}
+	// eye shift: upper half row r <- r + e, lower half r <- r - e; never sample the other eye
+	float sy = uv.y * float(H) + float(top ? p.dim.w : -p.dim.w);
+	if (sy < y0 || sy > y0 + float(H2)) { dst.px[o] = 0xff000000u; return; }
+	vec4 c = textureLod(src, vec2(uv.x, sy / float(H)), 0.0);
+	vec3 rgb = p.flags.y != 0 ? srgb_encode(c.rgb) : clamp(c.rgb, 0.0, 1.0);
+	uvec3 b = uvec3(rgb * 255.0 + 0.5);
+	dst.px[o] = b.b | (b.g << 8) | (b.r << 16) | 0xff000000u;   // XRGB8888 (bytes B G R X), as the copy wrote it
+}

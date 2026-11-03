@@ -158,6 +158,9 @@ struct dev {
 	F(CreateSemaphore) F(DestroySemaphore) F(GetSemaphoreFdKHR) F(ImportSemaphoreFdKHR) F(GetSemaphoreCounterValue)
 	F(GetSemaphoreCounterValueKHR) F(SignalSemaphore) F(SignalSemaphoreKHR)
 	F(WaitForPresentKHR) F(GetSwapchainStatusKHR) F(GetRefreshCycleDurationGOOGLE) F(GetPastPresentationTimingGOOGLE)
+	F(CreateShaderModule) F(DestroyShaderModule) F(CreateDescriptorSetLayout) F(CreatePipelineLayout) F(CreateComputePipelines)
+	F(CreateDescriptorPool) F(AllocateDescriptorSets) F(UpdateDescriptorSets) F(CreateImageView) F(CreateSampler)
+	F(CmdBindPipeline) F(CmdBindDescriptorSets) F(CmdDispatch)
 	F(ReleaseSwapchainImagesEXT) F(ImportFenceFdKHR) F(BindImageMemory2) F(BindImageMemory2KHR) F(GetMemoryFdKHR)
 	F(GetBufferMemoryRequirements2) F(GetBufferMemoryRequirements2KHR) F(GetImageMemoryRequirements2) F(GetImageMemoryRequirements2KHR)
 #undef F
@@ -337,6 +340,10 @@ struct swapchain {
 	volatile int kstate[4];                // 0 free, 1 GPU writing, 2 sent to q2kmsd, 3 on the panel, 4 was on the panel (desk-303)
 	int qk[MAXIMG * 2];                    // scanout buffer of each queued frame (-1: old copy path)
 	qthread kreader; volatile uint64_t kflips, kskips, knofree, ksent, klat_ns; uint64_t ksent_t[4], kpid[4];
+	// desk-367 timewarp (Q2VR_TW): the copy into the scanout buffer is a compute shader (q2warp.comp) that can re-aim
+	// the frame at the newest head pose; per scanout buffer a small uniform block with the rotation
+	int tw; VkPipeline tpipe; VkPipelineLayout tpl; VkDescriptorSetLayout tdsl; VkDescriptorPool tpool; VkSampler tsamp;
+	VkImageView tview[MAXIMG]; VkDescriptorSet tset[MAXIMG][4]; VkBuffer tubo[4]; VkDeviceMemory tumem[4]; void *tumap[4];
 };
 #define SC_MAGIC 0x51325643484149ull
 static struct swapchain *sc_of(VkSwapchainKHR s) { struct swapchain *c = (struct swapchain *)(uintptr_t)s; return (c && c->magic == SC_MAGIC) ? c : 0; }
@@ -579,6 +586,98 @@ static void *kms_reader(void *arg)
 // desk-160: zero-copy.  q2kmsd (the process that owns the display) hands us its VR scanout buffers as dma-bufs; we
 // import them, and each present copies the compositor's image into a free one ON THE GPU, then asks q2kmsd to flip the
 // display to it.  No CPU copy and no q2blit in the VR path.  Any failure -> the old copy path, nothing else changes.
+// ---- desk-367 timewarp (Q2VR_TW): the zero-copy copy as a compute shader (q2warp.comp) ----
+// Q2VR_TW=1: shader with the lens round trip and an identity rotation (must look exactly like the copy);
+// Q2VR_TW=2: shader as a plain copy (no lens math).  Unset: the CmdCopyImageToBuffer path as before.
+#include "q2warp_spv.h"   // const uint32_t q2warp_spv[] = SPIR-V of q2warp.comp (glslangValidator -V --vn q2warp_spv)
+struct twp { float rot[6][4]; int32_t dim[4]; float lens[4]; int32_t flags[4]; float canvas[4]; };   // std140, as in q2warp.comp
+static int tw_mode(void) { static int v = -1; if (v < 0) v = envi("Q2VR_TW", 0); return v; }
+static int fmt_is_srgb(VkFormat f) { return f == VK_FORMAT_B8G8R8A8_SRGB || f == VK_FORMAT_R8G8B8A8_SRGB || f == VK_FORMAT_A8B8G8R8_SRGB_PACK32; }
+// rot[eye][row][col]: maps a view direction of the newest head pose to the frame's (old) head pose
+static void tw_write(struct swapchain *c, int k, const float rot[2][3][3], uint32_t pitch, int erows)
+{
+	struct twp p; memset(&p, 0, sizeof p);
+	for (int e = 0; e < 2; e++) for (int r = 0; r < 3; r++) for (int s = 0; s < 3; s++) p.rot[e * 3 + r][s] = rot[e][r][s];
+	p.dim[0] = (int32_t)c->ext.width; p.dim[1] = (int32_t)c->ext.height; p.dim[2] = (int32_t)(pitch / 4); p.dim[3] = erows;
+	// the Quest 2 lens model of driver_q2hmd.cpp (meta_distort): pixel pitch, metres per tangent, lens offsets
+	static const float lin[3] = { 0.0026f, 0.0011f, -0.0020f };
+	int ipd = envi("Q2VR_IPDPOS", 2); if (ipd < 1) ipd = 1; if (ipd > 3) ipd = 3;
+	p.lens[0] = 0.06018085f / 1832.0f; p.lens[1] = 0.0389f; p.lens[2] = lin[ipd - 1]; p.lens[3] = 0.00125f;
+	p.flags[0] = envi("Q2VR_EYESWAP", 0) != 0; p.flags[1] = fmt_is_srgb(c->fmt);
+	p.flags[2] = tw_mode() == 1 && !envi("Q2VR_OLDLENS", 0);
+	p.canvas[0] = 1832.0f; p.canvas[1] = 1920.0f;
+	memcpy(c->tumap[k], &p, sizeof p);
+}
+static int tw_setup(struct dev *d, struct swapchain *c, int nb, uint32_t pitch, int erows)
+{
+	VkResult r = VK_ERROR_INITIALIZATION_FAILED; const char *what = "functions";
+	if (!d->CreateShaderModule || !d->CreateComputePipelines || !d->CmdDispatch || !d->CreateSampler) goto fail;
+	what = "sampler";
+	VkSamplerCreateInfo sci = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, 0, 0, VK_FILTER_LINEAR, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST,
+		VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0, 0, 1, 0, 0, 0, 0,
+		VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK, 0 };
+	if ((r = d->CreateSampler(d->dev, &sci, 0, &c->tsamp))) goto fail;
+	what = "image views";
+	for (uint32_t i = 0; i < c->n; i++) {
+		VkImageViewCreateInfo vci = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, 0, 0, c->img[i], VK_IMAGE_VIEW_TYPE_2D, c->fmt,
+			{ 0, 0, 0, 0 }, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+		if ((r = d->CreateImageView(d->dev, &vci, 0, &c->tview[i]))) goto fail;
+	}
+	what = "uniform buffers";
+	for (int k = 0; k < nb; k++) {
+		VkBufferCreateInfo bi = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, 0, 0, 256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, 0 };
+		if ((r = d->CreateBuffer(d->dev, &bi, 0, &c->tubo[k]))) goto fail;
+		VkMemoryRequirements mr; d->GetBufferMemoryRequirements(d->dev, c->tubo[k], &mr);
+		VkMemoryAllocateInfo ai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, 0, mr.size,
+			find_mem(d, mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0) };
+		if (ai.memoryTypeIndex == 0xffffffffu) { r = VK_ERROR_FORMAT_NOT_SUPPORTED; goto fail; }
+		if ((r = d->AllocateMemory(d->dev, &ai, 0, &c->tumem[k])) || (r = d->BindBufferMemory(d->dev, c->tubo[k], c->tumem[k], 0)) ||
+		    (r = d->MapMemory(d->dev, c->tumem[k], 0, VK_WHOLE_SIZE, 0, &c->tumap[k]))) goto fail;
+		float id[2][3][3] = { { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } }, { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } } };
+		tw_write(c, k, id, pitch, erows);
+	}
+	what = "pipeline";
+	VkDescriptorSetLayoutBinding lb[3] = {
+		{ 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0 },
+		{ 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0 },
+		{ 2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0 } };
+	VkDescriptorSetLayoutCreateInfo lci = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, 0, 0, 3, lb };
+	if ((r = d->CreateDescriptorSetLayout(d->dev, &lci, 0, &c->tdsl))) goto fail;
+	VkPipelineLayoutCreateInfo plci = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, 0, 0, 1, &c->tdsl, 0, 0 };
+	if ((r = d->CreatePipelineLayout(d->dev, &plci, 0, &c->tpl))) goto fail;
+	VkShaderModuleCreateInfo smci = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, 0, 0, sizeof q2warp_spv, q2warp_spv };
+	VkShaderModule sm;
+	if ((r = d->CreateShaderModule(d->dev, &smci, 0, &sm))) goto fail;
+	VkComputePipelineCreateInfo cpci = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, 0, 0,
+		{ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, 0, 0, VK_SHADER_STAGE_COMPUTE_BIT, sm, "main", 0 }, c->tpl, 0, -1 };
+	r = d->CreateComputePipelines(d->dev, VK_NULL_HANDLE, 1, &cpci, 0, &c->tpipe);
+	d->DestroyShaderModule(d->dev, sm, 0);
+	if (r) goto fail;
+	what = "descriptor sets";
+	uint32_t ns = c->n * (uint32_t)nb;
+	VkDescriptorPoolSize ps[3] = { { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, ns }, { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ns }, { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, ns } };
+	VkDescriptorPoolCreateInfo dpci = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, 0, 0, ns, 3, ps };
+	if ((r = d->CreateDescriptorPool(d->dev, &dpci, 0, &c->tpool))) goto fail;
+	for (uint32_t i = 0; i < c->n; i++) for (int k = 0; k < nb; k++) {
+		VkDescriptorSetAllocateInfo dsai = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, 0, c->tpool, 1, &c->tdsl };
+		if ((r = d->AllocateDescriptorSets(d->dev, &dsai, &c->tset[i][k]))) goto fail;
+		VkDescriptorImageInfo dii = { c->tsamp, c->tview[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+		VkDescriptorBufferInfo dbo = { c->kbuf[k], 0, VK_WHOLE_SIZE }, dbu = { c->tubo[k], 0, sizeof(struct twp) };
+		VkWriteDescriptorSet w[3] = {
+			{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, 0, c->tset[i][k], 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &dii, 0, 0 },
+			{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, 0, c->tset[i][k], 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 0, &dbo, 0 },
+			{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, 0, c->tset[i][k], 2, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0, &dbu, 0 } };
+		d->UpdateDescriptorSets(d->dev, 3, w, 0, 0);
+	}
+	c->tw = 1;
+	qlog("timewarp: scanout copy is the q2warp compute shader (Q2VR_TW=%d: %s; source %s)", tw_mode(),
+	     tw_mode() == 1 ? "lens round trip, identity rotation" : "plain copy", fmt_is_srgb(c->fmt) ? "sRGB" : "UNORM");
+	return 0;
+fail:
+	qlog("timewarp: setup failed at %s (%d) - plain copy", what, (int)r);
+	return -1;   // (objects created so far stay until the swapchain goes; the copy path does not use them)
+}
+
 static void kms_setup(struct dev *d, struct swapchain *c)
 {
 	c->ksock = -1; c->kn = 0;
@@ -613,7 +712,8 @@ static void kms_setup(struct dev *d, struct swapchain *c)
 	VkResult r = 0; int ok = 0;
 	for (int k = 0; k < nb; k++) {
 		VkExternalMemoryBufferCreateInfo eb = { VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, 0, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT };
-		VkBufferCreateInfo bi = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, &eb, 0, (VkDeviceSize)pitch * SH, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, 0 };
+		VkBufferCreateInfo bi = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, &eb, 0, (VkDeviceSize)pitch * SH,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, 0 };
 		if ((r = d->CreateBuffer(d->dev, &bi, 0, &c->kbuf[k]))) break;
 		VkMemoryRequirements mr; d->GetBufferMemoryRequirements(d->dev, c->kbuf[k], &mr);
 		VkMemoryFdPropertiesKHR fp = { VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR, 0, 0 };
@@ -645,6 +745,8 @@ static void kms_setup(struct dev *d, struct swapchain *c)
 		if (en > 0) { eb2[en] = 0; int sg = 1, v = 0; char *q = eb2; while (*q == ' ') q++; if (*q == '-') { sg = -1; q++; } else if (*q == '+') q++;
 			while (*q >= '0' && *q <= '9') v = v * 10 + (*q++ - '0'); eshift = sg * v; } } }
 	if (eshift) qlog("zero-copy: eye shift %d px (from /var/lib/q2/eyeshift; changes apply when VR restarts)", eshift);
+	{ int e = (int)((long)eshift * (long)SH / 3664), lim = (int)SH / 8; if (e > lim) e = lim; if (e < -lim) e = -lim;
+	  if (tw_mode()) tw_setup(d, c, nb, (uint32_t)pitch, e); }
 	VkCommandBufferAllocateInfo cai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, 0, c->pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1 };
 	for (uint32_t i = 0; i < c->n; i++) for (int k = 0; k < nb; k++) {
 		if ((r = d->AllocateCommandBuffers(d->dev, &cai, &c->kcmd[i][k]))) { qlog("zero-copy: command buffers (%d) - copy path", (int)r); close(s); return; }
@@ -652,6 +754,22 @@ static void kms_setup(struct dev *d, struct swapchain *c)
 		VkCommandBufferBeginInfo cbi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, 0, 0, 0 };
 		d->BeginCommandBuffer(c->kcmd[i][k], &cbi);
 		VkImageSubresourceRange rng = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		if (c->tw) {   // desk-367: the compute shader writes the scanout buffer (q2warp.comp; rotation from the uniform block)
+			VkCommandBuffer cb = c->kcmd[i][k];
+			VkImageMemoryBarrier t1 = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, 0, VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+				VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, c->img[i], rng };
+			d->CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, 0, 0, 0, 1, &t1);
+			d->CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, c->tpipe);
+			d->CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, c->tpl, 0, 1, &c->tset[i][k], 0, 0);
+			d->CmdDispatch(cb, (SW + 7) / 8, (SH + 7) / 8, 1);
+			VkImageMemoryBarrier t2 = t1; t2.srcAccessMask = VK_ACCESS_SHADER_READ_BIT; t2.dstAccessMask = 0;
+			t2.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; t2.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+			VkBufferMemoryBarrier t3 = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, 0, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT,
+				VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, c->kbuf[k], 0, VK_WHOLE_SIZE };
+			d->CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, 0, 1, &t3, 1, &t2);
+			if ((r = d->EndCommandBuffer(cb))) { qlog("zero-copy: recording (%d) - copy path", (int)r); close(s); return; }
+			continue;
+		}
 		VkImageMemoryBarrier b1 = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, 0, VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
 			VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, c->img[i], rng };
 		d->CmdPipelineBarrier(c->kcmd[i][k], VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, 0, 0, 0, 1, &b1);
@@ -698,7 +816,7 @@ static VkResult create_swapchain(struct dev *d, const VkSwapchainCreateInfoKHR *
 		VkImageCreateInfo ii = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, 0,
 			(ci->flags & VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR) ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0,
 			VK_IMAGE_TYPE_2D, ci->imageFormat, { c->ext.width, c->ext.height, 1 }, 1, ci->imageArrayLayers ? ci->imageArrayLayers : 1,
-			VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_TILING_OPTIMAL, ci->imageUsage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+			VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_TILING_OPTIMAL, ci->imageUsage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
 			VK_SHARING_MODE_EXCLUSIVE, 0, 0, VK_IMAGE_LAYOUT_UNDEFINED };
 		if ((r = d->CreateImage(d->dev, &ii, 0, &c->img[i]))) goto fail;
 		VkMemoryRequirements mr; d->GetImageMemoryRequirements(d->dev, c->img[i], &mr);
@@ -2210,6 +2328,9 @@ static VKAPI_ATTR VkResult VKAPI_CALL q_CreateDevice(VkPhysicalDevice pd, const 
 	F(CreateSemaphore) F(DestroySemaphore) F(GetSemaphoreFdKHR) F(ImportSemaphoreFdKHR) F(GetSemaphoreCounterValue)
 	F(GetSemaphoreCounterValueKHR) F(SignalSemaphore) F(SignalSemaphoreKHR)
 	F(WaitForPresentKHR) F(GetSwapchainStatusKHR) F(GetRefreshCycleDurationGOOGLE) F(GetPastPresentationTimingGOOGLE)
+	F(CreateShaderModule) F(DestroyShaderModule) F(CreateDescriptorSetLayout) F(CreatePipelineLayout) F(CreateComputePipelines)
+	F(CreateDescriptorPool) F(AllocateDescriptorSets) F(UpdateDescriptorSets) F(CreateImageView) F(CreateSampler)
+	F(CmdBindPipeline) F(CmdBindDescriptorSets) F(CmdDispatch)
 	F(ReleaseSwapchainImagesEXT) F(ImportFenceFdKHR) F(BindImageMemory2) F(BindImageMemory2KHR) F(GetMemoryFdKHR)
 	F(GetBufferMemoryRequirements2) F(GetBufferMemoryRequirements2KHR) F(GetImageMemoryRequirements2) F(GetImageMemoryRequirements2KHR)
 #undef F

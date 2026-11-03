@@ -13,3 +13,4 @@ image/out/
 !image/base/.keep
 !image/art/.keep
 release-files/
+image/src/layer/q2warp_spv.h
