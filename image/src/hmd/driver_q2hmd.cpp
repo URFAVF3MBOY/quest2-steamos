@@ -226,7 +226,8 @@ static bool read_pose(double o[8])
 // ---- desk-368 timewarp: the display layer (in vrcompositor) re-aims each finished frame at the newest head pose, so it
 // must know the pose the frame was rendered with.  With Q2VR_TW=1 the head rotation is held for a whole vblank tick
 // (predicted to the tick + Q2VR_PHOTON_MS) and sent with zero angular velocity, so SteamVR renders exactly that, and
-// each tick's rotation goes into /dev/shm/q2tw (layout: q2vrdisplay.c, "timewarp step 2").  Q2VR_TWPOSE=0: off.
+// each tick's rotation goes into /dev/shm/q2tw (layout: q2vrdisplay.c, "timewarp step 2"); +24 = the tick whose
+// rotation is being served right now.  Q2VR_TWPOSE=0: off.
 static volatile uint8_t *g_tw;
 static bool tw_map()
 {
@@ -275,6 +276,7 @@ static bool tw_held(const double o[8], double q[4])
 		*(volatile uint64_t *)(s + 8) = tick;
 		for (int i = 0; i < 4; i++) ((volatile double *)(s + 16))[i] = hq[i];
 		__atomic_store_n(sq, (s0 | 1) + 1, __ATOMIC_RELEASE);
+		__atomic_store_n((volatile uint64_t *)(g_tw + 24), tick, __ATOMIC_RELEASE);   // the tick whose rotation we serve now
 		held = tick;
 	}
 	for (int i = 0; i < 4; i++) q[i] = hq[i];

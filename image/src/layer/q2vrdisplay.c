@@ -639,7 +639,8 @@ static void tw_write(struct swapchain *c, int k, const float rot[2][3][3], uint3
 }
 // ---- desk-368 timewarp step 2: the pose the frame was rendered with, and the newest one ----
 // /dev/shm/q2tw (made by whoever comes first, the driver or us): +8 vblank tick, +16 its time (ns, CLOCK_MONOTONIC),
-// both written here; +64 + 64 * (tick % 32): the driver's slot for that tick = the head rotation it gave SteamVR for
+// both written here; +24 the tick whose rotation the driver serves right now (lags the tick by up to its 2 ms poll -
+// the compositor gets THAT one, so acquire records it); +64 + 64 * (tick % 32): the driver's slot for that tick = the head rotation it gave SteamVR for
 // the whole tick (predicted to the tick + Q2VR_PHOTON_MS, zero angular velocity, so SteamVR renders exactly it):
 // u64 seq (odd while written), u64 tick, f64 qw qx qy qz.  The newest pose: /dev/shm/q2pose (q2headtrack / q2metapose):
 // u32 seq, +8 f64 qw qx qy qz, t (s, CLOCK_MONOTONIC), wx wy wz (rad/s, head frame).
@@ -1370,7 +1371,7 @@ static VkResult acquire(struct dev *d, struct swapchain *c, uint64_t timeout, Vk
 		pthread_cond_timedwait(&c->cond, &c->lock, &ts);
 	}
 	c->state[found] = 1; c->next = (uint32_t)(found + 1) % c->n; c->acquires++;
-	c->acq_tick[found] = __atomic_load_n(&g_tick, __ATOMIC_ACQUIRE);
+	c->acq_tick[found] = g_twm ? __atomic_load_n((volatile uint64_t *)(g_twm + 24), __ATOMIC_ACQUIRE) : __atomic_load_n(&g_tick, __ATOMIC_ACQUIRE);
 	pthread_mutex_unlock(&c->lock);
 	*idx = (uint32_t)found;
 	if (fence && !cpu_signal(d, fence)) fence = VK_NULL_HANDLE;   // signalled already, from the CPU
