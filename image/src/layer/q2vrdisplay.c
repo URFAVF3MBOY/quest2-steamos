@@ -1138,7 +1138,11 @@ static int direct_setup(struct dev *d, struct swapchain *c, const VkSwapchainCre
 		uint32_t bits = fp.memoryTypeBits & mr.memoryTypeBits, mt = 0xffffffffu;
 		if (!bits) bits = fp.memoryTypeBits ? fp.memoryTypeBits : mr.memoryTypeBits;   // as the buffer import does (desk-177)
 		for (uint32_t t = 0; t < d->memprops.memoryTypeCount; t++) if (bits & (1u << t)) { mt = t; break; }
-		if (mt == 0xffffffffu || mr.size > (VkDeviceSize)c->ksize) { why = "memory type / size"; goto fail; }
+		if (mt == 0xffffffffu || mr.size > (VkDeviceSize)c->ksize) {
+			qlog("direct: linear image needs %llu bytes (alignment %llu, type bits 0x%x), scanout buffer has %lld (dma-buf type bits 0x%x)",
+			     (unsigned long long)mr.size, (unsigned long long)mr.alignment, mr.memoryTypeBits, c->ksize, fp.memoryTypeBits);
+			why = "memory type / size"; goto fail;
+		}
 		VkMemoryDedicatedAllocateInfo ded = { VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, 0, im[k], VK_NULL_HANDLE };
 		VkImportMemoryFdInfoKHR imp = { VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR, &ded, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, c->kfd2[k] };
 		VkMemoryAllocateInfo ai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &imp, mr.size, mt };
