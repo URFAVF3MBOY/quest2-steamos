@@ -5,10 +5,12 @@
 // driver_q2hmd.cpp meta_distort, green channel), rotate it by this eye's correction (old head pose -> newest head pose),
 // back through the inverse lens model to a panel position, and sample the frame SteamVR's compositor rendered there.
 // With an identity rotation it is the plain copy (same texels).  Eye shift (/var/lib/q2/eyeshift) as the copy did it.
-layout(local_size_x = 32, local_size_y = 4) in;   // whole runs of a buffer row per group (linear scanout buffer)
+// One invocation = 4 neighbouring pixels of a row, stored as one 16-byte write (the scanout buffer is linear and
+// uncached; single-word stores made the copy cost 2.5 ms of GPU a frame).  Needs W % 4 == 0 and pitch % 16 == 0.
+layout(local_size_x = 16, local_size_y = 4) in;
 
 layout(set = 0, binding = 0) uniform sampler2D src;
-layout(set = 0, binding = 1, std430) writeonly buffer Dst { uint px[]; } dst;
+layout(set = 0, binding = 1, std430) writeonly buffer Dst { uvec4 px[]; } dst;
 layout(set = 0, binding = 2, std140) uniform P {
 	vec4 rot[6];     // per eye: 3 rows of the rotation (xyz), eye 0 = left
 	ivec4 dim;       // buffer width, height, pitch in 32-bit words, eye shift in rows
@@ -33,12 +35,9 @@ vec3 srgb_encode(vec3 c)
 	return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
 }
 
-void main()
+uint shade(ivec2 g)
 {
-	ivec2 g = ivec2(gl_GlobalInvocationID.xy);
 	int W = p.dim.x, H = p.dim.y, H2 = p.dim.y / 2;
-	if (g.x >= W || g.y >= H) return;
-	uint o = uint(g.y * p.dim.z + g.x);
 	bool top = g.y < H2;
 	int eye = (top != (p.flags.x != 0)) ? 0 : 1;
 	float y0 = top ? 0.0 : float(H2);
@@ -53,23 +52,30 @@ void main()
 		vec3 d = vec3(q * cr10(dot(q, q)), -1.0);            // view direction (x right, y up, -z ahead)
 		int r0 = eye * 3;
 		vec3 d2 = vec3(dot(p.rot[r0].xyz, d), dot(p.rot[r0 + 1].xyz, d), dot(p.rot[r0 + 2].xyz, d));
-		if (d2.z > -1e-3) { dst.px[o] = 0xff000000u; return; }
+		if (d2.z > -1e-3) return 0xff000000u;
 		vec2 t2 = d2.xy / -d2.z;
 		// inverse lens: r with r * cr10(r^2) = |t|, from the table
 		float rt = length(t2), r = lut_at(1024, rt * (1023.0 / p.canvas.w));
 		vec2 q2 = rt > 1e-7 ? t2 * (r / rt) : vec2(0.0);
 		float cx2 = (q2.x * MPT + lx) / PITCH + EW * 0.5 - 0.5, cy2 = EH * 0.5 - (q2.y * MPT + LUP) / PITCH - 0.5;
 		float v2 = ((EW - 1.0) - cx2) / EW, u2 = cy2 / EH;
-		if (u2 < 0.0 || u2 > 1.0 || v2 < 0.0 || v2 > 1.0) { dst.px[o] = 0xff000000u; return; }
+		if (u2 < 0.0 || u2 > 1.0 || v2 < 0.0 || v2 > 1.0) return 0xff000000u;
 		uv = vec2(u2, (y0 + v2 * float(H2)) / float(H));
 	} else {
 		uv = (vec2(g) + 0.5) / vec2(float(W), float(H));
 	}
 	// eye shift: upper half row r <- r + e, lower half r <- r - e; never sample the other eye
 	float sy = uv.y * float(H) + float(top ? p.dim.w : -p.dim.w);
-	if (sy < y0 || sy > y0 + float(H2)) { dst.px[o] = 0xff000000u; return; }
+	if (sy < y0 || sy > y0 + float(H2)) return 0xff000000u;
 	vec4 c = textureLod(src, vec2(uv.x, sy / float(H)), 0.0);
 	vec3 rgb = p.flags.y != 0 ? srgb_encode(c.rgb) : clamp(c.rgb, 0.0, 1.0);
 	uvec3 b = uvec3(rgb * 255.0 + 0.5);
-	dst.px[o] = b.b | (b.g << 8) | (b.r << 16) | 0xff000000u;   // XRGB8888 (bytes B G R X), as the copy wrote it
+	return b.b | (b.g << 8) | (b.r << 16) | 0xff000000u;   // XRGB8888 (bytes B G R X), as the copy wrote it
+}
+
+void main()
+{
+	ivec2 g = ivec2(gl_GlobalInvocationID.x * 4u, gl_GlobalInvocationID.y);
+	if (g.x >= p.dim.x || g.y >= p.dim.y) return;
+	dst.px[(g.y * p.dim.z + g.x) >> 2] = uvec4(shade(g), shade(g + ivec2(1, 0)), shade(g + ivec2(2, 0)), shade(g + ivec2(3, 0)));
 }

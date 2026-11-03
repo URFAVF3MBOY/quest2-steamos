@@ -638,6 +638,8 @@ static int tw_setup(struct dev *d, struct swapchain *c, int nb, uint32_t pitch, 
 {
 	VkResult r = VK_ERROR_INITIALIZATION_FAILED; const char *what = "functions";
 	if (!d->CreateShaderModule || !d->CreateComputePipelines || !d->CmdDispatch || !d->CreateSampler) goto fail;
+	what = "pitch (the shader stores 16 bytes at a time)";
+	if (pitch & 15) goto fail;
 	what = "sampler";
 	VkSamplerCreateInfo sci = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, 0, 0, VK_FILTER_LINEAR, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST,
 		VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0, 0, 1, 0, 0, 0, 0,
@@ -803,7 +805,7 @@ static void kms_setup(struct dev *d, struct swapchain *c)
 			d->CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, 0, 0, 0, 1, &t1);
 			d->CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, c->tpipe);
 			d->CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, c->tpl, 0, 1, &c->tset[i][k], 0, 0);
-			d->CmdDispatch(cb, (SW + 31) / 32, (SH + 3) / 4, 1);   // q2warp.comp local size 32x4
+			d->CmdDispatch(cb, (SW / 4 + 15) / 16, (SH + 3) / 4, 1);   // q2warp.comp: local size 16x4, 4 pixels each
 			VkImageMemoryBarrier t2 = t1; t2.srcAccessMask = VK_ACCESS_SHADER_READ_BIT; t2.dstAccessMask = 0;
 			t2.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; t2.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 			VkBufferMemoryBarrier t3 = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, 0, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT,
