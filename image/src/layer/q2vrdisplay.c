@@ -149,7 +149,7 @@ struct dev {
 #define F(n) PFN_vk##n n;
 	F(DestroyDevice) F(GetDeviceQueue) F(GetDeviceQueue2) F(QueueSubmit) F(QueueSubmit2) F(QueueSubmit2KHR) F(QueueWaitIdle)
 	F(QueueBindSparse) F(QueuePresentKHR) F(CreateSwapchainKHR) F(DestroySwapchainKHR) F(GetSwapchainImagesKHR)
-	F(AcquireNextImageKHR) F(AcquireNextImage2KHR) F(CreateImage) F(DestroyImage) F(GetImageMemoryRequirements)
+	F(AcquireNextImageKHR) F(AcquireNextImage2KHR) F(CreateImage) F(DestroyImage) F(GetImageMemoryRequirements) F(GetImageSubresourceLayout)
 	F(AllocateMemory) F(FreeMemory) F(BindImageMemory) F(CreateBuffer) F(DestroyBuffer) F(GetBufferMemoryRequirements)
 	F(BindBufferMemory) F(MapMemory) F(UnmapMemory) F(InvalidateMappedMemoryRanges) F(CreateCommandPool)
 	F(DestroyCommandPool) F(AllocateCommandBuffers) F(BeginCommandBuffer) F(EndCommandBuffer) F(CmdPipelineBarrier)
@@ -353,6 +353,8 @@ struct swapchain {
 	int kqstreak; volatile uint64_t ktrims; // desk-371: frames in a row that queued behind an unfinished flip; drops
 	int held; int qr[MAXIMG * 2];          // desk-369: image of the newest finished frame (-1 none); queue entry is a re-warp
 	volatile uint64_t rewarps, rwskip; qthread twthr;
+	// desk-374 direct: the swapchain images ARE the scanout buffers (linear images on the same dma-bufs) - no copy
+	int direct, kfd2[4], kpitch, keshift; long long ksize; VkCommandBuffer dcmd[4];
 };
 #define SC_MAGIC 0x51325643484149ull
 static struct swapchain *sc_of(VkSwapchainKHR s) { struct swapchain *c = (struct swapchain *)(uintptr_t)s; return (c && c->magic == SC_MAGIC) ? c : 0; }
@@ -980,6 +982,7 @@ fail:
 static void kms_setup(struct dev *d, struct swapchain *c)
 {
 	c->ksock = -1; c->kn = 0;
+	for (int k = 0; k < 4; k++) c->kfd2[k] = -1;
 	if (!envi("Q2VR_ZEROCOPY", 1)) return;
 	if (!d->dmabuf || !d->GetMemoryFdPropertiesKHR) { qlog("zero-copy: no dma-buf import in the GPU driver - copy path"); return; }
 	const uint32_t SW = c->ext.width, SH = c->ext.height;   // desk-161: may be smaller than the panel (the display engine scales up)
@@ -1009,6 +1012,8 @@ static void kms_setup(struct dev *d, struct swapchain *c)
 		for (int k = 0; k < nf; k++) close(fds[k]); close(s); return;
 	}
 	VkResult r = 0; int ok = 0;
+	for (int k = 0; k < nb; k++) c->kfd2[k] = dup(fds[k]);   // desk-374: a second handle for the direct images (the import below takes fds[k])
+	c->kpitch = pitch; c->ksize = sz;
 	for (int k = 0; k < nb; k++) {
 		VkExternalMemoryBufferCreateInfo eb = { VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, 0, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT };
 		VkBufferCreateInfo bi = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, &eb, 0, (VkDeviceSize)pitch * SH,
@@ -1045,6 +1050,7 @@ static void kms_setup(struct dev *d, struct swapchain *c)
 			while (*q >= '0' && *q <= '9') v = v * 10 + (*q++ - '0'); eshift = sg * v; } } }
 	if (eshift) qlog("zero-copy: eye shift %d px (from /var/lib/q2/eyeshift; changes apply when VR restarts)", eshift);
 	{ int e = (int)((long)eshift * (long)SH / 3664), lim = (int)SH / 8; if (e > lim) e = lim; if (e < -lim) e = -lim;
+	  c->keshift = e;
 	  if (tw_mode()) tw_setup(d, c, nb, (uint32_t)pitch, e); }
 	VkCommandBufferAllocateInfo cai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, 0, c->pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1 };
 	for (uint32_t i = 0; i < c->n; i++) for (int k = 0; k < nb; k++) {
@@ -1096,6 +1102,83 @@ static void kms_setup(struct dev *d, struct swapchain *c)
 	     SW, SH, nb, (SW != 1920 || SH != 3664) ? "; the display engine scales them up to the 1920x3664 panel" : "");
 }
 
+// desk-374: direct scanout.  The compositor draws straight into q2kmsd's scanout buffers: the swapchain images become
+// LINEAR images on the same dma-bufs (imported a second time), so a present is only a cache flush + "F k" - no copy.
+// Saves the copy's ~1.45 ms of GPU a frame (the compositor alone needs 6-9.3 ms of the 11.1, more when the Steam panel
+// fills the view) plus ~18 MB each way of memory traffic, and the frame reaches the panel that much sooner.  Needs the
+// plain copy mode (Q2VR_TW=0), no eye shift, and a linear layout with exactly the buffers' pitch; anything else ->
+// the copy path as before.  /var/lib/q2/direct = 0 turns it off.
+static int direct_setup(struct dev *d, struct swapchain *c, const VkSwapchainCreateInfoKHR *ci)
+{
+	const char *why = 0; VkResult r = 0;
+	VkImage im[4] = { 0 }; VkDeviceMemory mm[4] = { 0 }; VkCommandBuffer cb[4] = { 0 }; VkFence fe[4] = { 0 };
+	if (!file_int("/var/lib/q2/direct", 1)) return 0;
+	if (tw_mode() != 0) { why = "a shader copy mode (Q2VR_TW) is on"; goto fail; }
+	if (c->keshift) { why = "an eye shift is set"; goto fail; }
+	if (c->kn < 3 || c->kn > MAXIMG || !d->GetImageSubresourceLayout) { why = "not enough scanout buffers / functions"; goto fail; }
+	if ((ci->imageArrayLayers ? ci->imageArrayLayers : 1) != 1) { why = "array images"; goto fail; }
+	for (int k = 0; k < c->kn; k++) {
+		if (c->kfd2[k] < 0) { why = "no second dma-buf handle"; goto fail; }
+		VkExternalMemoryImageCreateInfo em = { VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO, 0, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT };
+		VkImageCreateInfo ii = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, &em,
+			(ci->flags & VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR) ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0,
+			VK_IMAGE_TYPE_2D, ci->imageFormat, { c->ext.width, c->ext.height, 1 }, 1, 1, VK_SAMPLE_COUNT_1_BIT,
+			VK_IMAGE_TILING_LINEAR, ci->imageUsage, VK_SHARING_MODE_EXCLUSIVE, 0, 0, VK_IMAGE_LAYOUT_UNDEFINED };
+		if ((r = d->CreateImage(d->dev, &ii, 0, &im[k]))) { why = "linear image creation"; goto fail; }
+		VkImageSubresource sr = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0 }; VkSubresourceLayout lay;
+		d->GetImageSubresourceLayout(d->dev, im[k], &sr, &lay);
+		if (lay.offset != 0 || lay.rowPitch != (VkDeviceSize)c->kpitch) {
+			qlog("direct: linear layout offset %llu pitch %llu, the scanout buffers have pitch %d - copy path",
+			     (unsigned long long)lay.offset, (unsigned long long)lay.rowPitch, c->kpitch);
+			why = "layout mismatch"; goto fail;
+		}
+		VkMemoryRequirements mr; d->GetImageMemoryRequirements(d->dev, im[k], &mr);
+		VkMemoryFdPropertiesKHR fp = { VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR, 0, 0 };
+		if ((r = d->GetMemoryFdPropertiesKHR(d->dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, c->kfd2[k], &fp))) { why = "fd properties"; goto fail; }
+		uint32_t bits = fp.memoryTypeBits & mr.memoryTypeBits, mt = 0xffffffffu;
+		if (!bits) bits = fp.memoryTypeBits ? fp.memoryTypeBits : mr.memoryTypeBits;   // as the buffer import does (desk-177)
+		for (uint32_t t = 0; t < d->memprops.memoryTypeCount; t++) if (bits & (1u << t)) { mt = t; break; }
+		if (mt == 0xffffffffu || mr.size > (VkDeviceSize)c->ksize) { why = "memory type / size"; goto fail; }
+		VkMemoryDedicatedAllocateInfo ded = { VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, 0, im[k], VK_NULL_HANDLE };
+		VkImportMemoryFdInfoKHR imp = { VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR, &ded, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, c->kfd2[k] };
+		VkMemoryAllocateInfo ai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &imp, mr.size, mt };
+		if ((r = d->AllocateMemory(d->dev, &ai, 0, &mm[k]))) { why = "dma-buf import"; goto fail; }
+		c->kfd2[k] = -1;   // the driver owns it now
+		if ((r = d->BindImageMemory(d->dev, im[k], mm[k], 0))) { why = "bind"; goto fail; }
+		// present = make the compositor's writes visible to the display engine (flush the GPU caches to memory)
+		VkCommandBufferAllocateInfo cai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, 0, c->pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1 };
+		if ((r = d->AllocateCommandBuffers(d->dev, &cai, &cb[k]))) { why = "command buffer"; goto fail; }
+		if (d->setLoaderData) d->setLoaderData(d->dev, cb[k]);
+		VkCommandBufferBeginInfo cbi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, 0, 0, 0 };
+		d->BeginCommandBuffer(cb[k], &cbi);
+		VkImageMemoryBarrier b = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, 0, VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			VK_ACCESS_MEMORY_READ_BIT, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+			im[k], { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+		d->CmdPipelineBarrier(cb[k], VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, 0, 0, 0, 1, &b);
+		if ((r = d->EndCommandBuffer(cb[k]))) { why = "recording"; goto fail; }
+		if ((uint32_t)k >= c->n) {   // more images than the copy path made: fences for the extra ones
+			VkFenceCreateInfo fi = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, 0, 0 };
+			if ((r = d->CreateFence(d->dev, &fi, 0, &fe[k]))) { why = "fence"; goto fail; }
+		}
+	}
+	// switch over: the copy path's images go (the compositor has not seen them yet), the scanout buffers take their place
+	for (uint32_t i = 0; i < c->n; i++) { d->DestroyImage(d->dev, c->img[i], 0); d->FreeMemory(d->dev, c->mem[i], 0); }
+	for (int k = 0; k < c->kn; k++) {
+		c->img[k] = im[k]; c->mem[k] = mm[k]; c->dcmd[k] = cb[k];
+		if ((uint32_t)k >= c->n) c->fence[k] = fe[k];
+	}
+	c->n = (uint32_t)c->kn; c->direct = 1;
+	qlog("direct: the compositor draws straight into the %d scanout buffers (linear, pitch %d) - no copy per frame", c->kn, c->kpitch);
+	return 1;
+fail:
+	if (why) qlog("direct: not used (%s%s%s) - frames are copied into the scanout buffers as before", why, r ? ", result " : "", r ? "error" : "");
+	for (int k = 0; k < 4; k++) {
+		if (im[k]) d->DestroyImage(d->dev, im[k], 0);
+		if (mm[k]) d->FreeMemory(d->dev, mm[k], 0);
+		if (fe[k]) d->DestroyFence(d->dev, fe[k], 0);
+	}
+	return 0;
+}
 static VkResult create_swapchain(struct dev *d, const VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *out)
 {
 	struct swapchain *c = calloc(1, sizeof *c);
@@ -1164,6 +1247,8 @@ static VkResult create_swapchain(struct dev *d, const VkSwapchainCreateInfoKHR *
 		if ((r = d->EndCommandBuffer(c->cmd[i]))) goto fail;
 	}
 	kms_setup(d, c);
+	if (c->kn) direct_setup(d, c, ci);
+	for (int k = 0; k < 4; k++) if (c->kfd2[k] >= 0) { close(c->kfd2[k]); c->kfd2[k] = -1; }
 	c->held = -1;
 	if (c->tw && c->kn && tw_mode() == 1 && file_int("/var/lib/q2/twlate", 1)) pthread_create(&c->twthr, 0, rewarp_thread, c);
 	pthread_create(&c->worker, 0, worker_thread, c);
@@ -1491,7 +1576,8 @@ static VkResult acquire(struct dev *d, struct swapchain *c, uint64_t timeout, Vk
 	uint64_t deadline = timeout == UINT64_MAX ? UINT64_MAX : now_ns() + timeout;
 	int found = -1;
 	for (;;) {
-		for (uint32_t k = 0; k < c->n; k++) { uint32_t i = (c->next + k) % c->n; if (c->state[i] == 0) { found = (int)i; break; } }
+		// desk-374 direct: the image is a scanout buffer - also not while it is on the panel, just left it, or waits to flip
+		for (uint32_t k = 0; k < c->n; k++) { uint32_t i = (c->next + k) % c->n; if (c->state[i] == 0 && (!c->direct || c->kstate[i] == 0)) { found = (int)i; break; } }
 		if (found >= 0) break;
 		if (timeout == 0) { pthread_mutex_unlock(&c->lock); return VK_NOT_READY; }
 		c->acquire_waits++;
@@ -1567,7 +1653,9 @@ static VKAPI_ATTR VkResult VKAPI_CALL q_QueuePresentKHR(VkQueue q, const VkPrese
 			uint32_t nw = k == 0 ? pi->waitSemaphoreCount : 0; if (nw > 16) nw = 16;
 			for (uint32_t w = 0; w < nw; w++) st[w] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
 			int kk = -1;
-			if (c->kn) {   // zero-copy: a scanout buffer that is neither on the panel nor waiting to be
+			if (c->direct) {   // desk-374: the frame already is in scanout buffer i (acquire handed out only a free one)
+				pthread_mutex_lock(&c->lock); kk = (int)i; c->kstate[kk] = 1; pthread_mutex_unlock(&c->lock);
+			} else if (c->kn) {   // zero-copy: a scanout buffer that is neither on the panel nor waiting to be
 				pthread_mutex_lock(&c->lock);
 				uint64_t until = now_ns() + 40000000ull;
 				for (;;) {
@@ -1582,7 +1670,8 @@ static VKAPI_ATTR VkResult VKAPI_CALL q_QueuePresentKHR(VkQueue q, const VkPrese
 			}
 			if (kk >= 0 && c->tw) tw_pose(c, i, kk);   // desk-368: this frame's correction rotation, as late as we can
 			if (kk >= 0) c->ktns[kk] = c->acq_tns[i];
-			VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO, 0, nw, pi->pWaitSemaphores, st, 1, kk >= 0 ? &c->kcmd[i][kk] : &c->cmd[i], 0, 0 };
+			VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO, 0, nw, pi->pWaitSemaphores, st, 1,
+				c->direct ? &c->dcmd[i] : kk >= 0 ? &c->kcmd[i][kk] : &c->cmd[i], 0, 0 };
 			{ struct qlk_e *L = qlk(q, "present copy"); r = d->QueueSubmit(q, 1, &si, c->fence[i]); qulk(L); }
 			if (r != VK_SUCCESS && kk >= 0) { pthread_mutex_lock(&c->lock); c->kstate[kk] = 0; pthread_mutex_unlock(&c->lock); }
 			if (r == VK_SUCCESS) {
@@ -2675,7 +2764,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL q_CreateDevice(VkPhysicalDevice pd, const 
 #define F(n) d->n = (PFN_vk##n)gdpa(*out, "vk" #n);
 	F(DestroyDevice) F(GetDeviceQueue) F(GetDeviceQueue2) F(QueueSubmit) F(QueueSubmit2) F(QueueSubmit2KHR) F(QueueWaitIdle)
 	F(QueueBindSparse) F(QueuePresentKHR) F(CreateSwapchainKHR) F(DestroySwapchainKHR) F(GetSwapchainImagesKHR)
-	F(AcquireNextImageKHR) F(AcquireNextImage2KHR) F(CreateImage) F(DestroyImage) F(GetImageMemoryRequirements)
+	F(AcquireNextImageKHR) F(AcquireNextImage2KHR) F(CreateImage) F(DestroyImage) F(GetImageMemoryRequirements) F(GetImageSubresourceLayout)
 	F(AllocateMemory) F(FreeMemory) F(BindImageMemory) F(CreateBuffer) F(DestroyBuffer) F(GetBufferMemoryRequirements)
 	F(BindBufferMemory) F(MapMemory) F(UnmapMemory) F(InvalidateMappedMemoryRanges) F(CreateCommandPool)
 	F(DestroyCommandPool) F(AllocateCommandBuffers) F(BeginCommandBuffer) F(EndCommandBuffer) F(CmdPipelineBarrier)
