@@ -3155,9 +3155,10 @@ export VRCOMPOSITOR_TU_DEBUG="$CTU"
 # desk-363: vsync ticks this many us ahead of the real refresh, so the compositor starts early enough for our copy +
 # flip; /var/lib/q2/vblead (us).  Raise /var/lib/q2/photonms by the same amount so head prediction still lands right.
 export Q2VR_VBLEAD_US=$(cat /var/lib/q2/vblead 2>/dev/null | tr -cd 0-9)
-# desk-367: late reprojection (timewarp) in the display layer; /var/lib/q2/tw: 1 (default) = shader copy with the lens
-# round trip, 2 = plain shader copy, 0 = the old transfer copy (with Facet it stalls to ~9 fps while Steam is attached)
-export Q2VR_TW=$(cat /var/lib/q2/tw 2>/dev/null | tr -cd 0-9 | grep . || echo 1)
+# desk-367: late reprojection (timewarp) in the display layer; /var/lib/q2/tw: 2 (default) = plain shader copy (exact
+# pixels), 1 = timewarp (render pose held per tick, re-aimed at the newest pose; resamples the finished picture),
+# 0 = the old transfer copy (with Facet it stalls to ~9 fps while Steam is attached)
+export Q2VR_TW=$(cat /var/lib/q2/tw 2>/dev/null | tr -cd 0-9 | grep . || echo 2)
 ${TUPRIO:+export TU_KGSL_PRIO=$TUPRIO}
 export Q2VR_EYESWAP=$EYESWAP Q2VR_IPDPOS=$IPDPOS Q2VR_OLDLENS=$OLDLENS Q2VR_HZ=$VRHZ Q2VR_PHOTON_MS=$PHOTON Q2VR_CTLTYPE="$CTLTYPE" Q2VR_CTLPROFILE="$CTLPROF" Q2VR_CTLCOMP="$CTLCOMP" Q2VR_CTLMODEL="$CTLMODEL"
 cd $B
