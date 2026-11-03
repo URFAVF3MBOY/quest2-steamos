@@ -2326,10 +2326,12 @@ static VkResult wsem(PFN_vkWaitSemaphores f, VkDevice dv, const VkSemaphoreWaitI
 	}
 	return r;
 }
+// (the GPU driver may have only one of the two names - vrcompositor: "Driver is missing vkSignalSemaphore"; a hook that
+// failed for the missing one made Facet assert in vksync.cpp and the compositor crash in a loop)
 static VKAPI_ATTR VkResult VKAPI_CALL q_WaitSemaphores(VkDevice dv, const VkSemaphoreWaitInfo *wi, uint64_t to)
-{ struct dev *d = dev_of(dv); return wsem(d->WaitSemaphores, dv, wi, to); }
+{ struct dev *d = dev_of(dv); return wsem(d->WaitSemaphores ? d->WaitSemaphores : d->WaitSemaphoresKHR, dv, wi, to); }
 static VKAPI_ATTR VkResult VKAPI_CALL q_WaitSemaphoresKHR(VkDevice dv, const VkSemaphoreWaitInfo *wi, uint64_t to)
-{ struct dev *d = dev_of(dv); return wsem(d->WaitSemaphoresKHR, dv, wi, to); }
+{ struct dev *d = dev_of(dv); return wsem(d->WaitSemaphoresKHR ? d->WaitSemaphoresKHR : d->WaitSemaphores, dv, wi, to); }
 static void fix_extsem(const VkPhysicalDeviceExternalSemaphoreInfo *i, VkExternalSemaphoreProperties *p)
 {
 	// desk-189: only TIMELINE semaphores are emulated, so only a query that asks about a timeline semaphore gets
@@ -2743,6 +2745,8 @@ EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL q2vr_GetDeviceProcAddr(VkDevice 
 		if (!strcmp(name, "vkGetSemaphoreCounterValue") && !d->GetSemaphoreCounterValue) return 0;
 		if (!strcmp(name, "vkGetSemaphoreCounterValueKHR") && !d->GetSemaphoreCounterValueKHR) return 0;
 		if (!strcmp(name, "vkSignalSemaphore") && !d->SignalSemaphore) return 0;
+		if (!strcmp(name, "vkWaitSemaphores") && !d->WaitSemaphores) return 0;
+		if (!strcmp(name, "vkWaitSemaphoresKHR") && !d->WaitSemaphoresKHR) return 0;
 		if (!strcmp(name, "vkSignalSemaphoreKHR") && !d->SignalSemaphoreKHR) return 0;
 		if (!strcmp(name, "vkBindImageMemory2") && !d->BindImageMemory2) return 0;
 		if (!strcmp(name, "vkBindImageMemory2KHR") && !d->BindImageMemory2KHR) return 0;
