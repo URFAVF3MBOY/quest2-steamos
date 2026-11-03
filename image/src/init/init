@@ -3154,10 +3154,11 @@ $DISPENV
 export VRCOMPOSITOR_TU_DEBUG="$CTU"
 # desk-363: vsync ticks this many us ahead of the real refresh, so the compositor starts early enough for our copy +
 # flip; /var/lib/q2/vblead (us).  Raise /var/lib/q2/photonms by the same amount so head prediction still lands right.
-# desk-371: default 8000 - the compositor's frame (7-8 ms of GPU + the copy) is then done ~2 ms before the refresh it is
-# meant for: vsync tick -> on the panel 19 ms, matching the 20 ms photon time SteamVR predicts the head pose for (4000
-# gave 26 ms: every frame missed its refresh by ~2 ms and the head pose was predicted 6+ ms short)
-export Q2VR_VBLEAD_US=$(cat /var/lib/q2/vblead 2>/dev/null | tr -cd 0-9 | grep . || echo 8000)
+# desk-371: default 10000 - the compositor's frame (7-8 ms of GPU + the copy) then makes the refresh it is meant for:
+# vsync tick -> on the panel ~19 ms, matching the 20 ms photon time SteamVR predicts the head pose for.  4000 gave 26 ms
+# (every frame missed its refresh by ~2 ms; head pose predicted 6+ ms short); 8000 left ~1.7 ms of slack and 3-7% of
+# frames still missed (stutter while looking around); 10000: well under 1%.
+export Q2VR_VBLEAD_US=$(cat /var/lib/q2/vblead 2>/dev/null | tr -cd 0-9 | grep . || echo 10000)
 # desk-367: late reprojection (timewarp) in the display layer; /var/lib/q2/tw: 2 (default) = plain shader copy (exact
 # pixels), 1 = timewarp (render pose held per tick, re-aimed at the newest pose; resamples the finished picture),
 # 0 = the old transfer copy (with Facet it stalls to ~9 fps while Steam is attached)
