@@ -156,7 +156,7 @@ struct dev {
 	F(CmdCopyImageToBuffer) F(CreateFence) F(DestroyFence) F(WaitForFences) F(ResetFences) F(GetFenceStatus) F(DeviceWaitIdle)
 	F(CmdPipelineBarrier2) F(CmdPipelineBarrier2KHR) F(CmdWaitEvents) F(CmdWaitEvents2) F(CmdWaitEvents2KHR)
 	F(CreateSemaphore) F(DestroySemaphore) F(GetSemaphoreFdKHR) F(ImportSemaphoreFdKHR) F(GetSemaphoreCounterValue)
-	F(GetSemaphoreCounterValueKHR) F(SignalSemaphore) F(SignalSemaphoreKHR)
+	F(GetSemaphoreCounterValueKHR) F(SignalSemaphore) F(SignalSemaphoreKHR) F(WaitSemaphores) F(WaitSemaphoresKHR)
 	F(WaitForPresentKHR) F(GetSwapchainStatusKHR) F(GetRefreshCycleDurationGOOGLE) F(GetPastPresentationTimingGOOGLE)
 	F(CreateShaderModule) F(DestroyShaderModule) F(CreateDescriptorSetLayout) F(CreatePipelineLayout) F(CreateComputePipelines)
 	F(CreateDescriptorPool) F(AllocateDescriptorSets) F(UpdateDescriptorSets) F(CreateImageView) F(CreateSampler)
@@ -2281,6 +2281,51 @@ static VKAPI_ATTR VkResult VKAPI_CALL q_SignalSemaphore(VkDevice dv, const VkSem
 { struct dev *d = dev_of(dv); return hsignal(d, d->SignalSemaphore, dv, si); }
 static VKAPI_ATTR VkResult VKAPI_CALL q_SignalSemaphoreKHR(VkDevice dv, const VkSemaphoreSignalInfo *si)
 { struct dev *d = dev_of(dv); return hsignal(d, d->SignalSemaphoreKHR, dv, si); }
+// desk-370: host waits on timeline semaphores.  For a shared (emulated) one, progress made in another process reaches
+// our local semaphore only when sem_thread copies it over (vkSignalSemaphore); a wait already blocked in the kernel
+// could sit until the caller's timeout (vrcompositor: "Aborting WaitForPresent after 1 s", every ~100 frames, for good
+// once it started).  So such waits go in 2 ms slices with a sync of the shared counters before each.  Waits that take
+// 200 ms+ are logged (shared or not).
+static VkResult wsem(PFN_vkWaitSemaphores f, VkDevice dv, const VkSemaphoreWaitInfo *wi, uint64_t to)
+{
+	if (!f) return VK_ERROR_INITIALIZATION_FAILED;
+	int shared = 0;
+	if (g_semthr) {
+		pthread_mutex_lock(&g_semlock);
+		for (uint32_t k = 0; k < wi->semaphoreCount; k++) if (ssem_find(wi->pSemaphores[k])) shared++;
+		pthread_mutex_unlock(&g_semlock);
+	}
+	static int slice_on = -1; if (slice_on < 0) slice_on = envi("Q2VR_SEMSLICE", 1);
+	uint64_t t0 = now_ns(), deadline = to == UINT64_MAX || to > ~0ull - t0 ? UINT64_MAX : t0 + to;
+	VkResult r;
+	if (!shared || !slice_on || !to) {
+		if (shared) { pthread_mutex_lock(&g_semlock); for (uint32_t k = 0; k < wi->semaphoreCount; k++) { struct ssem *e = ssem_find(wi->pSemaphores[k]); if (e) sem_sync(e); } pthread_mutex_unlock(&g_semlock); }
+		r = f(dv, wi, to);
+	} else for (;;) {
+		pthread_mutex_lock(&g_semlock);
+		for (uint32_t k = 0; k < wi->semaphoreCount; k++) { struct ssem *e = ssem_find(wi->pSemaphores[k]); if (e) sem_sync(e); }
+		pthread_mutex_unlock(&g_semlock);
+		uint64_t now = now_ns(), sl = 2000000ull;
+		if (deadline != UINT64_MAX) { if (now >= deadline) { r = VK_TIMEOUT; break; } if (deadline - now < sl) sl = deadline - now; }
+		r = f(dv, wi, sl);
+		if (r != VK_TIMEOUT) break;
+	}
+	uint64_t dt = now_ns() - t0;
+	if (dt > 200000000ull) {
+		static int said; if (said++ < 40) {
+			uint64_t v0 = wi->semaphoreCount ? wi->pValues[0] : 0, l0 = 0, s0 = 0; int sh0 = 0;
+			if (g_semthr && wi->semaphoreCount) { pthread_mutex_lock(&g_semlock); struct ssem *e = ssem_find(wi->pSemaphores[0]); if (e) { sh0 = 1; l0 = sem_local(e); s0 = __atomic_load_n(e->ctr, __ATOMIC_ACQUIRE); } pthread_mutex_unlock(&g_semlock); }
+			qlog("semaphore wait took %.0f ms (result %d, %u semaphore(s), %d shared, timeout %.0f ms): first waits for %llu%s, local %llu, shared %llu",
+			     (double)dt / 1e6, (int)r, wi->semaphoreCount, shared, to == UINT64_MAX ? -1.0 : (double)to / 1e6, (unsigned long long)v0,
+			     sh0 ? " (shared)" : " (not shared)", (unsigned long long)l0, (unsigned long long)s0);
+		}
+	}
+	return r;
+}
+static VKAPI_ATTR VkResult VKAPI_CALL q_WaitSemaphores(VkDevice dv, const VkSemaphoreWaitInfo *wi, uint64_t to)
+{ struct dev *d = dev_of(dv); return wsem(d->WaitSemaphores, dv, wi, to); }
+static VKAPI_ATTR VkResult VKAPI_CALL q_WaitSemaphoresKHR(VkDevice dv, const VkSemaphoreWaitInfo *wi, uint64_t to)
+{ struct dev *d = dev_of(dv); return wsem(d->WaitSemaphoresKHR, dv, wi, to); }
 static void fix_extsem(const VkPhysicalDeviceExternalSemaphoreInfo *i, VkExternalSemaphoreProperties *p)
 {
 	// desk-189: only TIMELINE semaphores are emulated, so only a query that asks about a timeline semaphore gets
@@ -2586,7 +2631,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL q_CreateDevice(VkPhysicalDevice pd, const 
 	F(CmdCopyImageToBuffer) F(CreateFence) F(DestroyFence) F(WaitForFences) F(ResetFences) F(GetFenceStatus) F(DeviceWaitIdle)
 	F(CmdPipelineBarrier2) F(CmdPipelineBarrier2KHR) F(CmdWaitEvents) F(CmdWaitEvents2) F(CmdWaitEvents2KHR)
 	F(CreateSemaphore) F(DestroySemaphore) F(GetSemaphoreFdKHR) F(ImportSemaphoreFdKHR) F(GetSemaphoreCounterValue)
-	F(GetSemaphoreCounterValueKHR) F(SignalSemaphore) F(SignalSemaphoreKHR)
+	F(GetSemaphoreCounterValueKHR) F(SignalSemaphore) F(SignalSemaphoreKHR) F(WaitSemaphores) F(WaitSemaphoresKHR)
 	F(WaitForPresentKHR) F(GetSwapchainStatusKHR) F(GetRefreshCycleDurationGOOGLE) F(GetPastPresentationTimingGOOGLE)
 	F(CreateShaderModule) F(DestroyShaderModule) F(CreateDescriptorSetLayout) F(CreatePipelineLayout) F(CreateComputePipelines)
 	F(CreateDescriptorPool) F(AllocateDescriptorSets) F(UpdateDescriptorSets) F(CreateImageView) F(CreateSampler)
@@ -2649,7 +2694,7 @@ static const struct fn device_fns[] = {
 	E(DestroyDevice) E(CreateCommandPool) E(CreateImage) E(CreateBuffer) E(CmdPipelineBarrier) E(CmdPipelineBarrier2)
 	E(CmdPipelineBarrier2KHR) E(CmdWaitEvents) E(CmdWaitEvents2) E(CmdWaitEvents2KHR)
 	E(CreateSemaphore) E(DestroySemaphore) E(GetSemaphoreFdKHR) E(ImportSemaphoreFdKHR) E(GetSemaphoreCounterValue)
-	E(GetSemaphoreCounterValueKHR) E(SignalSemaphore) E(SignalSemaphoreKHR)
+	E(GetSemaphoreCounterValueKHR) E(SignalSemaphore) E(SignalSemaphoreKHR) E(WaitSemaphores) E(WaitSemaphoresKHR)
 	E(WaitForPresentKHR) E(GetSwapchainStatusKHR) E(GetRefreshCycleDurationGOOGLE) E(GetPastPresentationTimingGOOGLE)
 	E(ReleaseSwapchainImagesEXT) E(WaitForFences) E(DestroyFence)
 E(GetBufferMemoryRequirements) E(GetBufferMemoryRequirements2) E(GetBufferMemoryRequirements2KHR) E(GetImageMemoryRequirements) E(GetImageMemoryRequirements2) E(GetImageMemoryRequirements2KHR)
