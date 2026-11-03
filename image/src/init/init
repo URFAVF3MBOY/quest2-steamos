@@ -3112,7 +3112,9 @@ L "display: GPU-direct frames $VRDIRECT (echo 0 > /var/lib/q2/vrdirect for the o
 PSCALE=$(cat /var/lib/q2/panelscale 2>/dev/null | tr -cd 0-9); PSCALE=${PSCALE:-65}   # desk-185: 75 = smooth 90 fps; 90% ran 60-68 fps, 100% 63-77 (Ctrl+Alt+Q cycles 75/85/100)
 DISPENV=""
 if [ "$LVL" -lt 5 ] && [ -e /run/q2kms.scale ] && [ "$PSCALE" -ge 40 ] && [ "$PSCALE" -lt 100 ]; then
-  PW=$(( 1920 * PSCALE / 100 / 4 * 4 )); PH=$(( 3664 * PSCALE / 100 / 2 * 2 ))
+  # desk-374: height a multiple of 4 too - turnip pads a linear image to 4 rows, and the direct scanout (layer) draws
+  # into q2kmsd's buffers as linear images: 2930 rows needed 2 rows more than the buffer had (copy path again)
+  PW=$(( 1920 * PSCALE / 100 / 4 * 4 )); PH=$(( 3664 * PSCALE / 100 / 4 * 4 ))
   DISPENV="export Q2VR_DISPLAY_W=$PW Q2VR_DISPLAY_H=$PH"
   L "display: compositor output ${PW}x${PH} (${PSCALE}%), scaled to the 1920x3664 panel by the display engine (echo 100 > /var/lib/q2/panelscale = full size)"
 else
