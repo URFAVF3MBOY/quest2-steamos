@@ -6110,6 +6110,14 @@ Q2PK_EOF
   else
     rm -f $NR/etc/systemd/system/multi-user.target.wants/sshd.service
   fi
+  # desk-373: one battery in Steam.  The same cell shows up twice in /sys/class/power_supply: "battery" (the PM8150B
+  # charger driver's estimate) and "bq27z561-0" (the fuel-gauge chip measuring the cell - the accurate one), so UPower
+  # and Steam listed two batteries.  UPower alone is kept from reading the charger driver's node; charging is untouched.
+  QB=$(readlink -f /sys/class/power_supply/battery 2>/dev/null)
+  if [ -n "$QB" ] && [ -e /sys/class/power_supply/bq27z561-0 ]; then
+    mkdir -p $NR/etc/systemd/system/upower.service.d
+    printf '[Service]\nInaccessiblePaths=-%s\n' "$QB" > $NR/etc/systemd/system/upower.service.d/q2-onebattery.conf
+  fi
   cat > $NR/usr/bin/q2-qrtr-ns <<'Q2NS_EOF'
 #!/usr/bin/python3
 # q2-qrtr-ns - QRTR name service (Python port of linux-msm/qrtr src/ns.c, BSD-3).
