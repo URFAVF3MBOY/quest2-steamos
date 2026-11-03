@@ -860,7 +860,7 @@ static VkResult create_swapchain(struct dev *d, const VkSwapchainCreateInfoKHR *
 		VkImageCreateInfo ii = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, 0,
 			(ci->flags & VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR) ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0,
 			VK_IMAGE_TYPE_2D, ci->imageFormat, { c->ext.width, c->ext.height, 1 }, 1, ci->imageArrayLayers ? ci->imageArrayLayers : 1,
-			VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_TILING_OPTIMAL, ci->imageUsage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+			VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_TILING_OPTIMAL, ci->imageUsage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | (tw_mode() ? VK_IMAGE_USAGE_SAMPLED_BIT : 0),
 			VK_SHARING_MODE_EXCLUSIVE, 0, 0, VK_IMAGE_LAYOUT_UNDEFINED };
 		if ((r = d->CreateImage(d->dev, &ii, 0, &c->img[i]))) goto fail;
 		VkMemoryRequirements mr; d->GetImageMemoryRequirements(d->dev, c->img[i], &mr);
