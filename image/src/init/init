@@ -2936,7 +2936,8 @@ cat > "$CFG/steamvr.vrsettings" <<'EOF'
   "driver_q2hmd": { "enable": true },
   "driver_cv": { "enable": false },
   "driver_lighthouse": { "enable": false },
-  "dashboard": { "enableDashboard": true, "steamMatchesHMDFramerate": DASHMATCH }
+  "dashboard": { "enableDashboard": true, "steamMatchesHMDFramerate": DASHMATCH,
+                 "allowSystemShutdown": true, "allowSystemRestart": true, "allowSystemSleep": true }
 }
 EOF
 # desk-170: SteamVR's timing showed no GPU gain from these (10-11 ms either way) - full quality again unless asked
