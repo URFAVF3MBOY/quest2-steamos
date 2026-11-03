@@ -326,7 +326,7 @@ struct swapchain {
 	VkImage img[MAXIMG]; VkDeviceMemory mem[MAXIMG];
 	VkBuffer buf[MAXIMG]; VkDeviceMemory bmem[MAXIMG]; void *map[MAXIMG]; int coherent[MAXIMG];
 	VkCommandPool pool; VkCommandBuffer cmd[MAXIMG]; VkFence fence[MAXIMG];
-	int state[MAXIMG];                     // 0 free, 1 acquired by the app, 2 copy in flight
+	int state[MAXIMG];                     // 0 free, 1 acquired by the app, 2 copy in flight, 3 held as the late-warp source
 	uint32_t next;
 	qmutex lock; qcond cond;
 	int q[MAXIMG * 2]; int qh, qt;         // presented indices for the worker
@@ -348,6 +348,8 @@ struct swapchain {
 	VkImageView tview[MAXIMG]; VkDescriptorSet tset[MAXIMG][4]; VkBuffer tubo[4]; VkDeviceMemory tumem[4]; void *tumap[4];
 	VkBuffer tlut; VkDeviceMemory tlmem;
 	volatile uint64_t acq_tick[MAXIMG];    // desk-368: vblank tick when the compositor acquired the image (= its render pose)
+	int held; int qr[MAXIMG * 2];          // desk-369: image of the newest finished frame (-1 none); queue entry is a re-warp
+	volatile uint64_t rewarps; qthread twthr;
 };
 #define SC_MAGIC 0x51325643484149ull
 static struct swapchain *sc_of(VkSwapchainKHR s) { struct swapchain *c = (struct swapchain *)(uintptr_t)s; return (c && c->magic == SC_MAGIC) ? c : 0; }
@@ -372,7 +374,8 @@ static void *worker_thread(void *arg)
 		pthread_mutex_lock(&c->lock);
 		while (c->qh == c->qt && !c->dead) pthread_cond_wait(&c->cond, &c->lock);
 		if (c->qh == c->qt && c->dead) { pthread_mutex_unlock(&c->lock); break; }
-		int i = c->q[c->qh % (MAXIMG * 2)]; uint64_t pid = c->qid[c->qh % (MAXIMG * 2)]; int kk = c->qk[c->qh % (MAXIMG * 2)]; c->qh++;
+		int i = c->q[c->qh % (MAXIMG * 2)]; uint64_t pid = c->qid[c->qh % (MAXIMG * 2)]; int kk = c->qk[c->qh % (MAXIMG * 2)];
+		int rw = c->qr[c->qh % (MAXIMG * 2)]; c->qh++;
 		pthread_mutex_unlock(&c->lock);
 		VkResult fr = d->WaitForFences(d->dev, 1, &c->fence[i], VK_TRUE, 2000000000ull);
 		if (fr) {   // desk-177 (review): never hand an unfinished copy to the display - wait once more, else drop the frame
@@ -426,7 +429,11 @@ static void *worker_thread(void *arg)
 		c->copy_ns += t - tc0;
 		if (t - c->t_last_log > 10000000000ull) { qlog("%llu frames presented", (unsigned long long)c->frames); c->t_last_log = t; }
 		pthread_mutex_lock(&c->lock);
-		c->state[i] = 0;
+		if (!rw && kk >= 0 && c->twthr) {   // desk-369: the newest compositor frame stays as the late warp's source
+			int old = c->held; c->held = i;
+			if (old >= 0 && old != i && c->state[old] == 3) c->state[old] = 0;
+		}
+		c->state[i] = i == c->held ? 3 : 0;
 		if (!(kk >= 0 && g_pwflip) && pid > c->done_id) c->done_id = pid;
 		pthread_cond_broadcast(&c->cond);
 		pthread_mutex_unlock(&c->lock);
@@ -717,7 +724,10 @@ static void tw_predict(const double o[8], double t, double q[4])
 	double n = tw_sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
 	if (n > 0) for (int i = 0; i < 4; i++) q[i] /= n;
 }
-static void tw_pose(struct swapchain *c, uint32_t i, int kk)
+static void tw_pose_l(struct swapchain *c, uint32_t i, int kk);
+static qmutex g_twpm;   // present thread and late-warp thread both come here
+static void tw_pose(struct swapchain *c, uint32_t i, int kk) { pthread_mutex_lock(&g_twpm); tw_pose_l(c, i, kk); pthread_mutex_unlock(&g_twpm); }
+static void tw_pose_l(struct swapchain *c, uint32_t i, int kk)
 {
 	static int on = -1, tofs, gpu_ns, scan_ns; static uint64_t n, miss, nopose; static double asum, amax; static uint64_t tlog;
 	static double nsum[3]; static uint64_t nn[3];   // the same for the ticks before / after (which tick matches the render)
@@ -762,14 +772,66 @@ static void tw_pose(struct swapchain *c, uint32_t i, int kk)
 	uint64_t t = now_ns();
 	if (t - tlog > 10000000000ull) {
 		uint64_t ok = n - miss - nopose;
-		qlog("timewarp: %llu frames: correction avg %.2f deg, max %.2f deg; %llu without a render pose, %llu without a head pose",
-		     (unsigned long long)n, ok ? asum / (double)ok : 0.0, amax, (unsigned long long)miss, (unsigned long long)nopose);
+		static uint64_t rw0; uint64_t rw = c->rewarps;
+		qlog("timewarp: %llu frames (%llu late re-warps of a missed frame): correction avg %.2f deg, max %.2f deg; %llu without a render pose, %llu without a head pose",
+		     (unsigned long long)n, (unsigned long long)(rw - rw0), ok ? asum / (double)ok : 0.0, amax, (unsigned long long)miss, (unsigned long long)nopose);
+		rw0 = rw;
 		qlog("timewarp: avg correction with the render pose of tick -1 / 0 / +1: %.2f / %.2f / %.2f deg (%llu / %llu / %llu frames)",
 		     nn[0] ? nsum[0] / (double)nn[0] : -1.0, nn[1] ? nsum[1] / (double)nn[1] : -1.0, nn[2] ? nsum[2] / (double)nn[2] : -1.0,
 		     (unsigned long long)nn[0], (unsigned long long)nn[1], (unsigned long long)nn[2]);
 		tlog = t; n = miss = nopose = 0; asum = amax = 0;
 		for (int j = 0; j < 3; j++) { nsum[j] = 0; nn[j] = 0; }
 	}
+}
+static int file_int(const char *path, int def)   // a small number from a settings file (absent / empty: def)
+{
+	int fd = open(path, 0); if (fd < 0) return def;
+	char b[16]; long n = read(fd, b, 15); close(fd);
+	if (n <= 0) return def;
+	int v = 0, any = 0; for (long k = 0; k < n && b[k] >= '0' && b[k] <= '9'; k++) { v = v * 10 + (b[k] - '0'); any = 1; }
+	return any ? v : def;
+}
+// ---- desk-369 timewarp step 3a: the late warp.  Wakes Q2VR_TWLATE_US (default 5000) before every panel refresh; when
+// the compositor has presented nothing since the last wake-up (it missed this refresh), the newest finished frame (held,
+// state 3) is warped again to the newest head pose into a free scanout buffer and flipped - so the panel still gets a
+// re-aimed picture instead of the same one again.  Same GPU queue as the compositor (step 3b would be a high-priority
+// one).  /var/lib/q2/twlate = 0 turns it off.
+static void *rewarp_thread(void *arg)
+{
+	struct swapchain *c = arg; struct dev *d = c->d;
+	const uint64_t P = 11111111ull, lead = (uint64_t)envi("Q2VR_TWLATE_US", 5000) * 1000ull;
+	uint64_t seen = c->presents, last = 0;
+	qlog("timewarp: late warp ON - %llu us before each refresh, the newest frame is warped again when the compositor missed it",
+	     (unsigned long long)(lead / 1000));
+	while (!c->dead) {
+		uint64_t tn = g_tick_ns, now = now_ns();
+		if (!tn) { sleep_ns(5000000); continue; }
+		uint64_t wake = tn + g_vblead + P - lead;   // for the refresh after the one following the newest tick
+		while (wake <= now || wake < last + P / 2) wake += P;
+		sleep_ns(wake - now);
+		last = wake;
+		pthread_mutex_lock(&c->lock);
+		if (c->dead) { pthread_mutex_unlock(&c->lock); break; }
+		int missed = c->presents == seen, i = c->held, kk = -1;
+		seen = c->presents;
+		if (missed && i >= 0 && c->state[i] == 3) {
+			for (int j = 0; j < c->kn && kk < 0; j++) if (c->kstate[j] == 0) kk = j;
+			if (kk >= 0) { c->kstate[kk] = 1; c->state[i] = 2; }
+		}
+		if (kk >= 0) {   // (still under c->lock: destroy_swapchain cannot tear things down under this submit)
+			tw_pose(c, (uint32_t)i, kk);
+			VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO, 0, 0, 0, 0, 1, &c->kcmd[i][kk], 0, 0 };
+			struct qlk_e *L = qlk(d->queue, "late warp"); VkResult r = d->QueueSubmit(d->queue, 1, &si, c->fence[i]); qulk(L);
+			if (r) { c->kstate[kk] = 0; c->state[i] = 3; qlog("timewarp: late warp submit failed (%d)", (int)r); }
+			else {
+				c->q[c->qt % (MAXIMG * 2)] = i; c->qk[c->qt % (MAXIMG * 2)] = kk; c->qid[c->qt % (MAXIMG * 2)] = 0;
+				c->qr[c->qt % (MAXIMG * 2)] = 1; c->qt++; c->rewarps++;
+				pthread_cond_broadcast(&c->cond);
+			}
+		}
+		pthread_mutex_unlock(&c->lock);
+	}
+	return 0;
 }
 static int tw_setup(struct dev *d, struct swapchain *c, int nb, uint32_t pitch, int erows)
 {
@@ -1045,6 +1107,8 @@ static VkResult create_swapchain(struct dev *d, const VkSwapchainCreateInfoKHR *
 		if ((r = d->EndCommandBuffer(c->cmd[i]))) goto fail;
 	}
 	kms_setup(d, c);
+	c->held = -1;
+	if (c->tw && c->kn && tw_mode() == 1 && file_int("/var/lib/q2/twlate", 1)) pthread_create(&c->twthr, 0, rewarp_thread, c);
 	pthread_create(&c->worker, 0, worker_thread, c);
 	if (envi("Q2VR_STATUS", 1)) pthread_create(&c->status, 0, status_thread, c);
 	qlog("swapchain %ux%u format %d, %u images (usage 0x%x)", c->ext.width, c->ext.height, (int)c->fmt, c->n, (unsigned)ci->imageUsage);
@@ -1464,7 +1528,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL q_QueuePresentKHR(VkQueue q, const VkPrese
 			if (r != VK_SUCCESS && kk >= 0) { pthread_mutex_lock(&c->lock); c->kstate[kk] = 0; pthread_mutex_unlock(&c->lock); }
 			if (r == VK_SUCCESS) {
 				pthread_mutex_lock(&c->lock);
-				c->state[i] = 2; c->q[c->qt % (MAXIMG * 2)] = (int)i; c->qk[c->qt % (MAXIMG * 2)] = kk; c->presents++;
+				c->state[i] = 2; c->q[c->qt % (MAXIMG * 2)] = (int)i; c->qk[c->qt % (MAXIMG * 2)] = kk; c->qr[c->qt % (MAXIMG * 2)] = 0; c->presents++;
 				c->qid[c->qt % (MAXIMG * 2)] = (pid && pid->pPresentIds && k < pid->swapchainCount) ? pid->pPresentIds[k] : 0; c->qt++;
 				pthread_cond_broadcast(&c->cond);
 				pthread_mutex_unlock(&c->lock);
