@@ -2572,7 +2572,9 @@ static VKAPI_ATTR VkResult VKAPI_CALL q_CreateInstance(const VkInstanceCreateInf
 #undef G
 	pthread_mutex_unlock(&g_lock);
 	DW = (uint32_t)envi("Q2VR_DISPLAY_W", 1920); DH = (uint32_t)envi("Q2VR_DISPLAY_H", 3664); DHZ = (uint32_t)envi("Q2VR_HZ", 72);
-	g_vblead = (uint64_t)envi("Q2VR_VBLEAD_US", 0) * 1000ull; if (g_vblead > 8000000ull) g_vblead = 8000000ull;
+	// desk-371: up to 20 ms (was 8 - a 10 ms setting silently ran as 8): the compositor's frame + our copy is done
+	// 17-20 ms after its tick under load, so the refresh it aims at must come later than tick + 19
+	g_vblead = (uint64_t)envi("Q2VR_VBLEAD_US", 0) * 1000ull; if (g_vblead > 20000000ull) g_vblead = 20000000ull;
 	qlog("instance created (%d display extension(s) handled by the layer, display %ux%u @ %u Hz)", stripped, DW, DH, DHZ);
 	return VK_SUCCESS;
 }
