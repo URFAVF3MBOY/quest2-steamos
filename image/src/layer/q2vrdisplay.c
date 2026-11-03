@@ -731,6 +731,12 @@ static void tw_pose_l(struct swapchain *c, uint32_t i, int kk)
 {
 	static int on = -1, tofs, gpu_ns, scan_ns; static uint64_t n, miss, nopose; static double asum, amax; static uint64_t tlog;
 	static double nsum[3]; static uint64_t nn[3];   // the same for the ticks before / after (which tick matches the render)
+	// desk-370: corrections below Q2VR_TWSNAP_MDEG (default 30 = 0.03 deg, about half a panel pixel) are not worth a
+	// resample - re-sampling the finished picture by a fraction of a pixel blurs it (bright lights smear).  Those frames
+	// get the exact pixel copy (shader with the lens round trip off); only real corrections are warped.
+	static int snap_mdeg = -1, lens_on; static uint64_t nsnap;
+	if (snap_mdeg < 0) { snap_mdeg = envi("Q2VR_TWSNAP_MDEG", 30); lens_on = !envi("Q2VR_OLDLENS", 0); }
+	int warp = 0;
 	if (on < 0) {
 		on = tw_mode() == 1 && envi("Q2VR_TWPOSE", 1);
 		tofs = envi("Q2VR_TWTICK", 1) - 1;                          // which tick's pose: acquire tick + this
@@ -760,6 +766,8 @@ static void tw_pose_l(struct swapchain *c, uint32_t i, int kk)
 		rot[2][0] = (float)(2 * (x * z - w * y)); rot[2][1] = (float)(2 * (y * z + w * x)); rot[2][2] = (float)(1 - 2 * (x * x + y * y));
 		double ang = 2 * tw_sqrt(x * x + y * y + z * z) * 57.29578;   // degrees (small angles)
 		asum += ang; if (ang > amax) amax = ang;
+		warp = lens_on && ang * 1000.0 >= (double)snap_mdeg;
+		if (!warp) nsnap++;
 		for (int j = 0; j < 3; j++) {   // the angle had we used tick T - 1, T, T + 1
 			double qj[4], rj[4];
 			if (!tw_slot(T + (uint64_t)(int64_t)(j - 1), qj)) continue;
@@ -769,13 +777,15 @@ static void tw_pose_l(struct swapchain *c, uint32_t i, int kk)
 	}
 	float *u = (float *)c->tumap[kk];   // struct twp: rot[6][4] first, both eyes the same rotation
 	for (int e = 0; e < 2; e++) for (int a = 0; a < 3; a++) for (int b = 0; b < 3; b++) u[(e * 3 + a) * 4 + b] = rot[a][b];
+	((volatile int32_t *)c->tumap[kk])[34] = warp;   // twp.flags[2] (byte 136): lens round trip + rotation, else exact copy
 	uint64_t t = now_ns();
 	if (t - tlog > 10000000000ull) {
 		uint64_t ok = n - miss - nopose;
 		static uint64_t rw0; uint64_t rw = c->rewarps;
-		qlog("timewarp: %llu frames (%llu late re-warps of a missed frame): correction avg %.2f deg, max %.2f deg; %llu without a render pose, %llu without a head pose",
-		     (unsigned long long)n, (unsigned long long)(rw - rw0), ok ? asum / (double)ok : 0.0, amax, (unsigned long long)miss, (unsigned long long)nopose);
-		rw0 = rw;
+		qlog("timewarp: %llu frames (%llu late re-warps of a missed frame, %llu exact copies): correction avg %.3f deg, max %.2f deg; %llu without a render pose, %llu without a head pose",
+		     (unsigned long long)n, (unsigned long long)(rw - rw0), (unsigned long long)nsnap, ok ? asum / (double)ok : 0.0, amax,
+		     (unsigned long long)miss, (unsigned long long)nopose);
+		rw0 = rw; nsnap = 0;
 		qlog("timewarp: avg correction with the render pose of tick -1 / 0 / +1: %.2f / %.2f / %.2f deg (%llu / %llu / %llu frames)",
 		     nn[0] ? nsum[0] / (double)nn[0] : -1.0, nn[1] ? nsum[1] / (double)nn[1] : -1.0, nn[2] ? nsum[2] / (double)nn[2] : -1.0,
 		     (unsigned long long)nn[0], (unsigned long long)nn[1], (unsigned long long)nn[2]);
