@@ -344,6 +344,7 @@ struct swapchain {
 	// the frame at the newest head pose; per scanout buffer a small uniform block with the rotation
 	int tw; VkPipeline tpipe; VkPipelineLayout tpl; VkDescriptorSetLayout tdsl; VkDescriptorPool tpool; VkSampler tsamp;
 	VkImageView tview[MAXIMG]; VkDescriptorSet tset[MAXIMG][4]; VkBuffer tubo[4]; VkDeviceMemory tumem[4]; void *tumap[4];
+	VkBuffer tlut; VkDeviceMemory tlmem;
 };
 #define SC_MAGIC 0x51325643484149ull
 static struct swapchain *sc_of(VkSwapchainKHR s) { struct swapchain *c = (struct swapchain *)(uintptr_t)s; return (c && c->magic == SC_MAGIC) ? c : 0; }
@@ -593,6 +594,31 @@ static void *kms_reader(void *arg)
 struct twp { float rot[6][4]; int32_t dim[4]; float lens[4]; int32_t flags[4]; float canvas[4]; };   // std140, as in q2warp.comp
 static int tw_mode(void) { static int v = -1; if (v < 0) v = envi("Q2VR_TW", 0); return v; }
 static int fmt_is_srgb(VkFormat f) { return f == VK_FORMAT_B8G8R8A8_SRGB || f == VK_FORMAT_R8G8B8A8_SRGB || f == VK_FORMAT_A8B8G8R8_SRGB_PACK32; }
+// The lens curve for the shader's tables (Oculus SDK CatmullRom10, driver_q2hmd.cpp cr10).  The shader looked it up per
+// pixel and solved the inverse with 8 fixed-point steps - half the frame rate; now both come from a 2048-float table.
+#define TW_RSQ 2.25f   // r^2 range of table 0 (the panel corners are near 1.4); table 1 covers r in [0, 1.5]
+static float tw_cr10(float rsq)
+{
+	static const float LA[11] = { 1.0f, 1.0374f, 1.0810f, 1.1330f, 1.1970f, 1.2754f, 1.3771f, 1.5133f, 1.7018f, 1.9732f, 2.3f };
+	float f = 10.0f * rsq; int k = (int)f; if (k < 0) k = 0; if (k > 10) k = 10; float t = f - (float)k, p0, m0, p1, m1;
+	if (k == 0) { p0 = 1.0f; m0 = LA[1] - LA[0]; p1 = LA[1]; m1 = 0.5f * (LA[2] - LA[0]); }
+	else if (k < 9) { p0 = LA[k]; m0 = 0.5f * (LA[k + 1] - LA[k - 1]); p1 = LA[k + 1]; m1 = 0.5f * (LA[k + 2] - LA[k]); }
+	else if (k == 9) { p0 = LA[9]; m0 = 0.5f * (LA[10] - LA[8]); p1 = LA[10]; m1 = LA[10] - LA[9]; }
+	else { p0 = LA[10]; m0 = LA[10] - LA[9]; p1 = p0 + m0; m1 = m0; }
+	float omt = 1.0f - t;
+	return (p0 * (1.0f + 2.0f * t) + m0 * t) * omt * omt + (p1 * (1.0f + 2.0f * omt) - m1 * omt) * t * t;
+}
+static float tw_tmax(void) { return 1.5f * tw_cr10(2.25f); }   // tangent at r = 1.5 (r * s(r^2) rises with r)
+static void tw_lut(float *v)
+{
+	for (int i = 0; i < 1024; i++) v[i] = tw_cr10(TW_RSQ * (float)i / 1023.0f);
+	float tm = tw_tmax();
+	for (int i = 0; i < 1024; i++) {   // bisection: r * s(r^2) = t
+		float t = tm * (float)i / 1023.0f, lo = 0.0f, hi = 1.5f;
+		for (int it = 0; it < 32; it++) { float m = 0.5f * (lo + hi); if (m * tw_cr10(m * m) < t) lo = m; else hi = m; }
+		v[1024 + i] = 0.5f * (lo + hi);
+	}
+}
 // rot[eye][row][col]: maps a view direction of the newest head pose to the frame's (old) head pose
 static void tw_write(struct swapchain *c, int k, const float rot[2][3][3], uint32_t pitch, int erows)
 {
@@ -605,7 +631,7 @@ static void tw_write(struct swapchain *c, int k, const float rot[2][3][3], uint3
 	p.lens[0] = 0.06018085f / 1832.0f; p.lens[1] = 0.0389f; p.lens[2] = lin[ipd - 1]; p.lens[3] = 0.00125f;
 	p.flags[0] = envi("Q2VR_EYESWAP", 0) != 0; p.flags[1] = fmt_is_srgb(c->fmt);
 	p.flags[2] = tw_mode() == 1 && !envi("Q2VR_OLDLENS", 0);
-	p.canvas[0] = 1832.0f; p.canvas[1] = 1920.0f;
+	p.canvas[0] = 1832.0f; p.canvas[1] = 1920.0f; p.canvas[2] = TW_RSQ; p.canvas[3] = tw_tmax();
 	memcpy(c->tumap[k], &p, sizeof p);
 }
 static int tw_setup(struct dev *d, struct swapchain *c, int nb, uint32_t pitch, int erows)
@@ -636,12 +662,26 @@ static int tw_setup(struct dev *d, struct swapchain *c, int nb, uint32_t pitch, 
 		float id[2][3][3] = { { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } }, { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } } };
 		tw_write(c, k, id, pitch, erows);
 	}
+	what = "lens table";
+	{
+		VkBufferCreateInfo bi = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, 0, 0, 2048 * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, 0 };
+		if ((r = d->CreateBuffer(d->dev, &bi, 0, &c->tlut))) goto fail;
+		VkMemoryRequirements mr; d->GetBufferMemoryRequirements(d->dev, c->tlut, &mr);
+		VkMemoryAllocateInfo ai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, 0, mr.size,
+			find_mem(d, mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0) };
+		if (ai.memoryTypeIndex == 0xffffffffu) { r = VK_ERROR_FORMAT_NOT_SUPPORTED; goto fail; }
+		void *lm;
+		if ((r = d->AllocateMemory(d->dev, &ai, 0, &c->tlmem)) || (r = d->BindBufferMemory(d->dev, c->tlut, c->tlmem, 0)) ||
+		    (r = d->MapMemory(d->dev, c->tlmem, 0, VK_WHOLE_SIZE, 0, &lm))) goto fail;
+		tw_lut((float *)lm);   // stays mapped (coherent); written once
+	}
 	what = "pipeline";
-	VkDescriptorSetLayoutBinding lb[3] = {
+	VkDescriptorSetLayoutBinding lb[4] = {
 		{ 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0 },
 		{ 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0 },
-		{ 2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0 } };
-	VkDescriptorSetLayoutCreateInfo lci = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, 0, 0, 3, lb };
+		{ 2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0 },
+		{ 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0 } };
+	VkDescriptorSetLayoutCreateInfo lci = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, 0, 0, 4, lb };
 	if ((r = d->CreateDescriptorSetLayout(d->dev, &lci, 0, &c->tdsl))) goto fail;
 	VkPipelineLayoutCreateInfo plci = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, 0, 0, 1, &c->tdsl, 0, 0 };
 	if ((r = d->CreatePipelineLayout(d->dev, &plci, 0, &c->tpl))) goto fail;
@@ -655,19 +695,21 @@ static int tw_setup(struct dev *d, struct swapchain *c, int nb, uint32_t pitch, 
 	if (r) goto fail;
 	what = "descriptor sets";
 	uint32_t ns = c->n * (uint32_t)nb;
-	VkDescriptorPoolSize ps[3] = { { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, ns }, { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ns }, { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, ns } };
+	VkDescriptorPoolSize ps[3] = { { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, ns }, { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2 * ns }, { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, ns } };
 	VkDescriptorPoolCreateInfo dpci = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, 0, 0, ns, 3, ps };
 	if ((r = d->CreateDescriptorPool(d->dev, &dpci, 0, &c->tpool))) goto fail;
 	for (uint32_t i = 0; i < c->n; i++) for (int k = 0; k < nb; k++) {
 		VkDescriptorSetAllocateInfo dsai = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, 0, c->tpool, 1, &c->tdsl };
 		if ((r = d->AllocateDescriptorSets(d->dev, &dsai, &c->tset[i][k]))) goto fail;
 		VkDescriptorImageInfo dii = { c->tsamp, c->tview[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-		VkDescriptorBufferInfo dbo = { c->kbuf[k], 0, VK_WHOLE_SIZE }, dbu = { c->tubo[k], 0, sizeof(struct twp) };
-		VkWriteDescriptorSet w[3] = {
+		VkDescriptorBufferInfo dbo = { c->kbuf[k], 0, VK_WHOLE_SIZE }, dbu = { c->tubo[k], 0, sizeof(struct twp) },
+			dbl = { c->tlut, 0, VK_WHOLE_SIZE };
+		VkWriteDescriptorSet w[4] = {
 			{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, 0, c->tset[i][k], 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &dii, 0, 0 },
 			{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, 0, c->tset[i][k], 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 0, &dbo, 0 },
-			{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, 0, c->tset[i][k], 2, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0, &dbu, 0 } };
-		d->UpdateDescriptorSets(d->dev, 3, w, 0, 0);
+			{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, 0, c->tset[i][k], 2, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0, &dbu, 0 },
+			{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, 0, c->tset[i][k], 3, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 0, &dbl, 0 } };
+		d->UpdateDescriptorSets(d->dev, 4, w, 0, 0);
 	}
 	c->tw = 1;
 	qlog("timewarp: scanout copy is the q2warp compute shader (Q2VR_TW=%d: %s; source %s)", tw_mode(),
@@ -761,7 +803,7 @@ static void kms_setup(struct dev *d, struct swapchain *c)
 			d->CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, 0, 0, 0, 1, &t1);
 			d->CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, c->tpipe);
 			d->CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, c->tpl, 0, 1, &c->tset[i][k], 0, 0);
-			d->CmdDispatch(cb, (SW + 7) / 8, (SH + 7) / 8, 1);
+			d->CmdDispatch(cb, (SW + 31) / 32, (SH + 3) / 4, 1);   // q2warp.comp local size 32x4
 			VkImageMemoryBarrier t2 = t1; t2.srcAccessMask = VK_ACCESS_SHADER_READ_BIT; t2.dstAccessMask = 0;
 			t2.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; t2.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 			VkBufferMemoryBarrier t3 = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, 0, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT,
