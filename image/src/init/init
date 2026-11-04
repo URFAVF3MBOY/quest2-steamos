@@ -2957,7 +2957,7 @@ VASYNC=false; [ -n "$Q2TU" ] && VASYNC=true
 case "$(cat /var/lib/q2/vrasync 2>/dev/null)" in 1) VASYNC=true;; 0) VASYNC=false;; esac
 # desk-174: the compositor asked for 90 Hz ("Trying to match desired rate of 90Hz") but got our 45 Hz display mode;
 # tell it the rate we run at so its frame pacing targets the right vsync
-PREFHZ=$(cat /var/lib/q2/vrhz 2>/dev/null | tr -cd 0-9); PREFHZ=${PREFHZ:-90}
+PREFHZ=$(cat /var/lib/q2/vrhz 2>/dev/null | tr -cd 0-9); PREFHZ=${PREFHZ:-72}   # desk-378: 72 by default (90 when the kernel has no 72 Hz switch, below)
 # desk-377: 72 = the PANEL at 72 Hz (kernel q2-display-vtotal.patch: longer frame, same picture) - more GPU time per
 # frame (13.9 ms) for heavy scenes such as a 2D game's theater view.  Without that kernel switch: 90.
 [ "$PREFHZ" = 72 ] && [ ! -w /sys/kernel/q2display/vtotal ] && PREFHZ=90
@@ -3098,7 +3098,7 @@ CTLMODEL=${CTLMODEL:-oculus_quest_controller_}
 L "controller type: ${CTLTYPE:-oculus_touch (default)} ${CTLPROF}"
 IPDPOS=$(cat /var/lib/q2/ipdpos 2>/dev/null | tr -cd 123 | head -c 1); IPDPOS=${IPDPOS:-2}
 OLDLENS=$(cat /var/lib/q2/oldlens 2>/dev/null | tr -cd 01 | head -c 1); OLDLENS=${OLDLENS:-0}
-VRHZ=$(cat /var/lib/q2/vrhz 2>/dev/null | tr -cd 0-9); VRHZ=${VRHZ:-90}   # desk-178: 90 by default (holds 88-90 fps since the vsync fix)         # panel is 90 Hz: 45 = every frame shown twice
+VRHZ=$(cat /var/lib/q2/vrhz 2>/dev/null | tr -cd 0-9); VRHZ=${VRHZ:-72}   # desk-378: 72 by default - the GPU (587 MHz) is near its limit at 90 in many scenes (2D-game theater 12 ms > 11.1); a steady 72 beats an unsteady 90. desk-178 had 90         # panel is 90 Hz: 45 = every frame shown twice
 # desk-377: vrhz 72 switches the panel itself to 72 Hz (frame length 6145 lines instead of 4916) for this VR session;
 # back to 90 Hz when SteamVR stops.  The layer gets the panel rate (its vsync grid), SteamVR and the driver VRHZ.
 PANELHZ=90; QVT=/sys/kernel/q2display/vtotal
@@ -3107,7 +3107,7 @@ if [ "$VRHZ" = 72 ]; then
   else VRHZ=90; L "panel: 72 Hz asked for, but the kernel has no $QVT - staying at 90 Hz"; fi
 elif [ -w $QVT ] && [ "$(cat $QVT 2>/dev/null)" != 4916 ]; then echo 4916 > $QVT; fi
 export Q2VR_PANEL_HZ=$PANELHZ
-PDEF=22; [ -e /run/q2kms.ready ] && PDEF=25   # desk-371: zero-copy with the 13 ms vsync lead: tick -> on the panel measured 24 ms (desk-161 had 16)
+PDEF=22; [ -e /run/q2kms.ready ] && { PDEF=25; [ "$PANELHZ" = 72 ] && PDEF=27; }   # desk-371: zero-copy with the 13 ms vsync lead: tick -> on the panel 24 ms at 90 Hz; desk-378: one refresh is 13.9 ms at 72 Hz -> ~27
 PHOTON=$(cat /var/lib/q2/photonms 2>/dev/null | tr -cd 0-9); PHOTON=${PHOTON:-$PDEF}   # desk-140: 16 -> 22 ms (layer copy + panel copy + scan-out measured ~20 ms); Ctrl+Alt+P cycles
 # real-time scheduling for the compositor (it asks for priority 80 and was refused) and for the panel copy
 mkdir -p /etc/security/limits.d; printf '%s - rtprio 95\n%s - nice -20\n' $U $U > /etc/security/limits.d/90-q2vr.conf
