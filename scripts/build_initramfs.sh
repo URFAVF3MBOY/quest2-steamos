@@ -25,7 +25,7 @@ curl -fsSL "$BASE/$FILE" | sudo tar -xz -C "$ROOT"
 echo "== installing packages in an aarch64 chroot"
 # newer Ubuntu ships the static emulator as plain qemu-aarch64 (package qemu-user); put it in under both names, so
 # the chroot works whichever path binfmt registered
-QEMU=$(ls /usr/bin/qemu-aarch64-static /usr/bin/qemu-aarch64 2>/dev/null | head -n 1)
+QEMU=""; for q in /usr/bin/qemu-aarch64-static /usr/bin/qemu-aarch64; do [ -x "$q" ] && { QEMU=$q; break; }; done
 [ -n "$QEMU" ] || { echo "no qemu-aarch64 emulator installed" >&2; exit 1; }
 sudo cp "$QEMU" "$ROOT/usr/bin/qemu-aarch64-static"; sudo cp "$QEMU" "$ROOT/usr/bin/qemu-aarch64"
 echo "nameserver 1.1.1.1" | sudo tee "$ROOT/etc/resolv.conf" >/dev/null
