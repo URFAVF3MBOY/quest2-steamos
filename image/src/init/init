@@ -3099,16 +3099,28 @@ L "controller type: ${CTLTYPE:-oculus_touch (default)} ${CTLPROF}"
 IPDPOS=$(cat /var/lib/q2/ipdpos 2>/dev/null | tr -cd 123 | head -c 1); IPDPOS=${IPDPOS:-2}
 OLDLENS=$(cat /var/lib/q2/oldlens 2>/dev/null | tr -cd 01 | head -c 1); OLDLENS=${OLDLENS:-0}
 VRHZ=$(cat /var/lib/q2/vrhz 2>/dev/null | tr -cd 0-9); VRHZ=${VRHZ:-90}   # desk-178: 90 by default. desk-378: a 72 Hz default was tried - the panel garbles at 72 Hz by frame length (streaks, washed out, vertical bands), see the vrhz block below         # panel is 90 Hz: 45 = every frame shown twice
-# desk-377: vrhz 72 switches the panel itself to 72 Hz (frame length 6145 lines instead of 4916) for this VR session;
-# back to 90 Hz when SteamVR stops.  The layer gets the panel rate (its vsync grid), SteamVR and the driver VRHZ.
-# desk-378: DOES NOT WORK YET - the timing engine runs at 72.0 Hz and the scanout buffers are fine, but the panel
-# itself shows garbage (washed out, streaks, vertical bands): the longer blanking alone is not enough for this
-# DSC panel (probably needs the panel's own 72 Hz command set over DSI).  Experiments only.
+# desk-377: vrhz 72 switches the panel itself to 72 Hz (frame length 6144 lines instead of 4916, Meta's 72 Hz JDI
+# entry) for this VR session; back to 90 Hz when SteamVR stops.  The layer gets the panel rate (its vsync grid),
+# SteamVR and the driver VRHZ.
+# desk-378: the panel showed garbage.  desk-380: cause found - the INTF and the DSI controllers switched at different
+# frames (the sysfs write raced the display commits), so their frame starts drifted apart for good (until a reboot).
+# The kernel now applies the change inside the next display commit, like Meta's own dfps.  After the switch the panel
+# gets Meta's backlight strobe timing (B9) for the new rate through the connector's tx_cmd (flags 0x08 = last
+# command, or the DSI driver only queues it).
 PANELHZ=90; QVT=/sys/kernel/q2display/vtotal
+q2_panel_b9() {   # $1 = 72|90
+  local X=/sys/kernel/debug/dri/0/DSI-1/tx_cmd B9
+  [ -w $X ] || return 0
+  if [ "$1" = 72 ]; then B9="0x15 0x97 0x02 0x66 0x00 0x00 0x00 0x00 0x16 0x59 0x02 0x66"
+  else B9="0x11 0x5a 0x01 0xec 0x00 0x00 0x00 0x00 0x03 0x21 0x01 0xec"; fi
+  echo "0x23 0x01 0x00 0x08 0x00 0x00 0x02 0xb0 0x04" > $X
+  echo "0x29 0x01 0x00 0x08 0x00 0x00 0x0d 0xb9 $B9" > $X
+  echo "0x23 0x01 0x00 0x08 0x00 0x00 0x02 0xb0 0x03" > $X
+}
 if [ "$VRHZ" = 72 ]; then
-  if [ -w $QVT ] && echo 6145 > $QVT; then PANELHZ=72; L "panel: 72 Hz (frame length $(cat $QVT) lines)"
-  else VRHZ=90; L "panel: 72 Hz asked for, but the kernel has no $QVT - staying at 90 Hz"; fi
-elif [ -w $QVT ] && [ "$(cat $QVT 2>/dev/null)" != 4916 ]; then echo 4916 > $QVT; fi
+  if [ -w $QVT ] && echo 6144 > $QVT; then PANELHZ=72; q2_panel_b9 72; L "panel: 72 Hz (frame length $(cat $QVT) lines)"
+  else VRHZ=90; L "panel: 72 Hz asked for, but the kernel could not switch ($QVT) - staying at 90 Hz"; fi
+elif [ -w $QVT ] && [ "$(cat $QVT 2>/dev/null)" != 4916 ]; then echo 4916 > $QVT; q2_panel_b9 90; fi
 export Q2VR_PANEL_HZ=$PANELHZ
 PDEF=22; [ -e /run/q2kms.ready ] && { PDEF=27; [ "$PANELHZ" = 72 ] && PDEF=29; }   # desk-371: zero-copy with the 13 ms vsync lead: tick -> on the panel 24 ms at 90 Hz; desk-378: one refresh is 13.9 ms at 72 Hz; desk-379: 15 ms lead -> 26 ms -> 27
 PHOTON=$(cat /var/lib/q2/photonms 2>/dev/null | tr -cd 0-9); PHOTON=${PHOTON:-$PDEF}   # desk-140: 16 -> 22 ms (layer copy + panel copy + scan-out measured ~20 ms); Ctrl+Alt+P cycles
@@ -3261,7 +3273,7 @@ if [ -z "$STOPREQ" ] && [ "$T" -lt 60 ] && grep -a -q "Compositor exited unexpec
   exec env Q2VR_LEVEL=$NL "$0" "$ORIGT"
 fi
 [ "$T" -ge 60 ] && { [ "$LVL" -ge 2 ] && rm -f /var/lib/q2/vrlevel2 || echo $LVL > /var/lib/q2/vrlevel2; }   # this level ran: remember it (level 2 is never kept)
-[ "$PANELHZ" = 72 ] && [ -w "$QVT" ] && echo 4916 > "$QVT" && echo 4916 > "$QVT" && L "panel: back to 90 Hz (written twice: one write can leave it at 72)"   # desk-377
+[ "$PANELHZ" = 72 ] && [ -w "$QVT" ] && echo 4916 > "$QVT" && q2_panel_b9 90 && L "panel: back to 90 Hz"   # desk-377, desk-380
 echo stopped > $S/state; rm -f $S/pid $S/stop
 L "done"
 Q2VRT_EOF
