@@ -3079,7 +3079,7 @@ if pick:
             skipped.append(path)
     print('LOG controller inputs from %s: %s%s' % (prof, ' '.join(comps), ('; not fed: ' + ' '.join(skipped)) if skipped else ''))
     model = ''
-    for mname in ('oculus_quest2_controller_', 'oculus_quest_controller_', 'oculus_cv1_controller_'):
+    for mname in ('oculus_quest_controller_', 'oculus_quest2_controller_', 'oculus_cv1_controller_'):   # desk-376: Quest 1 models first
         if glob.glob('/opt/steamvr/resources/rendermodels/%sleft*' % mname):
             model = mname; break
     print('LOG render model: %s' % (model + 'left/right' if model else 'none found (type default)'))
@@ -3089,8 +3089,8 @@ PYEOF
 echo "$CTL" | grep '^LOG' | sed 's/^LOG //' | while IFS= read -r l; do L "controllers: $l"; done
 CTLTYPE=$(echo "$CTL" | awk '/^TYPE/{print $2}'); CTLPROF=$(echo "$CTL" | awk '/^TYPE/{print $3}')
 CTLCOMP=$(echo "$CTL" | awk '/^TYPE/{print $4}'); CTLMODEL=$(echo "$CTL" | awk '/^TYPE/{print $5}'); [ "$CTLMODEL" = - ] && CTLMODEL=
-# desk-376: Quest 1 controller models by default (user's choice; the Quest 2 ones looked no better in VR).
-# A model in the controller type file (5th field of TYPE) still wins.
+# desk-376: Quest 1 controller models by default (user's choice; the Quest 2 ones looked no better in VR) - the
+# render-model pick above tries them first; this covers SteamVR builds where none was found.
 CTLMODEL=${CTLMODEL:-oculus_quest_controller_}
 L "controller type: ${CTLTYPE:-oculus_touch (default)} ${CTLPROF}"
 IPDPOS=$(cat /var/lib/q2/ipdpos 2>/dev/null | tr -cd 123 | head -c 1); IPDPOS=${IPDPOS:-2}
