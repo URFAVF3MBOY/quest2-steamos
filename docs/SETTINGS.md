@@ -1,6 +1,6 @@
 # Settings and switches
 
-Most behaviour can be changed without rebuilding anything. The settings are plain files in `/var/lib/q2` on the headset. That folder survives restarts, while the rest of the system is a fresh RAM overlay on every boot.
+Most behaviour can be changed without rebuilding anything. The settings are plain files in `/var/lib/q2` on the headset. That folder survives restarts. The boot script rewrites its own files elsewhere (its services, `/usr/bin/q2vrtest` and the files in `/etc` it manages) on every boot, so change behaviour through these settings rather than by editing those files.
 
 They're written as root, from a terminal (Ctrl+Alt+T in the desktop view):
 
@@ -22,6 +22,27 @@ Most of them apply at the next boot. The Steam ones apply at the next Steam rest
 | `allowsuspend`                   | Allow sleep (for testing: the headset does not wake up again yet) |
 | `nobuttons`                      | The handling of the power and volume buttons off                  |
 | `ownpower`                       | Use the power-button handler even if Valve's daemon is available  |
+| `authorized_keys`                | SSH public keys, one per line: at boot they become root's keys and `sshd` starts (key login only). Delete the file and reboot to turn SSH off |
+
+## VR display
+
+These apply when SteamVR starts (`sh /var/lib/q2/q2vrrestart.sh` restarts SteamVR and Steam).
+
+| File            | Default | What it does |
+| --------------- | ------- | ------------ |
+| `vrhz`          | `90`    | SteamVR's frame rate. `72` also switches the **panel** to 72 Hz for the session (needs the `q2-display-vtotal` kernel; without it the session stays at 90 Hz): 13.9 ms of GPU time per frame instead of 11.1, for heavy scenes such as 2D games on the theater screen |
+| `vblead`        | `13000` | How far (µs) the compositor's vsync comes before the panel refresh it renders for. Too little and frames miss their refresh under load (stutter); the default leaves about 7 ms of headroom |
+| `photonms`      | `25`    | The time (ms) SteamVR predicts the head pose for, from its vsync. Must match the real vsync-to-panel time (24 ms with the default `vblead`), or fast head turns overshoot or lag |
+| `direct`        | `1`     | The compositor draws straight into the display's scanout buffers (no copy per frame, ~1.3 ms of GPU time saved). `0` = the copy below |
+| `tw`            | `0`     | How a frame gets to the display when `direct` is off or can't be used: `0` = transfer copy, `2` = exact copy by a compute shader, `1` = experimental timewarp (re-aims each frame at the newest head pose; resamples the picture) |
+| `twlate`        | on      | With `tw` = `1`: a missed frame is re-aimed and shown again instead of repeated. `0` = off |
+| `kmstrim`       | `0`     | Drop one frame after this many in a row had to wait behind an unfinished page flip (shortens a stuck flip queue). `0` = never |
+| `panelscale`    | `65`    | The compositor's output size in percent of the panel, scaled up by the display engine for free (`80` = 1536x2928 is sharper and still holds 90 fps; `100` = full size costs about 2 ms of GPU time more) |
+| `vrscale`       | `1.0`   | Render resolution scale of the eye images |
+| `eyeshift`      | `0`     | Moves both eyes' pictures vertically by this many panel pixels (forces the copy path) |
+| `compositor_tu` | `nobin,hiprio,flushpass` | `TU_DEBUG` for the compositor. `flushpass` prevents the right-eye black blocks; `nobin` (no tiled rendering) is faster for the compositor here (`-` means none) |
+| `vrfacet` (`1`) | off     | SteamVR's newer "facet" renderer. On the Quest 2 it blurs the picture with colour fringes and makes head tracking glitchy; the classic renderer is the default |
+| `vrdirect`      | `1`     | Outside the zero-copy path: the GPU writes frames straight into the panel buffer (`0` = old CPU copy) |
 
 ## Steam and SteamVR
 
@@ -37,11 +58,10 @@ Most of them apply at the next boot. The Steam ones apply at the next Steam rest
 | `nocefshm`           | Steam's VR interface draws with `-cef-use-vulkan` instead of ANGLE-Vulkan with a CPU-copy present (`q2_cefshm=0` on the kernel command line does the same) |
 | `vrsysdistort` (`1`) | SteamVR `renderSystemLayerInDistortPass` on (the Steam Frame sets it). Restart SteamVR to apply; for testing |
 | `vrscanout` (`1`)    | SteamVR `enableScanoutScaling` on (the Steam Frame sets it). Restart SteamVR to apply; for testing |
-| `vrfacet` (`1`)      | SteamVR's newer "facet" compositor renderer (the Steam Frame uses it). Experimental: the compositor may crash; look for `Using Facet Renderer` in its log |
 | `steamsentinel`      | Give Steam the SteamOS shutdown/restart sentinel files; when Steam exits after Shut down or Restart in its power menu, run `systemctl poweroff` / `reboot`. Experimental |
 | `steamwin` (`WxH`) | Size of Steam's own window in headless mode (default `960x540`)                                    |
 | `steamuihz`          | Steam interface frame rate in headless mode (default 45)                                             |
-| `compositor_tu`      | `TU_DEBUG` value for the SteamVR compositor (`-` means none)                                     |
+| `steamvrhz`          | Steam's interface frame rate inside SteamVR (gamescope `-r`, default 90)                             |
 | `tuprio`             | GPU priority mapping, `TU_KGSL_PRIO` (default `1,1,5,9`)                                         |
 | `kms` (`0`)        | Old display path (splash framebuffer) instead of `q2kmsd`                                          |
 

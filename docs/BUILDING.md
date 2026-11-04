@@ -6,9 +6,9 @@ Everything in the release images is built from this repository. You need:
 - **Linux or WSL** with `python3`, `sh` and `sha256sum` to put the boot image together (about 2 minutes).
 - **The base image** `boot_steamos_desk204_phaseb4_caps_mmu.img` from the [latest release](../../releases/latest).
 
-You finish with `image/out/boot_steamos.img` (SteamOS on the internal storage) or `image/out/boot_steamos_usb.img` (SteamOS on the USB drive, for the first install). Flash it to the **boot partition only** ([INSTALL.md](INSTALL.md)).
+The result is `image/out/boot_steamos.img` (SteamOS on the internal storage) or `image/out/boot_steamos_usb.img` (SteamOS on the USB drive, for the first install). Flash it to the **boot partition only** ([INSTALL.md](INSTALL.md)).
 
-Your image won't be byte-identical to the released one: the CI builds stamp build times into the kernel and the modules. It behaves the same.
+The image won't be byte-identical to the released one: the CI builds stamp build times into the kernel and the modules. It behaves the same.
 
 ## 1. Get the build inputs
 
@@ -19,7 +19,7 @@ Run these workflows in the **Actions** tab (or download the artifacts of their l
 | `build-quest2-steamos` | `quest2-steamos` | `boot_steamos.img`, `q2modules.tar.gz` | Meta's Quest 2 kernel 4.19 with patches and config (only the kernel is used), plus the Wi-Fi driver built for it |
 | `build-quest2-steamos` | `quest2-audio` | `q2audio.tar.gz` | The Kona sound modules (optional: without them there is no sound) |
 | `build-q2msm` | `q2msm` | `q2msm.ko` (in `kernel/q2msm/`) | The GPU kernel driver: mainline Linux drm/msm ported to this kernel |
-| `build-q2gpu` | `q2gpu-aarch64` | `q2gpu.tar.gz` | Mesa: Turnip (Vulkan) and freedreno (OpenGL) for the Adreno 650, plus zink |
+| `build-q2gpu` | `q2gpu-aarch64` | `q2gpu.tar.gz` | Mesa: Turnip (Vulkan) and freedreno (OpenGL) for the Adreno 650, plus zink. Run it with `debug` ticked only for crash analysis (artifact `q2gpu-aarch64-debug`: symbols kept, Mesa asserts on; not for the image) |
 | `build-fuse-overlayfs` | `fuse-overlayfs-aarch64` | `fuse-overlayfs` | fuse-overlayfs 1.18 (the C version), needed by Lepton on kernel 4.19 |
 | `build-q2gpu-android` | `q2gpu-android` | `q2gpu-android.tar.gz` | The same Mesa built for Android, for Android apps in Lepton (optional) |
 
@@ -66,23 +66,37 @@ Its kernel and `init` are replaced during the build.
 
 | Part | Source | Build |
 | --- | --- | --- |
-| Kernel | `facebookincubator/oculus-linux-kernel` at commit `6e428607392d` + `patches/*.patch` + `config/` | `build-quest2-steamos` with AOSP clang r450784e |
+| Kernel | `facebookincubator/oculus-linux-kernel` at commit `6e428607392d` + `patches/*.patch` + `config/` (see below) | `build-quest2-steamos` with AOSP clang r450784e |
 | Wi-Fi driver | `qcacld-3.0` in the same kernel tree | same workflow |
 | Sound modules | `techpack/audio` in the same kernel tree | same workflow |
 | GPU kernel driver (`q2msm.ko`) | `kernel/q2msm/` (mainline drm/msm, adapted) | `build-q2msm` |
-| GPU userspace (`/opt/q2gpu`) | Mesa `4e1e46921e` + `patches/turnip-q2-drm.py` + `patches/turnip-q2-async.py` | `build-q2gpu` |
+| GPU userspace (`/opt/q2gpu`) | Mesa `4e1e46921e` + `patches/turnip-q2-drm.py` + `patches/turnip-q2-async.py` + `patches/turnip-q2-flushpass.py` | `build-q2gpu` |
 | Boot script | `image/src/init/init` | copied into the boot image by `build.sh` |
 | SteamVR driver | `image/src/hmd/driver_q2hmd.cpp` | `build-q2tools`, or `REBUILD=1 sh build.sh` |
-| SteamVR display layer | `image/src/layer/q2vrdisplay.c` | `build-q2layer`; copy the result to `image/prebuilt/` |
+| SteamVR display layer | `image/src/layer/q2vrdisplay.c` + the compute shader `q2warp.comp` | `build-q2layer`; copy the result to `image/prebuilt/` |
 | Tracking helpers | `image/src/island/` | `metapose.c` with `build-q2tools` / `REBUILD=1`; `shim.c` and `host.c` need the Android NDK |
 | Ruby/Proton fix | `image/src/prof/q2rubyfix` (Python) | nothing to build |
 | cabextract | [libmspack](https://github.com/kyz/libmspack) + musl, static aarch64 | prebuilt; see below |
 | Bluetooth attach tool (`q2btattach`) | | prebuilt only (`image/prebuilt/q2btattach`) |
 
+### Kernel patches
+
+`build-quest2-steamos` applies these to Meta's tree, in this order:
+
+| Patch | What it does |
+| --- | --- |
+| `oculus-kernel-fixes.patch` (or `-old`) | Build fixes so the tree builds with AOSP clang outside Meta's build system |
+| `oculus-syncboss-old-driver.patch` | An older SyncBoss driver (controllers and IMU) that binds on firmware v59 |
+| `q2-dmabuf-sync-file.patch` | Linux 6.0's dma-buf sync-file ioctls, needed by gamescope and Vulkan window-system code |
+| `q2-audio-pinctrl-lpi-include.patch`, `q2-audio-no-pdr.patch` | The Kona sound modules build, and start without Android's PD mapper |
+| `q2-bt-hci-qca-ldisc.patch` | Bluetooth (QCA6390) over the UART line discipline |
+| `q2-display-vtotal.patch` | `/sys/kernel/q2display/vtotal`: the panel's frame length in lines (4916 = 90 Hz, 6145 = 72 Hz), changed without a mode set |
+
 ### Rebuilding the Vulkan layer by hand
 
 ```
 cd image/src/layer
+glslangValidator -V --target-env vulkan1.1 --vn q2warp_spv -o q2warp_spv.h q2warp.comp
 clang --target=aarch64-linux-gnu -shared -nostdlib -fuse-ld=lld -Wl,-soname,libc.so.6 -o libc.so.6 libcstub.c
 clang --target=aarch64-linux-gnu -O2 -fPIC -shared -nostdlib -ffreestanding -fno-stack-protector \
   -fvisibility=hidden -I<vulkan headers> -fuse-ld=lld -Wl,-soname,libq2vrdisplay.so \
@@ -90,7 +104,7 @@ clang --target=aarch64-linux-gnu -O2 -fPIC -shared -nostdlib -ffreestanding -fno
 cp libq2vrdisplay.so ../../prebuilt/
 ```
 
-`<vulkan headers>` is any folder with `vulkan/vulkan.h` (for example from the [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) repository). The `build-q2layer` workflow runs exactly this.
+`<vulkan headers>` is any folder with `vulkan/vulkan.h` (for example from the [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) repository), and `glslangValidator` comes with `glslang-tools`. The `build-q2layer` workflow runs exactly this.
 
 ### Rebuilding cabextract
 

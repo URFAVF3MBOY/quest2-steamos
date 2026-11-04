@@ -9,7 +9,7 @@ Every boot image has a build number (`desk-NNN`). The boot script's comments are
 | 204–222   | The tracking cameras: test pattern, live capture, LED blobs, controller pose from the cameras                                                                                       |
 | 224–242   | Meta's own tracker run from the stock partitions ("island") for head and controllers                                                                                                |
 | 253–255   | One patched GPU driver for SteamVR and Steam (`/opt/q2gpu`); Steam and SteamVR start by themselves; the camera trackers retired                                                   |
-| 256–282   | Lepton (Android apps): rootless podman, fuse-overlayfs, ashmem, the GPU inside the container, the Android build of our GPU driver                                                   |
+| 256–282   | Lepton (Android apps): rootless podman, fuse-overlayfs, ashmem, the GPU inside the container, the Android build of the port's GPU driver                                                   |
 | 263–269   | GPU priorities, so the SteamVR compositor stopped dropping frames; SteamVR starts first, like on the Frame                                                                          |
 | 283–302   | Steam's VR interface: profiling, CPU placement, Vulkan for the web interface (2–5 → 10–20 frames per second), sync emulation for the VR panels, power and volume buttons         |
 | 301        | Steam sees Steam Frame hardware; firmware updaters blocked                                                                                                                          |
@@ -18,3 +18,13 @@ Every boot image has a build number (`desk-NNN`). The boot script's comments are
 | 307–309   | The "+" desktop works; logs without a keyboard (hold both volume buttons)                                                                                                           |
 | 310–316   | Windows games: the Ruby problem in ARM64 Proton found and fixed (OneShot runs)                                                                                                      |
 | 317        | Silent-output attempt for games that need sound (see the roadmap)                                                                                                                   |
+| 318–331   | The Kona sound modules built with the kernel; the audio firmware copied in at boot                                                                                                  |
+| 333–336   | Meta's VR GPU power profile; the GPU at the stock 587 MHz level; `q2kmsd` real-time                                                                                                 |
+| 343–348   | Bluetooth works (QCA6390, patched kernel driver)                                                                                                                                    |
+| 350–353   | Right-eye blocks traced to a GPU cache problem and flushed away; overlay quality back to low                                                                                        |
+| 354–362   | The GPU on `q2msm` (mainline drm/msm ported to the 4.19 kernel) instead of KGSL; GPU preemption; a fence deadlock fixed                                                              |
+| 363–366   | vsync lead (`vblead`), so frames make their refresh; Steam UI GPU-process restarts reduced                                                                                          |
+| 367–370   | Experimental timewarp in the layer (compute shader, render pose per vsync tick, late re-warp); found that SteamVR's Facet renderer caused blur and colour fringes, back to classic   |
+| 371        | vsync-tick-to-panel timing measured (frames landed 26–37 ms after the tick against 20 ms predicted); `vblead` 13 ms + `photonms` 25 ms                                             |
+| 372–376   | SSH over Wi-Fi (opt-in); direct scanout (no copy per frame); one battery in Steam; `udisksd` off the internal storage; Quest 1 controller models; `q2msm` submits no longer fail on fragmented memory |
+| 377        | 72 Hz panel mode by frame length (kernel switch `/sys/kernel/q2display/vtotal`), for heavy 2D-game theater scenes                                                                    |

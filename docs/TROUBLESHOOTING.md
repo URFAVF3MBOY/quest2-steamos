@@ -9,6 +9,8 @@
 
 In device mode, the PC also sees a **serial port** with a root shell. Use PuTTY or any terminal program at 115200 baud.
 
+Without a cable: with SSH set up (`/var/lib/q2/authorized_keys`, see [SETTINGS.md](SETTINGS.md)), `ssh root@<headset IP>` works over Wi-Fi, and the logs are in `/var/log/q2`.
+
 Files bigger than 2 MB are left off the drive and listed in `skipped-files.txt`.
 
 ## What's in the logs
@@ -40,9 +42,13 @@ Files bigger than 2 MB are left off the drive and listed in `skipped-files.txt`.
 
 **A game closes right away.** Look at `proton-log.txt`. If the game is RPG Maker or another Ruby-based game, check `proton-fix.txt` to see whether the Ruby fix was applied. If the game says it can't open sound ("OpenAL", "DirectSound", "XAudio"), that's the missing sound support. Try again a few minutes after boot.
 
-**Steam's interface is slow.** That's known. It renders at about 10 to 20 frames per second. The big dashboard is the slowest part.
+**Steam's interface stutters.** Known; it is worst while Steam loads a lot at once. The VR picture itself should keep 90 frames per second; `vr-*.txt` shows the compositor's frame timing.
 
-**Black blocks in the right eye.** Fixed in desk-303. If it comes back, send the logs.
+**Stutter when looking around, or a 2D game runs badly.** The compositor gets 11.1 ms of GPU time per frame at 90 Hz. The theater screen of a 2D game needs about 12 ms, so frames get dropped. `echo 72 | sudo tee /var/lib/q2/vrhz` and a SteamVR restart run the panel at 72 Hz instead (needs the `q2-display-vtotal` kernel). In `vrserver-stdout.txt`, the line `tick -> on the panel` shows when frames reached the panel: one value means steady timing; a second, ~11 ms later value means frames missed their refresh.
+
+**Blurry picture with colour fringes, or glitchy head tracking.** Check that `/var/lib/q2/vrfacet` doesn't contain `1`. SteamVR's Facet renderer causes exactly that on the Quest 2.
+
+**Black blocks in the right eye.** Prevented by `flushpass` in `/var/lib/q2/compositor_tu` (the default `nobin,hiprio,flushpass`). If they show up with that setting, send the logs.
 
 **Volume buttons do nothing.** Check `buttons.txt`, and that `/var/lib/q2/nobuttons` doesn't exist.
 

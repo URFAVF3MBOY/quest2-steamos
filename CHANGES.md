@@ -59,3 +59,12 @@ Changes made on the unlocked Quest 2 that still need to be brought over to the k
 Settings files also on the unlocked headset now: `/var/lib/q2/tuprio` = `0,4,8,12` (late warp, compositor, apps, background on separate KGSL rings), `/var/lib/q2/compositor_tu` = `nobin,hiprio` (tiling retested with OneShot: no gain).
 
 Latest build: `image/out/boot_steamos_desk348.img` (and `_test` with `q2_test=1`) = desk-330 image + patched DTB (`image/out/boot334.dtb`) + one ramdisk layer: init348, the Bluetooth kernel (stay-awake build) and its Wi-Fi/audio modules (`image/out/mkclean.py` builds the clean base).
+
+## desk-367 … 377
+
+- **Display defaults (init):** `vblead` 13000 µs and `photonms` 25 (measured: vsync tick → on the panel 24 ms; with 4000 frames landed 26–37 ms after the tick against 20 ms predicted, and 8000 µs was the layer's old cap); `tw` 0 (transfer copy); `kmstrim` 0; compositor output height a multiple of 4.
+- **Direct scanout (layer):** the compositor's swapchain images are q2kmsd's scanout buffers (linear images on the same dma-bufs); a present is a cache flush plus a flip. Saves the ~1.45 ms copy. `/var/lib/q2/direct` = 0 turns it off.
+- **Classic renderer, not Facet:** `vrfacet` = 1 blurs the picture with colour fringes and makes tracking glitchy on the Quest 2.
+- **q2msm:** the submit is `kvmalloc`ed; the old `kmalloc` + `__GFP_NORETRY` failed with -ENOMEM on fragmented memory (Turnip: device lost, SteamVR crashed). Rebuild q2msm for the kexec kernel with this.
+- **Kernel:** `patches/q2-display-vtotal.patch` (`/sys/kernel/q2display/vtotal`, 72 Hz panel mode); `vrhz` = 72 uses it per SteamVR session.
+- **init:** SSH opt-in (`/var/lib/q2/authorized_keys`, sshd with the Android network groups); UPower ignores the charger driver's duplicate battery; udisksd ignores the internal UFS partitions; Quest 1 controller models picked first.

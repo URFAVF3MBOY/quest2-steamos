@@ -30,7 +30,7 @@ sync-file patch, glFinish fallbacks). The display stays on Meta's SDE driver + q
 3. **Hand-over from KGSL.** KGSL stays built in as the fallback; the port is a module bound at runtime after unbinding
    kgsl-3d0. GMU state left by KGSL is the likely trouble spot. A failed bring-up can hang the headset (watchdog →
    fastboot), so every test must be recoverable by reflashing boot.
-4. **Preemption.** Our VR smoothness relies on KGSL ring priorities + preemption (tuprio 0,4,8,12). Mainline a6xx
+4. **Preemption.** VR smoothness relies on KGSL ring priorities + preemption (tuprio 0,4,8,12). Mainline a6xx
    preemption is very recent (~6.13); without it VR may stutter under load.
 
 ## Findings (step 1)
@@ -91,7 +91,7 @@ What it took (all in `adreno/a6xx_preempt.c` / `a6xx_gpu.c`):
     only active with `plevel=1`).
   - mainline a7xx's `CP_PREEMPT_ENABLE_LOCAL` (0x6a) and a5xx/KGSL's `CP_YIELD_ENABLE` (0x1c) before the IBs:
     both **CP opcode errors** on the a650 SQE firmware - removed.
-  Left: no CP state at the hang (needs a crashdump / CP_SQE stat read), Meta's KGSL may set something we don't
+  Left: no CP state at the hang (needs a crashdump / CP_SQE stat read), Meta's KGSL may set something q2msm doesn't
   (the record's info / SMMU magic, CP_CHICKEN bits).  Parked - ring level already gives most of the gain.
 
 Measured (SteamVR + Steam UI, 4 min windows): dropped 2 per ~80 s without → 2 per ~4 min with; compositor GPU max
