@@ -15,14 +15,16 @@ Last tested build: **desk-377** (November 2026).
 | Booting SteamOS from internal storage                   | Works                        | Normal restarts come back to SteamOS                                                                   |
 | Wi-Fi                                                   | Works                        | Meta's Wi-Fi driver, rebuilt for the kernel                                                            |
 | Bluetooth                                               | Works                        | The QCA6390 combo chip, through a patched kernel driver                                                |
-| Display (both panels, lens correction)                  | Works                        | 72 Hz by default (90 Hz selectable); SteamVR's compositor draws straight into the display's scanout buffers |
+| Display (both panels, lens correction)                  | Works                        | 90 Hz; SteamVR's compositor draws straight into the display's scanout buffers (no copy per frame)     |
 | Head tracking                                           | Works                        | Meta's own tracker, about 860 pose updates per second                                                  |
 | Touch controllers (tracking, buttons, sticks, triggers) | Works                        | Meta's own tracker; shown with the Quest 1 controller models                                          |
 | SteamVR                                                 | Works                        | Classic renderer; the compositor needs about 6 to 8 ms of GPU time per frame                          |
 | Steam's VR interface (library, store, settings)         | Works                        | GPU-accelerated; can stutter while it loads a lot at once                                             |
 | Desktop mode (the "+" button in Steam)                  | Works                        | Nested KDE Plasma desktop inside VR                                                                    |
 | Windows games through Proton                            | Works                        | Tested with OneShot. Includes a fix for Ruby/RPG Maker games (see below)                               |
-| 2D games on SteamVR's theater screen                    | Partly                       | The theater view needs about 12 ms of GPU time per frame: steady at 72 Hz, 67 fps with judder at 90 Hz |
+| 2D games on SteamVR's theater screen                    | Partly                       | The theater view needs about 12 ms of GPU time per frame, more than a 90 Hz frame allows (about 67 fps) |
+| Sound                                                   | Works                        | Speakers through the Kona sound modules; the volume buttons change the level                          |
+| Power menu                                              | Works                        | Shut down and Restart in Steam's power menu                                                            |
 | SSH over Wi-Fi                                          | Works (opt-in)               | Put public keys in `/var/lib/q2/authorized_keys` ([SETTINGS.md](docs/SETTINGS.md))                    |
 | Sleep                                                   | Doesn't work                 | Turned off on purpose: the headset does not wake up again                                              |
 | Android apps (VRChat through Lepton)                    | Partly                       | Android starts in the container; VRChat (the only tested app) is not working yet                       |
@@ -81,7 +83,7 @@ Read these before flashing anything.
 The short version:
 
 1. **Locked headsets through kexec.** Kexec lets a running kernel start another kernel without the bootloader.
-2. **Back to 90 Hz** once the GPU work per frame is low enough to hold it everywhere.
+2. **Less GPU work per frame**, so heavy scenes such as 2D games on the theater screen hold 90 fps.
 3. **A smoother Steam interface.**
 4. **Sleep and wake.**
 5. **VRChat** and other Android apps through Lepton.

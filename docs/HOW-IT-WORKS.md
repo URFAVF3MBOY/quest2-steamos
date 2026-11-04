@@ -59,7 +59,7 @@ Programs get the driver through `VK_ICD_FILENAMES` and `LD_LIBRARY_PATH`. A prog
 
 `q2kmsd` (`q2kms serve`) owns the display. It keeps the panel timing the bootloader set up (432 × 4916 lines = 90 Hz) and page-flips four scanout buffers onto the two panel planes. Both eyes sit stacked in one buffer smaller than the panel (1536×2928 at the 80 % setting), and the display engine scales it up for free. Outside VR, `q2display` draws a lens-corrected flat desktop the same way.
 
-For a 72 Hz session the boot script writes 6145 lines to `/sys/kernel/q2display/vtotal`: a longer vertical blanking at the same line time, the same picture.
+`/sys/kernel/q2display/vtotal` (kernel patch) can lengthen the vertical blanking for 72 Hz (6145 lines). The display engine then runs at 72.0 Hz, but the panel shows garbage, so it is experimental and off.
 
 ## SteamVR
 

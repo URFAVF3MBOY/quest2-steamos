@@ -30,9 +30,9 @@ These apply when SteamVR starts (`sh /var/lib/q2/q2vrrestart.sh` restarts SteamV
 
 | File            | Default | What it does |
 | --------------- | ------- | ------------ |
-| `vrhz`          | `72`    | SteamVR's frame rate. `72` also switches the **panel** to 72 Hz for the session (needs the `q2-display-vtotal` kernel; without it the session runs at 90 Hz): 13.9 ms of GPU time per frame instead of 11.1, so heavy scenes such as 2D games on the theater screen stay steady. `90` = smoother where the GPU keeps up |
+| `vrhz`          | `90`    | SteamVR's frame rate. `72` also switches the panel to 72 Hz by frame length (`q2-display-vtotal` kernel) - **experimental: the panel currently shows garbage at 72 Hz**, so leave it at 90 |
 | `vblead`        | `13000` | How far (µs) the compositor's vsync comes before the panel refresh it renders for. Too little and frames miss their refresh under load (stutter); the default leaves about 7 ms of headroom |
-| `photonms`      | `27` (72 Hz) / `25` (90 Hz) | The time (ms) SteamVR predicts the head pose for, from its vsync. Must match the real vsync-to-panel time (24 ms at 90 Hz with the default `vblead`), or fast head turns overshoot or lag |
+| `photonms`      | `25`    | The time (ms) SteamVR predicts the head pose for, from its vsync. Must match the real vsync-to-panel time (24 ms with the default `vblead`), or fast head turns overshoot or lag |
 | `direct`        | `1`     | The compositor draws straight into the display's scanout buffers (no copy per frame, ~1.3 ms of GPU time saved). `0` = the copy below |
 | `tw`            | `0`     | How a frame gets to the display when `direct` is off or can't be used: `0` = transfer copy, `2` = exact copy by a compute shader, `1` = experimental timewarp (re-aims each frame at the newest head pose; resamples the picture) |
 | `twlate`        | on      | With `tw` = `1`: a missed frame is re-aimed and shown again instead of repeated. `0` = off |

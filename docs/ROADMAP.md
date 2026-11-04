@@ -21,9 +21,9 @@ The plan:
 
 The Quest 2 uses Qualcomm's audio DSP (ADSP) for its speakers and microphones. In the kernel, no sound card registers ("ALSA device list:" is empty). The parts are Meta's audio drivers in the kernel tree, the DSP firmware from the vendor partition, and a mixer setup taken from Android's `mixer_paths.xml`. Until then, PipeWire has no output, and some games refuse to start. Adding a silent output (the `nonullsink` switch) didn't work yet, because PipeWire's pulse layer refused it ("Not supported").
 
-## 3. A 72 Hz panel mode, switched automatically
+## 3. A 72 Hz panel mode
 
-The theater screen of a 2D game makes SteamVR's compositor need about 12 ms of GPU time per frame, more than the 11.1 ms of a 90 Hz frame, so it runs at about 67 fps with judder. The kernel switch `/sys/kernel/q2display/vtotal` runs the panel at 72 Hz (13.9 ms per frame) by lengthening the vertical blanking; `vrhz` = `72` uses it for a whole SteamVR session. Next: switch to 72 Hz only while a 2D game is on the theater screen.
+The theater screen of a 2D game makes SteamVR's compositor need about 12 ms of GPU time per frame, more than the 11.1 ms of a 90 Hz frame, so it runs at about 67 fps with judder. At 72 Hz a frame has 13.9 ms. The kernel switch `/sys/kernel/q2display/vtotal` already runs the display engine's timing at 72.0 Hz by lengthening the vertical blanking (6145 instead of 4916 lines), and the scanout buffers stay correct, but the panel itself shows garbage (washed out, streaks, vertical bands). The panel probably needs its own 72 Hz settings sent over DSI as well (the Android display driver's dynamic-FPS command sets). Until that works, 90 Hz stays.
 
 ## 4. A smoother Steam interface
 
