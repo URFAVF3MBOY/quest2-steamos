@@ -46,7 +46,7 @@ Files bigger than 2 MB are left off the drive and listed in `skipped-files.txt`.
 
 **Stutter when looking around, or a 2D game runs badly.** The compositor gets 11.1 ms of GPU time per frame at 90 Hz. The theater screen of a 2D game needs about 12 ms, so frames get dropped (a 72 Hz mode is on the roadmap). In `vrserver-stdout.txt`, the line `tick -> on the panel` shows when frames reached the panel: one value means steady timing; a second, ~11 ms later value means frames missed their refresh.
 
-**Garbage on the panel (washed out, streaks, vertical bands).** Check that `/var/lib/q2/vrhz` isn't `72`: the 72 Hz mode doesn't work on the panel yet. `echo 4916 | sudo tee /sys/kernel/q2display/vtotal` brings the panel back to 90 Hz right away.
+**Garbage on the panel (washed out, streaks, vertical bands).** Check that `/var/lib/q2/vrhz` isn't `72`: the 72 Hz mode doesn't work on the panel yet. `echo 4916 | sudo tee /sys/kernel/q2display/vtotal` brings the panel back to 90 Hz right away. Run it twice: coming back from 72 Hz, the first write can leave the display running at 72 frames per second.
 
 **Blurry picture with colour fringes, or glitchy head tracking.** Check that `/var/lib/q2/vrfacet` doesn't contain `1`. SteamVR's Facet renderer causes exactly that on the Quest 2.
 

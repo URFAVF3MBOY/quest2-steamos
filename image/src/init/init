@@ -3261,7 +3261,7 @@ if [ -z "$STOPREQ" ] && [ "$T" -lt 60 ] && grep -a -q "Compositor exited unexpec
   exec env Q2VR_LEVEL=$NL "$0" "$ORIGT"
 fi
 [ "$T" -ge 60 ] && { [ "$LVL" -ge 2 ] && rm -f /var/lib/q2/vrlevel2 || echo $LVL > /var/lib/q2/vrlevel2; }   # this level ran: remember it (level 2 is never kept)
-[ "$PANELHZ" = 72 ] && [ -w "$QVT" ] && echo 4916 > "$QVT" && L "panel: back to 90 Hz"   # desk-377
+[ "$PANELHZ" = 72 ] && [ -w "$QVT" ] && echo 4916 > "$QVT" && echo 4916 > "$QVT" && L "panel: back to 90 Hz (written twice: one write can leave it at 72)"   # desk-377
 echo stopped > $S/state; rm -f $S/pid $S/stop
 L "done"
 Q2VRT_EOF
