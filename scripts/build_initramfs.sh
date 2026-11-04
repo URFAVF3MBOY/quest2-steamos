@@ -23,7 +23,11 @@ echo "   $FILE"
 curl -fsSL "$BASE/$FILE" | sudo tar -xz -C "$ROOT"
 
 echo "== installing packages in an aarch64 chroot"
-sudo cp /usr/bin/qemu-aarch64-static "$ROOT/usr/bin/"
+# newer Ubuntu ships the static emulator as plain qemu-aarch64 (package qemu-user); put it in under both names, so
+# the chroot works whichever path binfmt registered
+QEMU=$(ls /usr/bin/qemu-aarch64-static /usr/bin/qemu-aarch64 2>/dev/null | head -n 1)
+[ -n "$QEMU" ] || { echo "no qemu-aarch64 emulator installed" >&2; exit 1; }
+sudo cp "$QEMU" "$ROOT/usr/bin/qemu-aarch64-static"; sudo cp "$QEMU" "$ROOT/usr/bin/qemu-aarch64"
 echo "nameserver 1.1.1.1" | sudo tee "$ROOT/etc/resolv.conf" >/dev/null
 sudo chroot "$ROOT" /sbin/apk add --no-cache bash ncurses-terminfo-base util-linux coreutils
 if ! sudo chroot "$ROOT" /sbin/apk add --no-cache neofetch; then
@@ -32,7 +36,7 @@ if ! sudo chroot "$ROOT" /sbin/apk add --no-cache neofetch; then
   printf '#!/bin/sh\nexec fastfetch "$@"\n' | sudo tee "$ROOT/usr/bin/neofetch" >/dev/null
   sudo chmod +x "$ROOT/usr/bin/neofetch"
 fi
-sudo rm -f "$ROOT/usr/bin/qemu-aarch64-static" "$ROOT/etc/resolv.conf"
+sudo rm -f "$ROOT/usr/bin/qemu-aarch64-static" "$ROOT/usr/bin/qemu-aarch64" "$ROOT/etc/resolv.conf"
 
 echo "== building qscreen (display tool) and helper scripts"
 if [ -f "$HERE/qscreen/qscreen.c" ]; then
