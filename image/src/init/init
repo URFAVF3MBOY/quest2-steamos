@@ -1468,7 +1468,7 @@ if [ -f $Q2GPUICD ] && [ "$(cat /var/lib/q2/vrgpu 2>/dev/null)" != 0 ] && comman
     # gamescope assumed DMA-BUF modifiers it never asked SteamVR for and aborted (rendervulkan.cpp "!modifiers.empty()")
   DR=$(cat /var/lib/q2/deskres 2>/dev/null|tr -cd 0-9x); DRW=${DR%x*}; DRH=${DR#*x}; [ -n "$DRW" ] && [ -n "$DRH" ] && [ "$DRW" != "$DRH" ] || { DRW=1280; DRH=720; }
     # desk-356: Steam's UI in VR at the panel rate (gamescope -r); /var/lib/q2/steamvrhz overrides (e.g. 45 = less GPU)
-    SVRHZ=$(cat /var/lib/q2/steamvrhz 2>/dev/null | tr -cd 0-9); SVRHZ=${SVRHZ:-90}
+    SVRHZ=$(cat /var/lib/q2/steamvrhz 2>/dev/null | tr -cd 0-9); SVRHZ=${SVRHZ:-$(cat /var/lib/q2/vrhz 2>/dev/null | tr -cd 0-9)}; SVRHZ=${SVRHZ:-72}   # desk-382: follows vrhz
     GSOVR="/tmp/q2gamescope-vr --backend openvr -r $SVRHZ --xwayland-count 2 --nested-width ${DRW:-1280} --nested-height ${DRH:-720} --output-width 1920 --output-height 1080 --steam --virtual-connector-strategy PerAppId --vr-overlay-key valve.steam.gamepadui.fallback --vr-app-overlay-key valve.steam.desktopgame --"
   fi
   L "steam: gamescope for VR mode: ${GSOVR:+OpenVR backend (like the Frame), fallback }headless"
@@ -2962,10 +2962,10 @@ VASYNC=false; [ -n "$Q2TU" ] && VASYNC=true
 case "$(cat /var/lib/q2/vrasync 2>/dev/null)" in 1) VASYNC=true;; 0) VASYNC=false;; esac
 # desk-174: the compositor asked for 90 Hz ("Trying to match desired rate of 90Hz") but got our 45 Hz display mode;
 # tell it the rate we run at so its frame pacing targets the right vsync
-PREFHZ=$(cat /var/lib/q2/vrhz 2>/dev/null | tr -cd 0-9); PREFHZ=${PREFHZ:-90}
+PREFHZ=$(cat /var/lib/q2/vrhz 2>/dev/null | tr -cd 0-9); PREFHZ=${PREFHZ:-72}   # desk-382: 72 Hz by default (/var/lib/q2/vrhz 90 for 90 Hz)
 # desk-377: 72 = the PANEL at 72 Hz (kernel q2-display-vtotal.patch: longer frame, same picture) - more GPU time per
 # frame (13.9 ms) for heavy scenes such as a 2D game's theater view.  Without that kernel switch: 90.
-[ "$PREFHZ" = 72 ] && [ ! -w /sys/kernel/q2display/vtotal ] && PREFHZ=90
+[ "$PREFHZ" = 72 ] && [ ! -S /run/q2kms-ctl.sock ] && PREFHZ=90   # no q2kmsd to switch the panel
 # desk-283: the big Steam dashboard took the compositor from 5.9 to 10.7 ms GPU: Steam drew its VR panels at the headset rate (90/s).
 # Stop that (echo 1 > /var/lib/q2/dashmatch = old) and draw overlays at low quality (/var/lib/q2/overlayq = 0 auto,1 low,2 med,3 high).
 # desk-302: back ON - Steam draws its VR panels at the headset rate again.  desk-283 turned it off when Steam's UI went
@@ -3103,7 +3103,7 @@ CTLMODEL=${CTLMODEL:-oculus_quest_controller_}
 L "controller type: ${CTLTYPE:-oculus_touch (default)} ${CTLPROF}"
 IPDPOS=$(cat /var/lib/q2/ipdpos 2>/dev/null | tr -cd 123 | head -c 1); IPDPOS=${IPDPOS:-2}
 OLDLENS=$(cat /var/lib/q2/oldlens 2>/dev/null | tr -cd 01 | head -c 1); OLDLENS=${OLDLENS:-0}
-VRHZ=$(cat /var/lib/q2/vrhz 2>/dev/null | tr -cd 0-9); VRHZ=${VRHZ:-90}   # desk-178: 90 by default. desk-378: a 72 Hz default was tried - the panel garbles at 72 Hz by frame length (streaks, washed out, vertical bands), see the vrhz block below         # panel is 90 Hz: 45 = every frame shown twice
+VRHZ=$(cat /var/lib/q2/vrhz 2>/dev/null | tr -cd 0-9); VRHZ=${VRHZ:-72}   # desk-382: 72 Hz by default (the 2D theater needs ~12 ms GPU per frame: 13.9 ms at 72 Hz, 11.1 at 90); 90 or 45 in /var/lib/q2/vrhz
 # desk-377: vrhz 72 switches the panel itself to 72 Hz (frame length 6144 lines instead of 4916, Meta's 72 Hz JDI
 # entry) for this VR session; back to 90 Hz when SteamVR stops.  The layer gets the panel rate (its vsync grid),
 # SteamVR and the driver VRHZ.
@@ -5028,6 +5028,11 @@ def serve(fd, info):
                     if et == 2 and pending is not None:   # DRM_EVENT_FLIP_COMPLETE
                         sec, usec = struct.unpack_from('<II', ev, o + 16)
                         onscreen = pending; pending = None; nflip += 1
+                        if hz_req:   # desk-382: with VR flipping back to back there is no idle moment - switch between two flips
+                            c_, hz_ = hz_req; hz_req = None
+                            r_ = set_hz(hz_)
+                            try: c_.sendall((r_ + chr(10)).encode()); c_.close()
+                            except OSError: pass
                         if vcl:
                             try: vcl.sendall(('D %d %d\n' % (onscreen, sec * 1000000000 + usec * 1000)).encode())
                             except OSError: vr_end('layer gone')
