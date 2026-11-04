@@ -3089,6 +3089,9 @@ PYEOF
 echo "$CTL" | grep '^LOG' | sed 's/^LOG //' | while IFS= read -r l; do L "controllers: $l"; done
 CTLTYPE=$(echo "$CTL" | awk '/^TYPE/{print $2}'); CTLPROF=$(echo "$CTL" | awk '/^TYPE/{print $3}')
 CTLCOMP=$(echo "$CTL" | awk '/^TYPE/{print $4}'); CTLMODEL=$(echo "$CTL" | awk '/^TYPE/{print $5}'); [ "$CTLMODEL" = - ] && CTLMODEL=
+# desk-376: Quest 1 controller models by default (user's choice; the Quest 2 ones looked no better in VR).
+# A model in the controller type file (5th field of TYPE) still wins.
+CTLMODEL=${CTLMODEL:-oculus_quest_controller_}
 L "controller type: ${CTLTYPE:-oculus_touch (default)} ${CTLPROF}"
 IPDPOS=$(cat /var/lib/q2/ipdpos 2>/dev/null | tr -cd 123 | head -c 1); IPDPOS=${IPDPOS:-2}
 OLDLENS=$(cat /var/lib/q2/oldlens 2>/dev/null | tr -cd 01 | head -c 1); OLDLENS=${OLDLENS:-0}
