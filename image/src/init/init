@@ -6112,6 +6112,11 @@ Q2PK_EOF
   else
     rm -f $NR/etc/systemd/system/multi-user.target.wants/sshd.service
   fi
+  # desk-375: udisksd leaves the internal UFS storage alone (77 Android partitions, one with a label that is not valid
+  # UTF-8: udisksd logged errors over and over and took up to ~70% of a core while Steam asked it for its drives).
+  # USB drives keep working; the internal partitions also no longer show up in Steam's storage list.
+  mkdir -p $NR/etc/udev/rules.d
+  printf '%s\n' 'SUBSYSTEM=="block", ENV{ID_PATH}=="platform-1d84000.ufshc-*", ENV{UDISKS_IGNORE}="1"' > $NR/etc/udev/rules.d/90-q2-udisks-ufs.rules
   # desk-373: one battery in Steam.  The same cell shows up twice in /sys/class/power_supply: "battery" (the PM8150B
   # charger driver's estimate) and "bq27z561-0" (the fuel-gauge chip measuring the cell - the accurate one), so UPower
   # and Steam listed two batteries.  UPower alone is kept from reading the charger driver's node; charging is untouched.
