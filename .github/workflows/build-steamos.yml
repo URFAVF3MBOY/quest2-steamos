@@ -121,6 +121,9 @@ jobs:
           # panel refresh by frame length (/sys/kernel/q2display/vtotal: 4916 lines = 90 Hz, 6145 = 72 Hz) - desk-377
           git apply --check ../patches/q2-display-vtotal.patch
           git apply ../patches/q2-display-vtotal.patch; echo "applied q2-display-vtotal.patch"
+          # the boot image picks the panel entry the bootloader really runs (msm_drm.q2_dsi_display0=) - desk-382
+          git apply --check ../patches/q2-dsi-panel-entry.patch
+          git apply ../patches/q2-dsi-panel-entry.patch; echo "applied q2-dsi-panel-entry.patch"
 
       - name: Configure kernel
         shell: bash

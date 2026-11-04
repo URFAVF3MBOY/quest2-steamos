@@ -1,0 +1,30 @@
+--- a/techpack/display/msm/dsi/dsi_display.c
++++ b/techpack/display/msm/dsi/dsi_display.c
+@@ -36,6 +36,15 @@
+ #define MAX_TE_SOURCE_ID  2
+ 
+ static char dsi_display_primary[MAX_CMDLINE_PARAM_LEN];
++/*
++ * q2 (desk-382): the bootloader names the panel entry it booted with (msm_drm.dsi_display0=, appended after the boot
++ * image's command line, so it always wins).  On the Quest 2 that is the dtbo's 120/144 Hz entry, while the panel
++ * really runs the bootloader's JDI 90 Hz timing (432 x 4916 = Meta's jdi_4k_90Hz_dsc_video).  The driver then works
++ * from the wrong timing (DSI command line inside the picture, wrong backlight strobe, no usable refresh-rate modes).
++ * msm_drm.q2_dsi_display0= from the boot image replaces the bootloader's choice when set.
++ */
++static char q2_dsi_display0[MAX_CMDLINE_PARAM_LEN];
++module_param_string(q2_dsi_display0, q2_dsi_display0, MAX_CMDLINE_PARAM_LEN, 0400);
+ static char dsi_display_secondary[MAX_CMDLINE_PARAM_LEN];
+ static struct dsi_display_boot_param boot_displays[MAX_DSI_ACTIVE_DISPLAY] = {
+ 	{.boot_param = dsi_display_primary},
+@@ -2236,6 +2245,11 @@
+ 	char disp_buf[MAX_CMDLINE_PARAM_LEN] = {'\0'};
+ 	int i, j;
+ 
++	if (q2_dsi_display0[0]) {   /* q2 (desk-382) */
++		pr_info("q2: panel entry %s (bootloader said %s)
++", q2_dsi_display0, dsi_display_primary);
++		strlcpy(dsi_display_primary, q2_dsi_display0, MAX_CMDLINE_PARAM_LEN);
++	}
+ 	for (i = 0; i < MAX_DSI_ACTIVE_DISPLAY; i++) {
+ 		strlcpy(disp_buf, boot_displays[i].boot_param,
+ 			MAX_CMDLINE_PARAM_LEN);
