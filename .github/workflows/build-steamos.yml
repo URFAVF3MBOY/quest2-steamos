@@ -35,12 +35,20 @@ jobs:
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL || true
           df -h /
 
+      # The cache key follows the runner image: a cache whose key exists is never updated, so the old fixed key
+      # (saved once on Ubuntu 24.04) held none of the packages the 26.04 runner needs - every run downloaded them
+      # again from the mirror, sometimes at ~50 kB/s (qemu-user alone took 5 minutes).
+      - name: Runner image id
+        id: img
+        run: echo "id=${ImageOS:-unknown}-${ImageVersion:-0}" >> "$GITHUB_OUTPUT"
+
       - name: Cache apt packages
         id: aptcache
         uses: actions/cache@v4
         with:
           path: ~/apt-cache
-          key: apt-q2-noble-v1
+          key: apt-q2-${{ steps.img.outputs.id }}-v2
+          restore-keys: apt-q2-
 
       - name: Install build dependencies
         run: |
