@@ -1,6 +1,6 @@
 --- a/techpack/display/msm/sde/sde_encoder.c
 +++ b/techpack/display/msm/sde/sde_encoder.c
-@@ -4502,6 +4502,137 @@
+@@ -4502,6 +4502,136 @@
  	}
  }
  
@@ -103,8 +103,7 @@
 +			writel_relaxed(((lines - 1) << 16) | (tot & 0xFFFF), dc->hw.base + Q2_DSI_VIDEO_MODE_TOTAL);
 +			writel_relaxed(0x1, dc->hw.base + Q2_DSI_TIMING_FLUSH);
 +			wmb();
-+			pr_info("q2display: DSI ctrl %u frame length %u -> %u lines
-+", i, (tot >> 16) + 1, lines);
++			pr_info("q2display: DSI ctrl %u frame length %u -> %u lines\n", i, (tot >> 16) + 1, lines);
 +		}
 +	}
 +	spin_lock_irqsave(phys->enc_spinlock, flags);
@@ -138,7 +137,7 @@
  void sde_encoder_set_lineptr_value(struct drm_encoder *drm_enc, int offset)
  {
  	struct sde_encoder_virt *sde_enc = to_sde_encoder_virt(drm_enc);
-@@ -6482,6 +6613,8 @@
+@@ -6482,6 +6612,8 @@
  	if (disp_info->intf_type == DRM_MODE_CONNECTOR_DSI)
  		timer_setup(&sde_enc->vsync_event_timer,
  				sde_encoder_vsync_event_handler, 0);
