@@ -99,6 +99,7 @@ static uint32_t DW = 1920, DH = 3664, DHZ = 72;
 // q2kmsd socket and an atomic flip (~5 ms), and presents came 8.3 ms after the tick - ~3 ms from missing the refresh.
 // Starting earlier gives that margin back.  Q2VR_VBLEAD_US (driver adds the same to its photon time).
 static uint64_t g_vblead;
+static uint64_t g_panel_P = 11111111ull;   // desk-377: one panel refresh (ns) - Q2VR_PANEL_HZ, 90 or 72 (q2display vtotal)
 #define Q_DISPLAY ((VkDisplayKHR)(uintptr_t)0x51d2d15f0001ull)
 #define Q_MODE ((VkDisplayModeKHR)(uintptr_t)0x51d2d15f0002ull)
 static const char *Q_NAME = "Valve Corporation Quest 2";
@@ -234,7 +235,7 @@ static void *vblank_thread(void *arg)
 		volatile uint32_t *hd = 0; uint8_t *shm = shm_map(); if (shm) hd = (volatile uint32_t *)shm;
 		uint64_t sP = hd ? hd[10] : 0; if (!(sP > 5000000 && sP < 20000000)) sP = 0;
 		uint64_t fn = g_flip_ns;
-		if (fn && t >= fn && t - fn < 1000000000ull && envi("Q2VR_FLIPCLOCK", 1)) { vs = fn; P = sP ? sP : 11111111ull; s2 = 0; }
+		if (fn && t >= fn && t - fn < 1000000000ull && envi("Q2VR_FLIPCLOCK", 1)) { vs = fn; P = sP ? sP : g_panel_P; s2 = 0; }
 		else if (hd && sP) { uint64_t v2 = (uint64_t)hd[8] | (uint64_t)hd[9] << 32; if (v2 && t >= v2 && t - v2 < 200000000ull) { vs = v2; P = sP; s2 = 1; } }
 		if (vs) {
 			uint64_t mult = (period + P / 2) / P; if (mult < 1) mult = 1;
@@ -783,7 +784,7 @@ static void tw_pose_l(struct swapchain *c, uint32_t i, int kk)
 		// flip -> photons.  desk-371: by default the same photon time the render pose was predicted for (Q2VR_PHOTON_MS
 		// after the tick; a frame that keeps its timing flips at tick + vblead + 1 refresh), so an on-time frame with a
 		// steady head turn gets no correction and only what changed since the render is re-aimed (fixed 5 ms was 4 ms more)
-		{ long sd = (long)envi("Q2VR_PHOTON_MS", 20) * 1000000L - (long)g_vblead - 11111111L; if (sd < 0) sd = 0;
+		{ long sd = (long)envi("Q2VR_PHOTON_MS", 20) * 1000000L - (long)g_vblead - (long)g_panel_P; if (sd < 0) sd = 0;
 		  scan_ns = envi("Q2VR_TWSCAN_US", (int)(sd / 1000)) * 1000; }
 		qlog("timewarp: head-pose correction %s (render pose of the acquire tick %+d; photons = flip after present + %d us + %d us)",
 		     on ? "ON" : "off (Q2VR_TWPOSE=0)", tofs, gpu_ns / 1000, scan_ns / 1000);
@@ -797,7 +798,7 @@ static void tw_pose_l(struct swapchain *c, uint32_t i, int kk)
 	else if (!tw_newest(o)) nopose++;
 	else {
 		// the flip this frame gets: the first panel refresh after the warp is done (ticks run g_vblead ahead of refreshes)
-		uint64_t P = 11111111ull, ref = g_tick_ns + g_vblead, ready = now_ns() + (uint64_t)gpu_ns;
+		uint64_t P = g_panel_P, ref = g_tick_ns + g_vblead, ready = now_ns() + (uint64_t)gpu_ns;
 		uint64_t flip = ready > ref ? ref + ((ready - ref + P - 1) / P) * P : ref;
 		tw_predict(o, (double)(flip + (uint64_t)scan_ns) * 1e-9, qn);
 		qi[0] = qo[0]; qi[1] = -qo[1]; qi[2] = -qo[2]; qi[3] = -qo[3];
@@ -852,7 +853,7 @@ static int file_int(const char *path, int def)   // a small number from a settin
 static void *rewarp_thread(void *arg)
 {
 	struct swapchain *c = arg; struct dev *d = c->d;
-	const uint64_t P = 11111111ull, lead = (uint64_t)envi("Q2VR_TWLATE_US", 5000) * 1000ull;
+	const uint64_t P = g_panel_P, lead = (uint64_t)envi("Q2VR_TWLATE_US", 5000) * 1000ull;
 	uint64_t seen = c->presents, last = 0;
 	qlog("timewarp: late warp ON - %llu us before each refresh, the newest frame is warped again when the compositor missed it",
 	     (unsigned long long)(lead / 1000));
@@ -1643,7 +1644,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL q_QueuePresentKHR(VkQueue q, const VkPrese
 	for (uint32_t k = 0; k < pi->swapchainCount; k++) if (sc_of(pi->pSwapchains[k])) ours++;
 	if (!ours) { struct qlk_e *L = qlk(q, "present (not ours)"); VkResult r = d->QueuePresentKHR(q, pi); qulk(L); return r; }
 	{   uint64_t t = now_ns();
-		if (g_pi_last) { uint64_t r = (t - g_pi_last + 5555555ull) / 11111111ull; g_pi_hist[r > 5 ? 5 : r]++; }
+		if (g_pi_last) { uint64_t r = (t - g_pi_last + g_panel_P / 2) / g_panel_P; g_pi_hist[r > 5 ? 5 : r]++; }
 		g_pi_last = t; if (g_tick_ns && t > g_tick_ns) { g_phase_sum += t - g_tick_ns; g_phase_n++; } }
 	VkResult res = VK_SUCCESS;
 	const VkPresentIdKHR *pid = 0;
@@ -2668,6 +2669,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL q_CreateInstance(const VkInstanceCreateInf
 	// desk-371: up to 20 ms (was 8 - a 10 ms setting silently ran as 8): the compositor's frame + our copy is done
 	// 17-20 ms after its tick under load, so the refresh it aims at must come later than tick + 19
 	g_vblead = (uint64_t)envi("Q2VR_VBLEAD_US", 0) * 1000ull; if (g_vblead > 20000000ull) g_vblead = 20000000ull;
+	{ int ph = envi("Q2VR_PANEL_HZ", 90); if (ph >= 50 && ph <= 144) g_panel_P = 1000000000ull / (uint64_t)ph; }
 	qlog("instance created (%d display extension(s) handled by the layer, display %ux%u @ %u Hz)", stripped, DW, DH, DHZ);
 	return VK_SUCCESS;
 }

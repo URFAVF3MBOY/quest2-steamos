@@ -2958,6 +2958,9 @@ case "$(cat /var/lib/q2/vrasync 2>/dev/null)" in 1) VASYNC=true;; 0) VASYNC=fals
 # desk-174: the compositor asked for 90 Hz ("Trying to match desired rate of 90Hz") but got our 45 Hz display mode;
 # tell it the rate we run at so its frame pacing targets the right vsync
 PREFHZ=$(cat /var/lib/q2/vrhz 2>/dev/null | tr -cd 0-9); PREFHZ=${PREFHZ:-90}
+# desk-377: 72 = the PANEL at 72 Hz (kernel q2-display-vtotal.patch: longer frame, same picture) - more GPU time per
+# frame (13.9 ms) for heavy scenes such as a 2D game's theater view.  Without that kernel switch: 90.
+[ "$PREFHZ" = 72 ] && [ ! -w /sys/kernel/q2display/vtotal ] && PREFHZ=90
 # desk-283: the big Steam dashboard took the compositor from 5.9 to 10.7 ms GPU: Steam drew its VR panels at the headset rate (90/s).
 # Stop that (echo 1 > /var/lib/q2/dashmatch = old) and draw overlays at low quality (/var/lib/q2/overlayq = 0 auto,1 low,2 med,3 high).
 # desk-302: back ON - Steam draws its VR panels at the headset rate again.  desk-283 turned it off when Steam's UI went
@@ -3096,12 +3099,20 @@ L "controller type: ${CTLTYPE:-oculus_touch (default)} ${CTLPROF}"
 IPDPOS=$(cat /var/lib/q2/ipdpos 2>/dev/null | tr -cd 123 | head -c 1); IPDPOS=${IPDPOS:-2}
 OLDLENS=$(cat /var/lib/q2/oldlens 2>/dev/null | tr -cd 01 | head -c 1); OLDLENS=${OLDLENS:-0}
 VRHZ=$(cat /var/lib/q2/vrhz 2>/dev/null | tr -cd 0-9); VRHZ=${VRHZ:-90}   # desk-178: 90 by default (holds 88-90 fps since the vsync fix)         # panel is 90 Hz: 45 = every frame shown twice
+# desk-377: vrhz 72 switches the panel itself to 72 Hz (frame length 6145 lines instead of 4916) for this VR session;
+# back to 90 Hz when SteamVR stops.  The layer gets the panel rate (its vsync grid), SteamVR and the driver VRHZ.
+PANELHZ=90; QVT=/sys/kernel/q2display/vtotal
+if [ "$VRHZ" = 72 ]; then
+  if [ -w $QVT ] && echo 6145 > $QVT; then PANELHZ=72; L "panel: 72 Hz (frame length $(cat $QVT) lines)"
+  else VRHZ=90; L "panel: 72 Hz asked for, but the kernel has no $QVT - staying at 90 Hz"; fi
+elif [ -w $QVT ] && [ "$(cat $QVT 2>/dev/null)" != 4916 ]; then echo 4916 > $QVT; fi
+export Q2VR_PANEL_HZ=$PANELHZ
 PDEF=22; [ -e /run/q2kms.ready ] && PDEF=25   # desk-371: zero-copy with the 13 ms vsync lead: tick -> on the panel measured 24 ms (desk-161 had 16)
 PHOTON=$(cat /var/lib/q2/photonms 2>/dev/null | tr -cd 0-9); PHOTON=${PHOTON:-$PDEF}   # desk-140: 16 -> 22 ms (layer copy + panel copy + scan-out measured ~20 ms); Ctrl+Alt+P cycles
 # real-time scheduling for the compositor (it asks for priority 80 and was refused) and for the panel copy
 mkdir -p /etc/security/limits.d; printf '%s - rtprio 95\n%s - nice -20\n' $U $U > /etc/security/limits.d/90-q2vr.conf
 for p in $(pgrep -x q2blit); do chrt -f -p 60 $p 2>/dev/null; done
-L "timing: SteamVR at $VRHZ Hz (panel 90 Hz), vsync-to-photons $PHOTON ms; q2blit: $(tail -n 3 /tmp/q2-blit.log 2>/dev/null | tr '\n' ' ' | cut -c1-120)"
+L "timing: SteamVR at $VRHZ Hz (panel $PANELHZ Hz), vsync-to-photons $PHOTON ms; q2blit: $(tail -n 3 /tmp/q2-blit.log 2>/dev/null | tr '\n' ' ' | cut -c1-120)"
 L "lens: Meta Quest 2 model, IPD slider position $IPDPOS (echo 1/2/3 > /var/lib/q2/ipdpos to change; old model: echo 1 > /var/lib/q2/oldlens)"
 L "starting vrserver for ${T}s (driver $D, ICD $ICD)"
 EYESWAP=$(cat /var/lib/q2/eyeswap 2>/dev/null | tr -cd 01 | head -c 1); EYESWAP=${EYESWAP:-0}
@@ -3247,6 +3258,7 @@ if [ -z "$STOPREQ" ] && [ "$T" -lt 60 ] && grep -a -q "Compositor exited unexpec
   exec env Q2VR_LEVEL=$NL "$0" "$ORIGT"
 fi
 [ "$T" -ge 60 ] && { [ "$LVL" -ge 2 ] && rm -f /var/lib/q2/vrlevel2 || echo $LVL > /var/lib/q2/vrlevel2; }   # this level ran: remember it (level 2 is never kept)
+[ "$PANELHZ" = 72 ] && [ -w "$QVT" ] && echo 4916 > "$QVT" && L "panel: back to 90 Hz"   # desk-377
 echo stopped > $S/state; rm -f $S/pid $S/stop
 L "done"
 Q2VRT_EOF
