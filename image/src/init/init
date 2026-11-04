@@ -3107,25 +3107,17 @@ VRHZ=$(cat /var/lib/q2/vrhz 2>/dev/null | tr -cd 0-9); VRHZ=${VRHZ:-90}   # desk
 # desk-377: vrhz 72 switches the panel itself to 72 Hz (frame length 6144 lines instead of 4916, Meta's 72 Hz JDI
 # entry) for this VR session; back to 90 Hz when SteamVR stops.  The layer gets the panel rate (its vsync grid),
 # SteamVR and the driver VRHZ.
-# desk-378: the panel showed garbage.  desk-380: cause found - the INTF and the DSI controllers switched at different
-# frames (the sysfs write raced the display commits), so their frame starts drifted apart for good (until a reboot).
-# The kernel now applies the change inside the next display commit, like Meta's own dfps.  After the switch the panel
-# gets Meta's backlight strobe timing (B9) for the new rate through the connector's tx_cmd (flags 0x08 = last
-# command, or the DSI driver only queues it).
-PANELHZ=90; QVT=/sys/kernel/q2display/vtotal
-q2_panel_b9() {   # $1 = 72|90
-  local X=/sys/kernel/debug/dri/0/DSI-1/tx_cmd B9
-  [ -w $X ] || return 0
-  if [ "$1" = 72 ]; then B9="0x15 0x97 0x02 0x66 0x00 0x00 0x00 0x00 0x16 0x59 0x02 0x66"
-  else B9="0x11 0x5a 0x01 0xec 0x00 0x00 0x00 0x00 0x03 0x21 0x01 0xec"; fi
-  echo "0x23 0x01 0x00 0x08 0x00 0x00 0x02 0xb0 0x04" > $X
-  echo "0x29 0x01 0x00 0x08 0x00 0x00 0x0d 0xb9 $B9" > $X
-  echo "0x23 0x01 0x00 0x08 0x00 0x00 0x02 0xb0 0x03" > $X
-}
+# desk-378..381: switching by writing the frame length (kernel switch /sys/kernel/q2display/vtotal) put the display
+# interface into an underrun on every frame (with DSC that scrambles the whole picture) - the driver kept working from
+# the dtbo's 144 Hz panel entry while the hardware ran the bootloader's 90 Hz timing.
+# desk-382: the kernel now uses Meta's JDI 90 Hz panel entry (msm_drm.q2_dsi_display0 in the boot image) - the timing
+# the bootloader really runs - and the rate changes like on Quest OS: a DRM mode with another refresh rate from the
+# driver's own list, asked of q2kmsd (q2kms hz N); Meta's dynamic-fps code does the switch and the backlight strobe.
+PANELHZ=90
 if [ "$VRHZ" = 72 ]; then
-  if [ -w $QVT ] && echo 6144 > $QVT; then PANELHZ=72; q2_panel_b9 72; L "panel: 72 Hz (frame length $(cat $QVT) lines)"
-  else VRHZ=90; L "panel: 72 Hz asked for, but the kernel could not switch ($QVT) - staying at 90 Hz"; fi
-elif [ -w $QVT ] && [ "$(cat $QVT 2>/dev/null)" != 4916 ]; then echo 4916 > $QVT; q2_panel_b9 90; fi
+  if R=$(q2kms hz 72 2>&1); then PANELHZ=72; L "panel: 72 Hz ($R)"
+  else VRHZ=90; L "panel: 72 Hz asked for, but q2kmsd could not switch ($R) - staying at 90 Hz"; fi
+elif [ -S /run/q2kms-ctl.sock ]; then q2kms hz 90 >/dev/null 2>&1; fi
 export Q2VR_PANEL_HZ=$PANELHZ
 PDEF=22; [ -e /run/q2kms.ready ] && { PDEF=27; [ "$PANELHZ" = 72 ] && PDEF=29; }   # desk-371: zero-copy with the 13 ms vsync lead: tick -> on the panel 24 ms at 90 Hz; desk-378: one refresh is 13.9 ms at 72 Hz; desk-379: 15 ms lead -> 26 ms -> 27
 PHOTON=$(cat /var/lib/q2/photonms 2>/dev/null | tr -cd 0-9); PHOTON=${PHOTON:-$PDEF}   # desk-140: 16 -> 22 ms (layer copy + panel copy + scan-out measured ~20 ms); Ctrl+Alt+P cycles
@@ -3278,7 +3270,7 @@ if [ -z "$STOPREQ" ] && [ "$T" -lt 60 ] && grep -a -q "Compositor exited unexpec
   exec env Q2VR_LEVEL=$NL "$0" "$ORIGT"
 fi
 [ "$T" -ge 60 ] && { [ "$LVL" -ge 2 ] && rm -f /var/lib/q2/vrlevel2 || echo $LVL > /var/lib/q2/vrlevel2; }   # this level ran: remember it (level 2 is never kept)
-[ "$PANELHZ" = 72 ] && [ -w "$QVT" ] && echo 4916 > "$QVT" && q2_panel_b9 90 && L "panel: back to 90 Hz"   # desk-377, desk-380
+[ "$PANELHZ" = 72 ] && q2kms hz 90 >/dev/null 2>&1 && L "panel: back to 90 Hz"   # desk-377, desk-382
 echo stopped > $S/state; rm -f $S/pid $S/stop
 L "done"
 Q2VRT_EOF
@@ -4907,6 +4899,32 @@ def serve(fd, info):
     try: os.unlink(vsp)
     except OSError: pass
     vsrv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); vsrv.bind(vsp); os.chmod(vsp, 0o666); vsrv.listen(4)
+    # desk-382: refresh rate the way Quest OS changes it - a DRM mode of the same size with another refresh rate, from
+    # the driver's own list (the panel entry's dynamic-fps modes).  Meta's driver then does the whole switch itself
+    # (seamless dynamic fps: DSI + interface timing in one commit, its double-buffer sequence, backlight strobe).
+    # Protocol on /run/q2kms-ctl.sock (root only):  "HZ n\n"  ->  "OK n\n" | "ERR why\n"
+    csp = '/run/q2kms-ctl.sock'
+    try: os.unlink(csp)
+    except OSError: pass
+    csrv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); csrv.bind(csp); os.chmod(csp, 0o600); csrv.listen(2)
+    crtc_props = getprops(fd, crtc, 0xcccccccc)
+    hz_req = None   # (client socket, refresh) waiting for a moment with no flip in flight
+    def set_hz(hz):
+        idx = next((i for i, x in enumerate(con['modes']) if x['vrefresh'] == hz and x['hdisplay'] == W and x['vdisplay'] == H), None)
+        if idx is None: return 'ERR no %d Hz mode' % hz
+        if 'MODE_ID' not in crtc_props: return 'ERR no MODE_ID property'
+        raw = con['modes_raw'][idx * 68:idx * 68 + 68]
+        rb = ctypes.create_string_buffer(raw, 68)
+        # DRM_IOCTL_MODE_CREATEPROPBLOB 0xBD: data ptr, length, blob_id
+        blob = struct.unpack_from('<I', ioctl(fd, IOWR(0xBD, 16), struct.pack('<QII', ctypes.addressof(rb), 68, 0)), 12)[0]
+        t0 = time.time()
+        try:
+            atomic(fd, {crtc: [(crtc_props['MODE_ID'][0], blob)]}, 0x0400)   # ALLOW_MODESET, blocking
+        except OSError as e:
+            return 'ERR commit: %s' % e
+        m_ = con['modes'][idx]
+        P('kmsd: refresh rate %d Hz (mode %s, vtotal %d) in %.0f ms' % (hz, m_['name'], m_['vtotal'], 1000 * (time.time() - t0))); save()
+        return 'OK %d' % hz
     save()
     vcl = None; vbuf = b''; pending = None; queued = None; onscreen = None
     vr = None   # dict(pair, w, h, fbs, first)
@@ -4981,8 +4999,21 @@ def serve(fd, info):
         P('kmsd: ' + kind + ' display connected: %dx%d on planes %d+%d%s (zero-copy page flips)' % (w, h, pair[0], pair[1], ', scaled up by the display engine' if (w, h) != (W, H) else '')); save()
     while True:   # never exit: the buffers (and the picture) live as long as this process holds them
         try:
-            rl = [srv, vsrv, fd] + ([vcl] if vcl else [])
-            rd, _, _ = select.select(rl, [], [], 5.0)
+            rl = [srv, vsrv, csrv, fd] + ([vcl] if vcl else [])
+            rd, _, _ = select.select(rl, [], [], 0.05 if hz_req else 5.0)
+            if csrv in rd:
+                c, _ = csrv.accept(); c.settimeout(1.0)
+                try:
+                    t = c.recv(64).split()
+                    if len(t) == 2 and t[0] == b'HZ' and t[1].isdigit():
+                        if hz_req:
+                            try: hz_req[0].sendall(b'ERR replaced\n'); hz_req[0].close()
+                            except OSError: pass
+                        hz_req = (c, int(t[1]))
+                    else:
+                        c.sendall(b'ERR usage: HZ n\n'); c.close()
+                except (OSError, socket.timeout):
+                    c.close()
             if srv in rd:
                 c, _ = srv.accept()
                 try: socket.send_fds(c, [msg], [fd])
@@ -5026,6 +5057,11 @@ def serve(fd, info):
                                     try: vcl.sendall(('S %d\n' % queued).encode())
                                     except OSError: pass
                                 queued = k
+            if hz_req and pending is None:
+                c, hz = hz_req; hz_req = None
+                r_ = set_hz(hz)
+                try: c.sendall((r_ + '\n').encode()); c.close()
+                except OSError: pass
             if vcl and time.time() - tstat > 60:
                 P('kmsd: VR flips %d in %.0f s (%.1f/s), %d replaced while waiting' % (nflip, time.time() - tstat, nflip / (time.time() - tstat), nskip))
                 save(); nflip = 0; nskip = 0; tstat = time.time()
@@ -5036,6 +5072,15 @@ def serve(fd, info):
             P('kmsd: loop: %s' % traceback.format_exc()[-600:]); save(); time.sleep(0.5)
 
 def main():
+    if len(sys.argv) > 2 and sys.argv[1] == 'hz':   # desk-382: q2kms hz 72|90 - ask q2kmsd for that refresh rate
+        import socket
+        c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); c.settimeout(5.0)
+        try:
+            c.connect('/run/q2kms-ctl.sock'); c.sendall(('HZ %d\n' % int(sys.argv[2])).encode())
+            r = c.recv(128).decode().strip()
+        except (OSError, ValueError) as e:
+            r = 'ERR %s' % e
+        print(r); sys.exit(0 if r.startswith('OK') else 1)
     fd = None
     for _ in range(60 if len(sys.argv) > 1 and sys.argv[1] == 'serve' else 1):
         try:
