@@ -38,9 +38,15 @@ static struct msm_gem_submit *submit_create(struct drm_device *dev,
 	if (sz > SIZE_MAX)
 		return NULL;
 
-	submit = kmalloc(sz, GFP_KERNEL | __GFP_NOWARN | __GFP_NORETRY);
-	if (!submit)
+	/* q2: kvmalloc - one physically contiguous block was required before (kmalloc + __GFP_NORETRY), and with the
+	 * compositor's GMEM (tiled) submits - many BOs and IBs - it was refused once memory had fragmented: -ENOMEM from
+	 * the submit ioctl = "device lost" in Turnip, and SteamVR crashed.  Falls back to vmalloc pages when needed. */
+	submit = kvmalloc(sz, GFP_KERNEL);
+	if (!submit) {
+		pr_warn_ratelimited("q2msm: submit of %u BOs + %u cmds (%llu bytes) - no memory\n", nr_bos, nr_cmds,
+				    (unsigned long long)sz);
 		return NULL;
+	}
 
 	submit->dev = dev;
 	submit->aspace = queue->ctx->aspace;
@@ -70,7 +76,7 @@ void msm_gem_submit_free(struct msm_gem_submit *submit)
 	put_pid(submit->pid);
 	msm_submitqueue_put(submit->queue);
 
-	kfree(submit);
+	kvfree(submit);   /* kvmalloc'ed (submit_create); callers hold only struct_mutex, so vfree may sleep */
 }
 
 static int submit_lookup_objects(struct msm_gem_submit *submit,
