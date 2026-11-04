@@ -3110,7 +3110,7 @@ if [ "$VRHZ" = 72 ]; then
   else VRHZ=90; L "panel: 72 Hz asked for, but the kernel has no $QVT - staying at 90 Hz"; fi
 elif [ -w $QVT ] && [ "$(cat $QVT 2>/dev/null)" != 4916 ]; then echo 4916 > $QVT; fi
 export Q2VR_PANEL_HZ=$PANELHZ
-PDEF=22; [ -e /run/q2kms.ready ] && { PDEF=25; [ "$PANELHZ" = 72 ] && PDEF=27; }   # desk-371: zero-copy with the 13 ms vsync lead: tick -> on the panel 24 ms at 90 Hz; desk-378: one refresh is 13.9 ms at 72 Hz -> ~27
+PDEF=22; [ -e /run/q2kms.ready ] && { PDEF=27; [ "$PANELHZ" = 72 ] && PDEF=29; }   # desk-371: zero-copy with the 13 ms vsync lead: tick -> on the panel 24 ms at 90 Hz; desk-378: one refresh is 13.9 ms at 72 Hz; desk-379: 15 ms lead -> 26 ms -> 27
 PHOTON=$(cat /var/lib/q2/photonms 2>/dev/null | tr -cd 0-9); PHOTON=${PHOTON:-$PDEF}   # desk-140: 16 -> 22 ms (layer copy + panel copy + scan-out measured ~20 ms); Ctrl+Alt+P cycles
 # real-time scheduling for the compositor (it asks for priority 80 and was refused) and for the panel copy
 mkdir -p /etc/security/limits.d; printf '%s - rtprio 95\n%s - nice -20\n' $U $U > /etc/security/limits.d/90-q2vr.conf
@@ -3177,7 +3177,7 @@ export VRCOMPOSITOR_TU_DEBUG="$CTU"
 # UI, the dashboard), so the refresh it aims at comes at tick + 24 ms with ~7 ms to spare; photonms defaults to 25 to
 # match.  4000 gave 26 ms with every frame ~2 ms late; 8000 (the old cap; 10000 silently ran as 8000) left 1.7 ms and
 # up to a third of the frames missed their refresh while the headset was in use.
-export Q2VR_VBLEAD_US=$(cat /var/lib/q2/vblead 2>/dev/null | tr -cd 0-9 | grep . || echo 13000)
+export Q2VR_VBLEAD_US=$(cat /var/lib/q2/vblead 2>/dev/null | tr -cd 0-9 | grep . || echo 15000)   # desk-379: 13 -> 15 ms: with Steam's panels open the compositor needs ~7.6 ms GPU after a ~6 ms wait and missed ~40 % of refreshes at 13 ms; 90.0/s with 0 misses at 15
 # desk-371: drop a frame after N in a row queued behind an unfinished flip (layer); 0 (default) = never - with the lead
 # above the queue no longer builds up, and every drop was a visible hitch
 export Q2VR_KMSTRIM=$(cat /var/lib/q2/kmstrim 2>/dev/null | tr -cd 0-9 | grep . || echo 0)

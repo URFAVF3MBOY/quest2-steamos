@@ -60,6 +60,12 @@ Settings files also on the unlocked headset now: `/var/lib/q2/tuprio` = `0,4,8,1
 
 Latest build: `image/out/boot_steamos_desk348.img` (and `_test` with `q2_test=1`) = desk-330 image + patched DTB (`image/out/boot334.dtb`) + one ramdisk layer: init348, the Bluetooth kernel (stay-awake build) and its Wi-Fi/audio modules (`image/out/mkclean.py` builds the clean base).
 
+## desk-378 … 379
+
+- **GPU userspace:** `patches/turnip-q2-querysleep.py` (query result waits sleep instead of busy-polling; the compositor's render thread spun ~45 % of a core in it). Needs the new `q2gpu.tar.gz`.
+- **Display defaults (init):** `vblead` 15000 µs and `photonms` 27 (13000 missed ~40 % of refreshes with Steam's library panel open; 15000: 90.0/s, all frames 26 ms tick → panel).
+- **Kernel:** the vtotal switch also sets the DSI controllers' frame length (72 Hz still garbage); going back to 4916 is written twice.
+
 ## desk-367 … 377
 
 - **Display defaults (init):** `vblead` 13000 µs and `photonms` 25 (measured: vsync tick → on the panel 24 ms; with 4000 frames landed 26–37 ms after the tick against 20 ms predicted, and 8000 µs was the layer's old cap); `tw` 0 (transfer copy); `kmstrim` 0; compositor output height a multiple of 4.

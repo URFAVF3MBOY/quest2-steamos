@@ -70,7 +70,7 @@ Its kernel and `init` are replaced during the build.
 | Wi-Fi driver | `qcacld-3.0` in the same kernel tree | same workflow |
 | Sound modules | `techpack/audio` in the same kernel tree | same workflow |
 | GPU kernel driver (`q2msm.ko`) | `kernel/q2msm/` (mainline drm/msm, adapted) | `build-q2msm` |
-| GPU userspace (`/opt/q2gpu`) | Mesa `4e1e46921e` + `patches/turnip-q2-drm.py` + `patches/turnip-q2-async.py` + `patches/turnip-q2-flushpass.py` | `build-q2gpu` |
+| GPU userspace (`/opt/q2gpu`) | Mesa `4e1e46921e` + `patches/turnip-q2-drm.py` + `patches/turnip-q2-async.py` + `patches/turnip-q2-flushpass.py` + `patches/turnip-q2-querysleep.py` | `build-q2gpu` |
 | Boot script | `image/src/init/init` | copied into the boot image by `build.sh` |
 | SteamVR driver | `image/src/hmd/driver_q2hmd.cpp` | `build-q2tools`, or `REBUILD=1 sh build.sh` |
 | SteamVR display layer | `image/src/layer/q2vrdisplay.c` + the compute shader `q2warp.comp` | `build-q2layer`; copy the result to `image/prebuilt/` |

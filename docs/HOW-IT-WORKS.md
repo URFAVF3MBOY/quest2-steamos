@@ -50,6 +50,7 @@ Everything draws on the Adreno 650 through a patched Mesa in `/opt/q2gpu`: Turni
 - `patches/turnip-q2-drm.py` pairs Turnip with the display's DRM device (`card0`). With that, the normal Linux graphics stack works: GBM, EGL and GLX run through zink or freedreno, and gamescope and Xwayland can share buffers with the GPU.
 - `patches/turnip-q2-async.py` adds a separate compute queue and four GPU priority levels. SteamVR's compositor gets the high-priority ring. Before this, it waited behind Steam's interface and dropped about a third of its frames.
 - `patches/turnip-q2-flushpass.py` adds `TU_DEBUG=flushpass`: a full GPU cache flush at the start of every render pass. That removes the black blocks in the right eye (stale data in the second eye's pass) at no measurable cost.
+- `patches/turnip-q2-querysleep.py`: waiting for query results (the compositor reads its GPU timestamps every frame) sleeps in 100 µs steps instead of busy-polling. The compositor's render thread went from about 65 % of a big core to about 20 %.
 
 The compositor renders without tiling (`nobin`): tiled rendering was measured slower for its work (OneShot's theater view 14.3 ms per frame instead of 12.0).
 

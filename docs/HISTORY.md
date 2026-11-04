@@ -28,3 +28,4 @@ Every boot image has a build number (`desk-NNN`). The boot script's comments are
 | 371        | vsync-tick-to-panel timing measured (frames landed 26–37 ms after the tick against 20 ms predicted); `vblead` 13 ms + `photonms` 25 ms                                             |
 | 372–376   | SSH over Wi-Fi (opt-in); direct scanout (no copy per frame); one battery in Steam; `udisksd` off the internal storage; Quest 1 controller models; `q2msm` submits no longer fail on fragmented memory |
 | 377        | 72 Hz panel mode by frame length (kernel switch `/sys/kernel/q2display/vtotal`), for heavy 2D-game theater scenes                                                                    |
+| 378–379   | 72 Hz with the DSI controllers' frame length too: still garbage on the panel. Turnip query waits sleep instead of spinning (compositor render thread 65 % → 20 % of a core); `vblead` 15 ms + `photonms` 27 ms (90 fps with Steam's panels open) |

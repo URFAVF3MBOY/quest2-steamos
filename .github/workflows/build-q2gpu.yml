@@ -2,7 +2,8 @@ name: build-q2gpu
 
 # The Quest 2 GPU stack on KGSL ("custom driver route"): Mesa with Turnip on KGSL paired with the display's DRM node
 # (msm_drm), so GBM / EGL / GLX / DRI3 / Wayland dma-buf all run on the GPU through zink -> Turnip -> KGSL.
-# Patches: patches/turnip-q2-async.py (real compute queue + KGSL priorities, as in q2tu) and patches/turnip-q2-drm.py.
+# Patches: patches/turnip-q2-async.py (real compute queue + KGSL priorities, as in q2tu), patches/turnip-q2-drm.py,
+# turnip-q2-flushpass.py (TU_DEBUG=flushpass) and turnip-q2-querysleep.py (query waits sleep instead of spinning).
 # Needs the kernel from build-steamos with patches/q2-dmabuf-sync-file.patch for implicit sync between processes.
 # Also builds tools/q2gputest.c (on-headset check of the whole chain; changes nothing on the display).
 # With the q2msm kernel driver: freedreno (native Adreno GL) too - msm_dri.so for GBM / Xwayland glamor / GLX.
