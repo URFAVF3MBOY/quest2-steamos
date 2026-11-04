@@ -17,23 +17,19 @@ The plan:
 
 **What it still needs:** root access on Quest OS, to load a kernel module. On a locked headset that means a root method for the firmware version on the headset. Kexec removes the need to unlock the bootloader, not the need for root.
 
-## 2. Sound
-
-The Quest 2 uses Qualcomm's audio DSP (ADSP) for its speakers and microphones. In the kernel, no sound card registers ("ALSA device list:" is empty). The parts are Meta's audio drivers in the kernel tree, the DSP firmware from the vendor partition, and a mixer setup taken from Android's `mixer_paths.xml`. Until then, PipeWire has no output, and some games refuse to start. Adding a silent output (the `nonullsink` switch) didn't work yet, because PipeWire's pulse layer refused it ("Not supported").
-
-## 3. A 72 Hz panel mode
+## 2. A 72 Hz panel mode
 
 The theater screen of a 2D game makes SteamVR's compositor need about 12 ms of GPU time per frame, more than the 11.1 ms of a 90 Hz frame, so it runs at about 67 fps with judder. At 72 Hz a frame has 13.9 ms. The kernel switch `/sys/kernel/q2display/vtotal` already runs the display engine's timing at 72.0 Hz by lengthening the vertical blanking (6145 instead of 4916 lines), and the scanout buffers stay correct, but the panel itself shows garbage (washed out, streaks, vertical bands). The panel probably needs its own 72 Hz settings sent over DSI as well (the Android display driver's dynamic-FPS command sets). Until that works, 90 Hz stays.
 
-## 4. A smoother Steam interface
+## 3. A smoother Steam interface
 
 Steam's VR panels still stutter when Steam is busy. The next things to look at are the web interface's GPU process, and whole-panel redraws when only part of the panel changes.
 
-## 5. Power menu, sleep and wake
+## 4. Sleep and wake
 
-The power button's short and long presses reach Steam (`steam://shortpowerpress`), but Steam's power menu doesn't open. Steam probably expects something from Valve's session manager that isn't running here. Sleep is turned off, because the panel and the GPU don't come back yet.
+Sleep is turned off, because the panel and the GPU don't come back yet. The power menu's Shut down and Restart work.
 
-## 6. VRChat and Android apps
+## 5. VRChat and Android apps
 
 Lepton (Valve's Android container) starts Android, with networking and the GPU driver. VRChat doesn't run yet.
 
