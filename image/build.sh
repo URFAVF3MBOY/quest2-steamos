@@ -85,9 +85,12 @@ python3 tools/flatten_boot.py --in out/layered.img --out out/flat.img
 # desk-334: stock 587 MHz GPU level in the device tree
 python3 tools/patch_dtb.py --in out/flat.img --out out/dtb.img
 # kernel command line: q2msm instead of KGSL (KGSL never probes), quiet console, VR starts by itself; desk-382: the
-# display driver uses Meta's JDI 90 Hz panel entry (the timing the bootloader really runs) instead of the dtbo's 144 Hz one
+# display driver uses Meta's JDI 90 Hz panel entry (the timing the bootloader really runs) instead of the dtbo's 144 Hz one.
+# The bootloader ignores the header's extra command-line field, so everything must fit the main 512 bytes: the
+# kernel hash-table sizes are dropped for room (the kernel sizes those tables from the RAM by itself).
 python3 tools/rebase_boot.py --base out/dtb.img --ramdisk-from out/dtb.img --out $OUT \
   --cmdline-drop q2_vrauto --cmdline-drop kgsl.force_lazy_gpumem --cmdline-set loglevel=4 \
+  --cmdline-drop dhash_entries --cmdline-drop ihash_entries --cmdline-drop mhash_entries --cmdline-drop mphash_entries \
   --cmdline-add initcall_blacklist=kgsl_3d_init --cmdline-add msm_drm.q2_dsi_display0=qcom,mdss_dsi_jdi_4k_90Hz_dsc_video: $USBROOT
 rm -f out/layered.img out/flat.img out/dtb.img
 SIZE=$(stat -c %s $OUT)
