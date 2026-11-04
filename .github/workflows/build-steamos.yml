@@ -113,6 +113,9 @@ jobs:
           # instead of oopsing in qca_setup (desk-330: NULL dereference at qca_setup+0x3c, so hci0 never came up)
           git apply --check ../patches/q2-bt-hci-qca-ldisc.patch
           git apply ../patches/q2-bt-hci-qca-ldisc.patch; echo "applied q2-bt-hci-qca-ldisc.patch"
+          # panel refresh by frame length (/sys/kernel/q2display/vtotal: 4916 lines = 90 Hz, 6145 = 72 Hz) - desk-377
+          git apply --check ../patches/q2-display-vtotal.patch
+          git apply ../patches/q2-display-vtotal.patch; echo "applied q2-display-vtotal.patch"
 
       - name: Configure kernel
         shell: bash
