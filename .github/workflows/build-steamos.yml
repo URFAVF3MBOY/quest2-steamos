@@ -50,8 +50,13 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dir::Cache::archives="$HOME/apt-cache" \
             build-essential bc bison flex libssl-dev libelf-dev \
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu git curl cpio rsync kmod \
-            device-tree-compiler python3 dwarves zip file \
-            qemu-user-static binfmt-support
+            device-tree-compiler python3 dwarves zip file binfmt-support
+          # arm64 emulation for the initramfs steps: newer Ubuntu runners ship the static build as "qemu-user"
+          # ("qemu-user-static" has no installation candidate there any more)
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dir::Cache::archives="$HOME/apt-cache" qemu-user-static \
+            || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dir::Cache::archives="$HOME/apt-cache" qemu-user qemu-user-binfmt \
+            || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dir::Cache::archives="$HOME/apt-cache" qemu-user
+          ls /usr/bin/qemu-aarch64* 2>/dev/null
           sudo chown -R "$USER" ~/apt-cache || true
 
       - name: Fetch Meta Quest 2 kernel source
