@@ -52,6 +52,7 @@ jobs:
           python3 patches/turnip-q2-async.py mesa
           python3 patches/turnip-q2-drm.py mesa
           python3 patches/turnip-q2-flushpass.py mesa
+          python3 patches/turnip-q2-querysleep.py mesa
           cd mesa && git diff --stat && git diff > "$GITHUB_WORKSPACE/q2gpu-mesa.diff"
 
       - name: Configure
