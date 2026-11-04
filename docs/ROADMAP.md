@@ -6,7 +6,7 @@ Roughly in the order they are planned.
 
 **Goal:** run SteamOS on a Quest 2 **without unlocking the bootloader**.
 
-Kexec lets a running Linux kernel load and start another kernel directly, without going through the bootloader. [Quest-KeXec](https://github.com/machachu56/quest-kexec-q2) does this for Meta headsets. It's a kernel module, based on [kexec-at-home](https://github.com/provide-salad/kexec-at-home), that loads into the running Quest OS kernel and boots a custom kernel and initramfs from there. So far it has only been developed and tested on the Quest Pro.
+Kexec lets a running Linux kernel load and start another kernel directly, without going through the bootloader: a kernel module loaded into the running Quest OS kernel boots a custom kernel and initramfs from there.
 
 The plan:
 

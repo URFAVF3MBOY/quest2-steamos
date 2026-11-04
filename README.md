@@ -92,9 +92,8 @@ More detail is in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 - Meta's [Quest 2 kernel source](https://github.com/facebookincubator/oculus-linux-kernel) (GPL-2.0).
 - The Linux kernel's [drm/msm](https://gitlab.freedesktop.org/drm/msm) GPU driver (GPL-2.0), the base of `kernel/q2msm`.
-- [Mesa](https://mesa3d.org) (Turnip, freedreno and zink), [Wine and Proton](https://github.com/ValveSoftware/Proton), [FEX-Emu](https://fex-emu.com), [gamescope](https://github.com/ValveSoftware/gamescope).
-- [Quest-KeXec](https://github.com/machachu56/quest-kexec-q2) and [kexec-at-home](https://github.com/provide-salad/kexec-at-home), which the kexec plans build on.
-- cabextract and libmspack (LGPL-2.1), musl libc (MIT), fuse-overlayfs (GPL-3.0).
+- [Mesa](https://mesa3d.org) (Turnip, freedreno and zink; MIT), built for the boot image.
+- cabextract and libmspack (LGPL-2.1), musl libc (MIT), fuse-overlayfs (GPL-3.0), shipped as prebuilt binaries.
 
 SteamOS, SteamVR, Steam and Meta's tracking software belong to Valve and Meta. **None of them are in this repository.** SteamOS is downloaded from Valve's servers, and the tracking software is read from the headset's own partitions.
 
