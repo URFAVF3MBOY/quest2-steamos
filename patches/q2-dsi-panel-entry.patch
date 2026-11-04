@@ -16,13 +16,12 @@
  static char dsi_display_secondary[MAX_CMDLINE_PARAM_LEN];
  static struct dsi_display_boot_param boot_displays[MAX_DSI_ACTIVE_DISPLAY] = {
  	{.boot_param = dsi_display_primary},
-@@ -2236,6 +2245,11 @@
+@@ -2236,6 +2245,10 @@
  	char disp_buf[MAX_CMDLINE_PARAM_LEN] = {'\0'};
  	int i, j;
  
 +	if (q2_dsi_display0[0]) {   /* q2 (desk-382) */
-+		pr_info("q2: panel entry %s (bootloader said %s)
-+", q2_dsi_display0, dsi_display_primary);
++		pr_info("q2: panel entry %s (bootloader said %s)\n", q2_dsi_display0, dsi_display_primary);
 +		strlcpy(dsi_display_primary, q2_dsi_display0, MAX_CMDLINE_PARAM_LEN);
 +	}
  	for (i = 0; i < MAX_DSI_ACTIVE_DISPLAY; i++) {
