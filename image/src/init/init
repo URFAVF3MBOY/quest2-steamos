@@ -3119,7 +3119,7 @@ if [ "$VRHZ" = 72 ]; then
   else VRHZ=90; L "panel: 72 Hz asked for, but q2kmsd could not switch ($R) - staying at 90 Hz"; fi
 elif [ -S /run/q2kms-ctl.sock ]; then q2kms hz 90 >/dev/null 2>&1; fi
 export Q2VR_PANEL_HZ=$PANELHZ
-PDEF=22; [ -e /run/q2kms.ready ] && { PDEF=27; [ "$PANELHZ" = 72 ] && PDEF=29; }   # desk-371: zero-copy with the 13 ms vsync lead: tick -> on the panel 24 ms at 90 Hz; desk-378: one refresh is 13.9 ms at 72 Hz; desk-379: 15 ms lead -> 26 ms -> 27
+PDEF=22; [ -e /run/q2kms.ready ] && { PDEF=27; [ "$PANELHZ" = 72 ] && PDEF=32; }   # desk-371: zero-copy with the 13 ms vsync lead: tick -> on the panel 24 ms at 90 Hz; desk-378: one refresh is 13.9 ms at 72 Hz; desk-379: 15 ms lead -> 26 ms -> 27; desk-382: 72 Hz measured 31 ms -> 32
 PHOTON=$(cat /var/lib/q2/photonms 2>/dev/null | tr -cd 0-9); PHOTON=${PHOTON:-$PDEF}   # desk-140: 16 -> 22 ms (layer copy + panel copy + scan-out measured ~20 ms); Ctrl+Alt+P cycles
 # real-time scheduling for the compositor (it asks for priority 80 and was refused) and for the panel copy
 mkdir -p /etc/security/limits.d; printf '%s - rtprio 95\n%s - nice -20\n' $U $U > /etc/security/limits.d/90-q2vr.conf
