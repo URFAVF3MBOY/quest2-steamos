@@ -15,6 +15,10 @@ on:
       mesa_ref:
         description: "Mesa commit/branch/tag (gitlab.freedesktop.org/mesa/mesa); patches were checked against 4e1e46921e"
         default: "4e1e46921e19f071437d67caaeaa0aa91da8a536"
+      debug:
+        description: "Debug build: symbols kept, Mesa asserts on (artifact q2gpu-aarch64-debug) - for crash backtraces"
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -53,7 +57,9 @@ jobs:
       - name: Configure
         working-directory: mesa
         run: |
-          meson setup build --prefix=/opt/q2gpu --libdir=lib -Dbuildtype=release -Db_ndebug=true \
+          BT="-Dbuildtype=release -Db_ndebug=true"
+          [ "${{ github.event.inputs.debug }}" = true ] && BT="-Dbuildtype=debugoptimized -Db_ndebug=false"
+          meson setup build --prefix=/opt/q2gpu --libdir=lib $BT \
             -Dvulkan-drivers=freedreno -Dfreedreno-kmds=kgsl,msm -Dgallium-drivers=zink,freedreno -Dvulkan-layers= \
             -Dplatforms=x11,wayland -Dglx=dri -Degl=enabled -Dgbm=enabled -Dglvnd=enabled \
             -Dopengl=true -Dgles1=disabled -Dgles2=enabled \
@@ -69,7 +75,7 @@ jobs:
         run: |
           rm -rf "$GITHUB_WORKSPACE/stage"
           DESTDIR="$GITHUB_WORKSPACE/stage" ninja -C build install
-          find "$GITHUB_WORKSPACE/stage" -name '*.so*' -type f -exec strip --strip-unneeded {} \; 2>/dev/null || true
+          [ "${{ github.event.inputs.debug }}" = true ] || find "$GITHUB_WORKSPACE/stage" -name '*.so*' -type f -exec strip --strip-unneeded {} \; 2>/dev/null || true
           cp "$GITHUB_WORKSPACE/q2gpu-mesa.diff" "$GITHUB_WORKSPACE/stage/opt/q2gpu/"
           git rev-parse HEAD > "$GITHUB_WORKSPACE/stage/opt/q2gpu/mesa-commit.txt"
           find "$GITHUB_WORKSPACE/stage" | sort
@@ -103,6 +109,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: q2gpu-aarch64
+          name: q2gpu-aarch64${{ github.event.inputs.debug == 'true' && '-debug' || '' }}
           path: q2gpu.tar.gz
           retention-days: 30
