@@ -2411,25 +2411,30 @@ def kms_reconnect():
         return False
 
 # 3) self-test: full frame, check the lens border colour and the eye centres
-t0 = time.time()
-upload(0, 0, CW, CH); render_read(0, PH)
-e = glGetError()
-if e:
-    die('GL error 0x%x in the first frame' % e)
-tfull = time.time() - t0
+# desk-381: the source pixel is read BEFORE the upload (it was read after the ~400 ms first frame, so a desktop that
+# changed meanwhile - windows appearing at boot - failed the test and left the CPU warp running), and up to 3 tries.
 def px(r, c):
     return struct.unpack_from('<I', shm, 4096 + r * PPITCH + c * 4)[0]
 def cvt(v):
     v &= 0xffffff
     return 0xff000000 | (((v & 255) << 16 | (v & 0xff00) | (v >> 16)) if SWAP else v)
 bgv = cvt(BG)
-bad = [(r, c, hex(px(r, c))) for r, c in ((0, 0), (EW, 0), (EW - 1, PW - 1), (PH - 1, PW - 1)) if px(r, c) != bgv]
-srcpx = struct.unpack_from('<I', C.string_at(SRC + (CH // 2) * bpl + (CW // 2) * 4, 4))[0]
-centre = px(EW - 1 - CW // 2, CH // 2)
-diff = max(abs(((cvt(srcpx) >> s) & 255) - ((centre >> s) & 255)) for s in (0, 8, 16))
-log('self-test: first full frame %.0f ms, border %s, centre %08x vs source %08x' %
-    (tfull * 1000, 'ok' if not bad else 'WRONG %s' % bad, centre, cvt(srcpx)))
-if bad or diff > 80:
+for attempt in range(3):
+    srcpx = struct.unpack_from('<I', C.string_at(SRC + (CH // 2) * bpl + (CW // 2) * 4, 4))[0]
+    t0 = time.time()
+    upload(0, 0, CW, CH); render_read(0, PH)
+    e = glGetError()
+    if e:
+        die('GL error 0x%x in the first frame' % e)
+    tfull = time.time() - t0
+    bad = [(r, c, hex(px(r, c))) for r, c in ((0, 0), (EW, 0), (EW - 1, PW - 1), (PH - 1, PW - 1)) if px(r, c) != bgv]
+    centre = px(EW - 1 - CW // 2, CH // 2)
+    diff = max(abs(((cvt(srcpx) >> s) & 255) - ((centre >> s) & 255)) for s in (0, 8, 16))
+    log('self-test %d: first full frame %.0f ms, border %s, centre %08x vs source %08x' %
+        (attempt + 1, tfull * 1000, 'ok' if not bad else 'WRONG %s' % bad, centre, cvt(srcpx)))
+    if not bad and diff <= 80:
+        break
+else:
     die('self-test: output does not match')
 if tfull > 1.5:
     die('first frame too slow (%.0f ms)' % (tfull * 1000))
