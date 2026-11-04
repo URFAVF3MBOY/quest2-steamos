@@ -1,25 +1,34 @@
 --- a/techpack/display/msm/sde/sde_encoder.c
 +++ b/techpack/display/msm/sde/sde_encoder.c
-@@ -4502,6 +4502,136 @@
+@@ -4502,6 +4502,187 @@
  	}
  }
  
 +/*
 + * q2 (desk-377): panel refresh rate by frame length.  The Quest 2's video-mode panel keeps the bootloader's timing
 + * (continuous splash: 432 x 4916 lines = 90 Hz, of which 1231 are vertical front porch); a longer frame with the same
-+ * line time lowers the refresh rate (6145 lines = 72 Hz), the "VFP" kind of dynamic fps.  Written registers latch
-+ * only with an INTF flush through the CTL, as sde_encoder_set_lineptr_value() does it.
++ * line time lowers the refresh rate (6144 lines = 72 Hz, Meta's jdi_4k_dsc_video entry), the "VFP" kind of dynamic
++ * fps that Meta's 90 Hz panel entry enables (60-90 Hz).
 + * desk-378: the DSI controllers keep their own copy of the frame length (VIDEO_MODE_TOTAL) and send the panel its
-+ * frame structure from it - with only the INTF changed the panel got garbage.  Like the panel's own dynamic fps
-+ * ("dfps_immediate_porch_mode_vfp", dsi_ctrl_async_timing_update): timing double-buffer on, new vertical total,
-+ * TIMING_FLUSH - on every controller of the panel, then the INTF, so both latch at the same frame boundary.
++ * frame structure from it, so they change too.
++ * desk-380: the INTF and the DSI controllers must switch at the SAME frame boundary.  Written from sysfs, the INTF
++ * flush raced the display commits (it often took several writes) while the DSI latched at once: for those frames the
++ * two ran with different frame lengths, their frame starts drifted apart, and the panel showed garbage until a reboot
++ * (DSI FIFO errors).  Like Meta's own dfps (DSI timing + INTF timing in one commit, before its flush), the store now
++ * only records the request; _sde_encoder_trigger_flush() applies it in the next commit, under the encoder spinlock,
++ * right before that commit's CTL flush.
++ * desk-380: DSI commands in video mode go out at the DMA schedule line, which the driver computes from the panel
++ * entry it booted with (the 144 Hz one: back porch 7) - inside the real picture (back porch 20), where a command
++ * never goes out (tx_cmd "succeeded" but the DMA stayed busy).  The schedule line is moved to the first blanking line.
 + *   cat /sys/kernel/q2display/vtotal          current frame length in lines
-+ *   echo 6145 > /sys/kernel/q2display/vtotal  72 Hz (4916 = 90 Hz); the programmable fetch start moves along
++ *   echo 6144 > /sys/kernel/q2display/vtotal  72 Hz (4916 = 90 Hz); waits up to 200 ms for the next commit
 + */
 +#include <linux/kobject.h>
 +#include <linux/sysfs.h>
++#include <linux/wait.h>
 +#include "dsi_display.h"
 +#include "dsi_ctrl.h"
++#define Q2_DSI_VIDEO_MODE_ACTIVE_V	0x028
 +#define Q2_DSI_VIDEO_MODE_TOTAL		0x02C
 +#define Q2_DSI_TIMING_FLUSH		0x1E4
 +#define Q2_DSI_TIMING_DB_MODE		0x1E8
@@ -29,6 +38,75 @@
 +#define Q2_INTF_PROG_FETCH_START	0x170
 +static struct drm_encoder *q2_dsi_enc;
 +static DEFINE_MUTEX(q2_vtotal_lock);
++static DECLARE_WAIT_QUEUE_HEAD(q2_vtotal_wq);
++static u32 q2_vtotal_req;		/* lines requested, 0 = nothing pending; under the encoder spinlock */
++static bool q2_dma_line_fixed;
++
++static struct dsi_display *q2_phys_dsi(struct sde_encoder_phys *phys)
++{
++	if (!phys->connector || to_sde_connector(phys->connector)->connector_type != DRM_MODE_CONNECTOR_DSI)
++		return NULL;
++	return to_sde_connector(phys->connector)->display;
++}
++
++/* called from _sde_encoder_trigger_flush() with the encoder spinlock held, before the commit's flush */
++static void q2_vtotal_apply(struct sde_encoder_phys *phys)
++{
++	struct dsi_display *disp;
++	struct sde_hw_blk_reg_map *c;
++	u32 i, lines = q2_vtotal_req, hper, old, cfg, fetch, period, tot;
++
++	if (!phys->hw_intf || !phys->hw_ctl || !phys->ops.is_master || !phys->ops.is_master(phys))
++		return;
++	disp = q2_phys_dsi(phys);
++	if (disp && !q2_dma_line_fixed) {
++		for (i = 0; i < disp->ctrl_count; i++) {
++			struct dsi_ctrl *dc = disp->ctrl[i].ctrl;
++			struct dsi_mode_info *t;
++			u32 vend, base;
++
++			if (!dc || !dc->hw.base)
++				continue;
++			t = &dc->host_config.video_timing;
++			vend = readl_relaxed(dc->hw.base + Q2_DSI_VIDEO_MODE_ACTIVE_V) >> 16;  /* real last picture line + 1 */
++			base = t->v_back_porch + t->v_sync_width + t->v_active;
++			if (vend > base && vend < base + 1000) {
++				dc->host_config.u.video_engine.dma_sched_line = vend + 1 - base;
++				pr_info("q2display: DSI ctrl %u command line %u (was %u)\n", i, vend + 1, base + 1);
++			}
++		}
++		q2_dma_line_fixed = true;
++	}
++	if (!lines)
++		return;
++	q2_vtotal_req = 0;
++	c = &phys->hw_intf->hw;
++	hper = SDE_REG_READ(c, Q2_INTF_HSYNC_CTL) >> 16;
++	if (!hper || !phys->hw_ctl->ops.update_bitmask_intf)
++		goto done;
++	for (i = 0; disp && i < disp->ctrl_count; i++) {
++		struct dsi_ctrl *dc = disp->ctrl[i].ctrl;
++
++		if (!dc || !dc->hw.base)
++			continue;
++		tot = readl_relaxed(dc->hw.base + Q2_DSI_VIDEO_MODE_TOTAL);
++		writel_relaxed(0x1, dc->hw.base + Q2_DSI_TIMING_DB_MODE);
++		writel_relaxed(((lines - 1) << 16) | (tot & 0xFFFF), dc->hw.base + Q2_DSI_VIDEO_MODE_TOTAL);
++		writel_relaxed(0x1, dc->hw.base + Q2_DSI_TIMING_FLUSH);
++	}
++	period = lines * hper;
++	old = SDE_REG_READ(c, Q2_INTF_VSYNC_PERIOD_F0);
++	cfg = SDE_REG_READ(c, Q2_INTF_CONFIG);
++	fetch = SDE_REG_READ(c, Q2_INTF_PROG_FETCH_START);
++	SDE_REG_WRITE(c, Q2_INTF_VSYNC_PERIOD_F0, period);
++	if ((cfg & BIT(31)) && fetch)   /* programmable fetch: same distance before the end of the frame */
++		SDE_REG_WRITE(c, Q2_INTF_PROG_FETCH_START, fetch + period - old);
++	wmb();
++	phys->hw_ctl->ops.update_bitmask_intf(phys->hw_ctl, phys->hw_intf->idx, true);
++	pr_info("q2display: frame length %u -> %u lines in this commit (DSI + INTF)\n", old / hper, lines);
++done:
++	wake_up_all(&q2_vtotal_wq);
++}
 +
 +static struct sde_encoder_phys *q2_vtotal_phys(void)
 +{
@@ -63,11 +141,10 @@
 +
 +static ssize_t q2_vtotal_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
 +{
-+	struct sde_encoder_phys *phys;
-+	struct sde_hw_blk_reg_map *c;
-+	struct sde_hw_ctl *ctl;
++	struct sde_encoder_virt *sde_enc;
 +	unsigned long flags;
-+	u32 lines, hper, old, cfg, fetch, period;
++	u32 lines;
++	long left;
 +	int ret = kstrtou32(buf, 0, &lines);
 +
 +	if (ret)
@@ -75,49 +152,23 @@
 +	if (lines < 3700 || lines > 9000)   /* 3664 visible lines + blanking; 9000 = ~49 Hz */
 +		return -EINVAL;
 +	mutex_lock(&q2_vtotal_lock);
-+	phys = q2_vtotal_phys();
-+	if (!phys || !phys->hw_ctl) {
++	if (!q2_vtotal_phys()) {
 +		mutex_unlock(&q2_vtotal_lock);
 +		return -ENODEV;
 +	}
-+	c = &phys->hw_intf->hw;
-+	ctl = phys->hw_ctl;
-+	hper = SDE_REG_READ(c, Q2_INTF_HSYNC_CTL) >> 16;
-+	if (!hper || !ctl->ops.update_bitmask_intf || !ctl->ops.trigger_flush) {
++	sde_enc = to_sde_encoder_virt(q2_dsi_enc);
++	spin_lock_irqsave(&sde_enc->enc_spinlock, flags);
++	q2_vtotal_req = lines;
++	spin_unlock_irqrestore(&sde_enc->enc_spinlock, flags);
++	left = wait_event_timeout(q2_vtotal_wq, READ_ONCE(q2_vtotal_req) == 0, msecs_to_jiffies(200));
++	if (!left) {   /* no commit came: drop the request rather than apply it at some random later time */
++		spin_lock_irqsave(&sde_enc->enc_spinlock, flags);
++		q2_vtotal_req = 0;
++		spin_unlock_irqrestore(&sde_enc->enc_spinlock, flags);
 +		mutex_unlock(&q2_vtotal_lock);
-+		return -ENODEV;
++		pr_info("q2display: no display commit within 200 ms, frame length unchanged\n");
++		return -EAGAIN;
 +	}
-+	period = lines * hper;
-+	if (phys->connector && to_sde_connector(phys->connector)->connector_type == DRM_MODE_CONNECTOR_DSI) {
-+		struct dsi_display *disp = to_sde_connector(phys->connector)->display;
-+		u32 i, tot;
-+
-+		for (i = 0; disp && i < disp->ctrl_count; i++) {
-+			struct dsi_ctrl *dc = disp->ctrl[i].ctrl;
-+
-+			if (!dc || !dc->hw.base)
-+				continue;
-+			tot = readl_relaxed(dc->hw.base + Q2_DSI_VIDEO_MODE_TOTAL);
-+			writel_relaxed(0x1, dc->hw.base + Q2_DSI_TIMING_DB_MODE);
-+			wmb();
-+			writel_relaxed(((lines - 1) << 16) | (tot & 0xFFFF), dc->hw.base + Q2_DSI_VIDEO_MODE_TOTAL);
-+			writel_relaxed(0x1, dc->hw.base + Q2_DSI_TIMING_FLUSH);
-+			wmb();
-+			pr_info("q2display: DSI ctrl %u frame length %u -> %u lines\n", i, (tot >> 16) + 1, lines);
-+		}
-+	}
-+	spin_lock_irqsave(phys->enc_spinlock, flags);
-+	old = SDE_REG_READ(c, Q2_INTF_VSYNC_PERIOD_F0);
-+	cfg = SDE_REG_READ(c, Q2_INTF_CONFIG);
-+	fetch = SDE_REG_READ(c, Q2_INTF_PROG_FETCH_START);
-+	SDE_REG_WRITE(c, Q2_INTF_VSYNC_PERIOD_F0, period);
-+	if ((cfg & BIT(31)) && fetch)   /* programmable fetch: same distance before the end of the frame */
-+		SDE_REG_WRITE(c, Q2_INTF_PROG_FETCH_START, fetch + period - old);
-+	spin_unlock_irqrestore(phys->enc_spinlock, flags);
-+	ctl->ops.update_bitmask_intf(ctl, phys->hw_intf->idx, true);
-+	ctl->ops.trigger_flush(ctl);
-+	pr_info("q2display: frame length %u -> %u lines (fetch %u -> %u)\n", old / hper, lines, fetch,
-+		SDE_REG_READ(c, Q2_INTF_PROG_FETCH_START));
 +	mutex_unlock(&q2_vtotal_lock);
 +	return count;
 +}
@@ -137,7 +188,16 @@
  void sde_encoder_set_lineptr_value(struct drm_encoder *drm_enc, int offset)
  {
  	struct sde_encoder_virt *sde_enc = to_sde_encoder_virt(drm_enc);
-@@ -6482,6 +6612,8 @@
+@@ -4737,6 +4918,8 @@
+ 			&& ctl->ops.update_pending_flush)
+ 		ctl->ops.update_pending_flush(ctl, extra_flush);
+ 
++	if (phys == sde_enc->cur_master && &sde_enc->base == q2_dsi_enc)
++		q2_vtotal_apply(phys);   /* q2: frame length change in this commit (desk-380) */
+ 	phys->ops.trigger_flush(phys);
+ 
+ 	spin_unlock_irqrestore(&sde_enc->enc_spinlock, lock_flags);
+@@ -6482,6 +6665,8 @@
  	if (disp_info->intf_type == DRM_MODE_CONNECTOR_DSI)
  		timer_setup(&sde_enc->vsync_event_timer,
  				sde_encoder_vsync_event_handler, 0);
