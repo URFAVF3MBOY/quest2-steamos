@@ -31,7 +31,7 @@ Sleep is turned off, because the panel and the GPU don't come back yet. The powe
 
 ## 5. VRChat and Android apps
 
-Lepton (Valve's Android container) starts Android, with networking and the GPU driver. VRChat doesn't run yet.
+Steam-launched Android apps install and start through Lepton (Valve's Android container): VRChat reaches its VR session, Open Brush runs. Next: controller positions in Android apps (rotation arrives, position stays at zero), then VRChat's performance.
 
 ## Also on the list
 

@@ -102,4 +102,15 @@ Every game goes through `q2launchwrap`. It removes the port's layer settings fro
 
 ## Android apps (Lepton)
 
-Lepton is Valve's Android container (rootless podman). For it, the port adds `fuse-overlayfs` 1.18 (the 2.x Rust version needs `openat2`, which kernel 4.19 doesn't have), user access to `/dev/ashmem`, and the GPU as `/dev/kgsl-3d0` inside the container. It also swaps in a GPU driver built for Android (the originals are kept as `*.valve`). Android starts; VRChat doesn't run yet.
+Lepton is Valve's Android container (rootless podman). For it, the port adds `fuse-overlayfs` 1.18 (the 2.x Rust version needs `openat2`, which kernel 4.19 doesn't have), user access to `/dev/ashmem`, and the GPU as `/dev/kgsl-3d0` inside the container. It also swaps in a GPU driver built for Android (the originals are kept as `*.valve`).
+
+The changes that get Steam-launched apps running:
+
+- **Shared network.** SteamVR's IPC sockets are abstract Unix sockets, which only reach processes in the same network namespace, so the container uses the headset's network.
+- **Install without adb.** On the shared network the container's adbd drops every connection from the headset, so `adb install` hung. Steam-launched apps are copied into the container and installed with Android's own `pm install`. Apps launched any other way still use adb and are unsupported.
+- **Re-bake after an update.** When Steam updates an app, Lepton rebuilds its container data (VRChat had no `base.apk` after an update until this).
+- **Shared semaphores.** SteamVR's client imports the compositor's timeline semaphores as `OPAQUE_FD`, which the Android Turnip on KGSL didn't support (VRChat crashed at address 0). `patches/turnip-q2-ssem.py` emulates them with the same shared-memory counter the port's Linux layer uses.
+- **Normal boot mode.** Android reads `androidboot.mode` from `/proc/cmdline`. After a power-on with USB plugged in, the bootloader passes `charger`, and Android stopped before starting its app framework. Containers get a copy of the command line with the mode set to `normal` (`/var/lib/q2/lepton-cmdline`).
+- **Controller grip pose.** SteamVR's generated OpenXR bindings use `/pose/grip`, which the Frame controller profile lacks. The VR start writes a copy of the profile with it added.
+
+VRChat reaches its VR session and Open Brush runs. Controller positions don't reach Android apps yet (rotation does).

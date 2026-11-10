@@ -30,9 +30,9 @@ These apply when SteamVR starts (`sh /var/lib/q2/q2vrrestart.sh` restarts SteamV
 
 | File            | Default | What it does |
 | --------------- | ------- | ------------ |
-| `vrhz`          | `90`    | SteamVR's frame rate. `72` also switches the panel to 72 Hz by frame length (`q2-display-vtotal` kernel) - **experimental: the panel currently shows garbage at 72 Hz**, so leave it at 90 |
+| `vrhz`          | `72`    | SteamVR's frame rate and the panel mode (`72` or `90`). 72 Hz uses Meta's own panel mode through `q2kmsd`; SteamVR plans frames for the measured rate (about 72.3 Hz) |
 | `vblead`        | `15000` | How far (µs) the compositor's vsync comes before the panel refresh it renders for. Too little and frames miss their refresh under load (stutter); at 13000, Steam's panels open in VR made over a third of the frames miss their refresh |
-| `photonms`      | `27`    | The time (ms) SteamVR predicts the head pose for, from its vsync. Must match the real vsync-to-panel time (26 ms with the default `vblead`), or fast head turns overshoot or lag |
+| `photonms`      | `32` (`27` at 90 Hz) | The time (ms) SteamVR predicts the head pose for, from its vsync. Must match the real vsync-to-panel time (26 ms with the default `vblead`), or fast head turns overshoot or lag |
 | `direct`        | `1`     | The compositor draws straight into the display's scanout buffers (no copy per frame, ~1.3 ms of GPU time saved). `0` = the copy below |
 | `tw`            | `0`     | How a frame gets to the display when `direct` is off or can't be used: `0` = transfer copy, `2` = exact copy by a compute shader, `1` = experimental timewarp (re-aims each frame at the newest head pose; resamples the picture) |
 | `twlate`        | on      | With `tw` = `1`: a missed frame is re-aimed and shown again instead of repeated. `0` = off |
@@ -43,6 +43,18 @@ These apply when SteamVR starts (`sh /var/lib/q2/q2vrrestart.sh` restarts SteamV
 | `compositor_tu` | `nobin,hiprio,flushpass` | `TU_DEBUG` for the compositor. `flushpass` prevents the right-eye black blocks; `nobin` (no tiled rendering) is faster for the compositor here (`-` means none) |
 | `vrfacet` (`1`) | off     | SteamVR's newer "facet" renderer. On the Quest 2 it blurs the picture with colour fringes and makes head tracking glitchy; the classic renderer is the default |
 | `vrdirect`      | `1`     | Outside the zero-copy path: the GPU writes frames straight into the panel buffer (`0` = old CPU copy) |
+| `maxaniso`      | `4`     | Cap on SteamVR's anisotropic texture filtering (`1` to `16`; `16` = SteamVR's own). Lower is cheaper on floors seen at a shallow angle (`1` looked the same in Aurora). Read at VR start |
+| `predict`       | `75`    | Head prediction, in percent of the measured turn rate. Read live |
+| `rpmerge`       | off     | Merge the compositor's one-draw render passes (from Quest1-SteamOS). Leave it off with KGSL: it made frames much slower |
+| `deskres` (`WxH`) | `1280x720` | Resolution of the desktop view ("+" in Steam) |
+| `vrenv`         | none    | Shell lines sourced before SteamVR starts, to add environment variables (for profiling) |
+
+## Controllers
+
+| File         | What it does |
+| ------------ | ------------ |
+| `vrctltype`  | The controller type SteamVR sees (default `frame_controller`, the one Steam's VR interface has bindings for; `oculus_touch` for testing) |
+| `ctlmodel`   | Render model prefix, `left`/`right` is appended (default `oculus_quest_controller_`) |
 
 ## Steam and SteamVR
 
@@ -76,6 +88,7 @@ These apply when SteamVR starts (`sh /var/lib/q2/q2vrrestart.sh` restarts SteamV
 | `nokwinwrap`      | Desktop ("+") without the kwin wrapper                        |
 | `android_gpu_off` | Lepton keeps Valve's Android GPU files                        |
 | `lepton_nopatch`  | Don't patch Lepton's start scripts                            |
+| `lepton_pasta`    | Lepton apps on their own network (for debugging installs; they can't reach SteamVR then) |
 
 ## Debugging
 

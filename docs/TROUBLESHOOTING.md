@@ -44,13 +44,19 @@ Files bigger than 2 MB are left off the drive and listed in `skipped-files.txt`.
 
 **Steam's interface stutters.** Known; it is worst while Steam loads a lot at once. The VR picture itself should keep 90 frames per second; `vr-*.txt` shows the compositor's frame timing.
 
-**Stutter when looking around, or a 2D game runs badly.** The compositor gets 11.1 ms of GPU time per frame at 90 Hz. The theater screen of a 2D game needs about 12 ms, so frames get dropped (a 72 Hz mode is on the roadmap). In `vrserver-stdout.txt`, the line `tick -> on the panel` shows when frames reached the panel: one value means steady timing; a second, ~11 ms later value means frames missed their refresh.
+**Stutter when looking around, or a 2D game runs badly.** The compositor gets 13.9 ms of GPU time per frame at 72 Hz (the default) and 11.1 ms at 90 Hz. The theater screen of a 2D game needs about 12 ms, so it drops frames at 90 Hz. In `vrserver-stdout.txt`, the line `tick -> on the panel` shows when frames reached the panel: one value means steady timing; a second, ~11 ms later value means frames missed their refresh.
 
-**Garbage on the panel (washed out, streaks, vertical bands).** Check that `/var/lib/q2/vrhz` isn't `72`: the 72 Hz mode doesn't work on the panel yet. `echo 4916 | sudo tee /sys/kernel/q2display/vtotal` brings the panel back to 90 Hz right away. Run it twice: coming back from 72 Hz, the first write can leave the display running at 72 frames per second.
+**Garbage on the panel (washed out, streaks, vertical bands).** That came from the old 72 Hz mode that changed the frame length by hand. 72 Hz now uses Meta's panel mode; if garbage shows up, set `/var/lib/q2/vrhz` to `90` and send the logs.
 
 **Blurry picture with colour fringes, or glitchy head tracking.** Check that `/var/lib/q2/vrfacet` doesn't contain `1`. SteamVR's Facet renderer causes exactly that on the Quest 2.
 
 **Black blocks in the right eye.** Prevented by `flushpass` in `/var/lib/q2/compositor_tu` (the default `nobin,hiprio,flushpass`). If they show up with that setting, send the logs.
+
+**An Android app hangs at "Waiting for boot".** Check that `/var/lib/q2/lepton-cmdline` exists and contains `androidboot.mode=normal`. Without it, a headset powered on with USB plugged in boots the container in charger mode.
+
+**An Android app crashes as it starts its VR session.** Check `/var/log/q2/vrlogs/lepton-steamlaunch-<app id>.log` for a crash in `vulkan.freedreno.so` called from `ImportVulkanSemaphore`: that means the Android GPU driver without the shared-semaphore fix is installed (the image predates it).
+
+**Steam crashed, and SteamVR quit with "stalled cross-thread pipe".** SteamVR exits when Steam goes away under it. Start VR again with `q2vr start` after Steam is back.
 
 **Volume buttons do nothing.** Check `buttons.txt`, and that `/var/lib/q2/nobuttons` doesn't exist.
 

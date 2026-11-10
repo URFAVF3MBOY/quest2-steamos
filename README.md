@@ -8,26 +8,26 @@ Everything added lives in a single Android boot image that goes on the **boot pa
 
 ## What works and what doesn't
 
-Last tested build: **desk-377** (November 2026).
+Last tested build: **desk-403** (November 2026).
 
 | Area                                                    | Status                       | Notes                                                                                                  |
 | ------------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------ |
 | Booting SteamOS from internal storage                   | Works                        | Normal restarts come back to SteamOS                                                                   |
 | Wi-Fi                                                   | Works                        | Meta's Wi-Fi driver, rebuilt for the kernel                                                            |
 | Bluetooth                                               | Works                        | The QCA6390 combo chip, through a patched kernel driver                                                |
-| Display (both panels, lens correction)                  | Works                        | 90 Hz; SteamVR's compositor draws straight into the display's scanout buffers (no copy per frame)     |
+| Display (both panels, lens correction)                  | Works                        | 72 Hz by default (Meta's own panel mode), 90 Hz available; the compositor draws straight into the display's scanout buffers |
 | Head tracking                                           | Works                        | Meta's own tracker, about 860 pose updates per second                                                  |
 | Touch controllers (tracking, buttons, sticks, triggers) | Works                        | Meta's own tracker; shown with the Quest 1 controller models                                          |
-| SteamVR                                                 | Works                        | Classic renderer; the compositor needs about 6 to 8 ms of GPU time per frame                          |
+| SteamVR                                                 | Works                        | Classic renderer; the compositor needs about 6 to 8 ms of GPU time per frame. The GPU runs on Qualcomm's KGSL driver, which can pause other GPU work mid-draw for the compositor |
 | Steam's VR interface (library, store, settings)         | Works                        | GPU-accelerated; can stutter while it loads a lot at once                                             |
 | Desktop mode (the "+" button in Steam)                  | Works                        | Nested KDE Plasma desktop inside VR                                                                    |
 | Windows games through Proton                            | Works                        | Tested with OneShot. Includes a fix for Ruby/RPG Maker games (see below)                               |
-| 2D games on SteamVR's theater screen                    | Partly                       | The theater view needs about 12 ms of GPU time per frame, more than a 90 Hz frame allows (about 67 fps) |
+| 2D games on SteamVR's theater screen                    | Partly                       | The theater view needs about 12 ms of GPU time per frame: too much for 90 Hz, it mostly fits at 72 Hz |
 | Sound                                                   | Works                        | Speakers through the Kona sound modules; the volume buttons change the level                          |
 | Power menu                                              | Works                        | Shut down and Restart in Steam's power menu                                                            |
 | SSH over Wi-Fi                                          | Works (opt-in)               | Put public keys in `/var/lib/q2/authorized_keys` ([SETTINGS.md](docs/SETTINGS.md))                    |
 | Sleep                                                   | Doesn't work                 | Turned off on purpose: the headset does not wake up again                                              |
-| Android apps (VRChat through Lepton)                    | Partly                       | Android starts in the container; VRChat (the only tested app) is not working yet                       |
+| Android apps (VRChat through Lepton)                    | Partly                       | Steam-launched Android apps install and start (VRChat reaches its VR session, Open Brush runs). Controller positions don't reach Android apps yet (rotation does) |
 | Linux x86 games (through FEX)                           | Not tested                   | Windows x86 games do run through FEX inside Proton                                                     |
 | Firmware updates                                        | **Blocked on purpose** | Headset and controller firmware updates would brick the hardware                                       |
 
@@ -70,7 +70,7 @@ Read these before flashing anything.
 | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | `.github/workflows/`                         | GitHub Actions that build the kernel, the GPU drivers and the other binary parts                                                   |
 | `config/`, `patches/`                      | Kernel configuration and patches; Mesa (GPU driver) patches                                                                        |
-| `kernel/q2msm/`                              | The GPU kernel driver (mainline drm/msm, adapted to the Quest 2's 4.19 kernel)                                                     |
+| `kernel/q2msm/`                              | An optional GPU kernel driver (mainline drm/msm, adapted to the Quest 2's 4.19 kernel); KGSL is the default                        |
 | `image/`                                     | Everything that goes into the boot image: `build.sh`, the boot script (`src/init/init`), all sources, and the compiled helpers |
 | `steamos-install/`                           | Tools to put SteamOS on a USB drive and then copy it onto the headset                                                              |
 | `tracking-kit/`                              | Meta's tracking as a standalone kit, for porting other Linux systems to Quest headsets                                             |
@@ -86,7 +86,7 @@ The short version:
 2. **Less GPU work per frame**, so heavy scenes such as 2D games on the theater screen hold 90 fps.
 3. **A smoother Steam interface.**
 4. **Sleep and wake.**
-5. **VRChat** and other Android apps through Lepton.
+5. **VRChat** and other Android apps through Lepton: controller positions, then performance.
 
 More detail is in [docs/ROADMAP.md](docs/ROADMAP.md).
 
