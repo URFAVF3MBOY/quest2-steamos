@@ -16,6 +16,8 @@ def main():
     ap.add_argument("--in", dest="src", required=True)
     ap.add_argument("--init", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--put", action="append", default=[], metavar="RAMDISK_PATH=LOCAL_FILE",
+                    help="also replace this ramdisk file (e.g. usr/share/q2vr/driver_q2hmd.so=image/prebuilt/driver_q2hmd.so)")
     a = ap.parse_args()
 
     d = open(a.src, "rb").read()
@@ -36,6 +38,11 @@ def main():
 
     cpio = gzip.decompress(rd)
     new = open(a.init, "rb").read()
+    puts = {}
+    for pv in a.put:
+        k, _, v = pv.partition("=")
+        puts[k.lstrip("/")] = open(v, "rb").read()
+    done = set()
     out, o, found = bytearray(), 0, False
     while True:                                   # newc cpio: walk the entries, swap only "init"
         if cpio[o:o + 6] != b"070701":
@@ -49,12 +56,17 @@ def main():
         if name == "init" and not found:
             data, found = new, True
             hdr[54:62] = b"%08X" % len(new)
+        elif name in puts and name not in done:
+            data = puts[name]; done.add(name)
+            hdr[54:62] = b"%08X" % len(data)
         out += hdr + pad + data + b"\0" * (((len(data) + 3) & ~3) - len(data))
         o = (ds + fs + 3) & ~3
         if name == "TRAILER!!!":
             break
     if not found:
         sys.exit("no /init in the ramdisk")
+    if set(puts) - done:
+        sys.exit("not in the ramdisk: " + ", ".join(sorted(set(puts) - done)))
     out += cpio[o:]
 
     buf = io.BytesIO()
