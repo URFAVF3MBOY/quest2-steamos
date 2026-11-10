@@ -631,7 +631,7 @@ public:
 		setVal<int32_t>(c, Prop_ControllerRoleHint_Int32, slot ? TrackedControllerRole_RightHand : TrackedControllerRole_LeftHand, k_unInt32PropertyTag);
 		setVal<int32_t>(c, Prop_DeviceClass_Int32, TrackedDeviceClass_Controller, k_unInt32PropertyTag);
 		setVal<bool>(c, Prop_DeviceProvidesBatteryStatus_Bool, true, k_unBoolPropertyTag);
-		setVal<bool>(c, Prop_WillDriftInYaw_Bool, true, k_unBoolPropertyTag);
+		setVal<bool>(c, Prop_WillDriftInYaw_Bool, true, k_unBoolPropertyTag);   // desk-404: false while Meta's tracker drives the hand (set on source change)
 		g_sysmirror = !strcmp(type, "oculus_touch");
 		// input components: "path=source;..." (q2vrtest builds it from the type's input profile)
 		const char *cl = getenv("Q2VR_CTLCOMP"); if (!cl || !*cl) cl = k_defcomp;
@@ -709,7 +709,12 @@ public:
 		bool mouse = !real && slot == 1 && read_ptr(pt);
 		int nsrc = meta ? (btn ? 3 : 4) : btn ? 1 : mouse ? 2 : 0;
 		if (nsrc != src) { Log("q2hmd: %s hand now %s\n", slot ? "right" : "left", nsrc == 3 ? "Meta's tracking + Touch buttons" : nsrc == 4 ? "Meta's tracking (no button data)" :
-		    nsrc == 1 ? "the Touch controller" : nsrc == 2 ? "the mouse pointer" : "not tracking"); src = nsrc; }
+		    nsrc == 1 ? "the Touch controller" : nsrc == 2 ? "the mouse pointer" : "not tracking");
+			// desk-404: SteamVR's OpenXR client sets XR_SPACE_LOCATION_POSITION_VALID only when WillDriftInYaw is false.
+			// With it always true, Android apps (Lepton) got the controllers' rotation but a position of 0 (on the floor).
+			// Meta's tracker is full 6DoF; only the older own-tracking / mouse paths drift.
+			if (cont) setVal<bool>(cont, Prop_WillDriftInYaw_Bool, !(nsrc == 3 || nsrc == 4), k_unBoolPropertyTag);
+			src = nsrc; }
 		DriverPose_t p = {};
 		p.qWorldFromDriverRotation.w = 1; p.qRotation.w = 1; p.willDriftInYaw = true;
 		p.qDriverFromHeadRotation.w = dfh_q[0]; p.qDriverFromHeadRotation.x = dfh_q[1];
