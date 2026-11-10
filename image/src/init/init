@@ -7582,6 +7582,10 @@ if [ -f "$LL/mounting.sh" ]; then
     for f in liblepton.sh; do [ -f "$LL/$f.q2orig" ] || cp -a "$LL/$f" "$LL/$f.q2orig"; grep -q 'q2:' "$LL/$f" && cp -a "$LL/$f.q2orig" "$LL/$f"; done
     if [ ! -e "$NR/var/lib/q2/lepton_cleanup" ] && grep -q 'LEPTON_NO_CLEANUP:-false}' "$LL/liblepton.sh"; then
       sed -i 's/LEPTON_NO_CLEANUP:-false}/LEPTON_NO_CLEANUP:-true}/' "$LL/liblepton.sh" && echo "# q2: LEPTON_NO_CLEANUP default true (desk-280)" >> "$LL/liblepton.sh" && LP="$LP keep-install"
+      # desk-400: ...but not when the app itself changed or its install failed.  After VRChat's Steam update (Oct 29) Lepton
+      # said "The app has changed, baked app data will be cleared" and then skipped it, so Android kept the old install
+      # record, found no base.apk under /data/app and dropped VRChat ("Skipping PackageSetting ... missing metadata").
+      sed -i 's/^    if \[\[ "\${LEPTON_NO_CLEANUP:-true}" != "false" \]\]; then$/    if [[ "${LEPTON_NO_CLEANUP:-true}" != "false" \&\& "$REASON" != "app or depot changed" \&\& "$REASON" != "app installation failure" ]]; then  # q2: early-exit cleanups only (desk-400)/' "$LL/liblepton.sh" && LP="$LP rebake-on-update"
     fi
     # desk-276: Android's first boot on the Quest takes ~3 min (it also prepares the 327 MB VRChat app); Lepton gave the
     # app 60 s to appear, so VRChat never showed.  5 min instead (LEPTON_APP_LAUNCH_TIMEOUT still overrides).
