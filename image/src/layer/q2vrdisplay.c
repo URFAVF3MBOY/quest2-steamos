@@ -164,6 +164,9 @@ struct dev {
 	F(CmdBindPipeline) F(CmdBindDescriptorSets) F(CmdDispatch)
 	F(ReleaseSwapchainImagesEXT) F(ImportFenceFdKHR) F(BindImageMemory2) F(BindImageMemory2KHR) F(GetMemoryFdKHR)
 	F(GetBufferMemoryRequirements2) F(GetBufferMemoryRequirements2KHR) F(GetImageMemoryRequirements2) F(GetImageMemoryRequirements2KHR)
+	F(CreateRenderPass) F(DestroyRenderPass) F(ResetDescriptorPool) F(DestroyDescriptorPool) F(CmdCopyBuffer) F(CmdUpdateBuffer)
+	F(CmdBeginRenderPass) F(CmdEndRenderPass) F(FreeCommandBuffers) F(UpdateDescriptorSetWithTemplate)
+	F(UpdateDescriptorSetWithTemplateKHR) F(CmdDraw) F(CmdDrawIndexed) F(CmdDrawIndirect) F(CmdDrawIndexedIndirect)
 #undef F
 	// display_control
 	qmutex evlock; VkFence pending[32]; int npending;
@@ -1831,9 +1834,11 @@ static VKAPI_ATTR VkResult VKAPI_CALL q_MapMemory(VkDevice dv, VkDeviceMemory m,
 	}
 	return d->MapMemory(dv, m, off, sz, fl, pp);
 }
+#include "q2rpmerge.c.inc"   // desk-384: vrcompositor's one-draw render passes merged
 static VKAPI_ATTR void VKAPI_CALL q_CmdCopyImageToBuffer(VkCommandBuffer cb, VkImage im, VkImageLayout l, VkBuffer b, uint32_t n, const VkBufferImageCopy *r)
 {
 	struct dev *d = dev_of(cb);
+	rm_flush(cb);
 	if (rb_on()) {
 		pthread_mutex_lock(&g_mtl);
 		g_cp++; for (uint32_t i = 0; i < n; i++) g_cpbytes += 4ull * r[i].imageExtent.width * r[i].imageExtent.height * (r[i].imageExtent.depth ? r[i].imageExtent.depth : 1);
@@ -1969,7 +1974,9 @@ static VKAPI_ATTR VkResult VKAPI_CALL q_CreateBuffer(VkDevice dv, const VkBuffer
 {
 	struct dev *d = dev_of(dv); VkBufferCreateInfo c = *ci; uint32_t st[16];
 	map_sharing(d, &c.sharingMode, &c.queueFamilyIndexCount, &c.pQueueFamilyIndices, st);
-	return d->CreateBuffer(dv, &c, a, b);
+	VkResult r = d->CreateBuffer(dv, &c, a, b);
+	if (r == VK_SUCCESS) rm_note_buffer(*b, ci);
+	return r;
 }
 // ownership transfers between the real family and its alias become plain barriers
 static void fix_pair(struct dev *d, uint32_t *src, uint32_t *dst)
@@ -1986,6 +1993,7 @@ static VKAPI_ATTR void VKAPI_CALL q_CmdPipelineBarrier(VkCommandBuffer cb, VkPip
 	uint32_t nm, const VkMemoryBarrier *mb, uint32_t nb, const VkBufferMemoryBarrier *bb, uint32_t ni, const VkImageMemoryBarrier *ib)
 {
 	struct dev *d = dev_of(cb);
+	if (rm_barrier(cb, nm, nb, bb, ni)) return;   // q2rpmerge: dropped between two merged passes, or the held pass is ended first
 	TMPARR(VkBufferMemoryBarrier, b2, nb, bb); TMPARR(VkImageMemoryBarrier, i2, ni, ib);
 	for (uint32_t i = 0; i < nb; i++) fix_pair(d, &b2[i].srcQueueFamilyIndex, &b2[i].dstQueueFamilyIndex);
 	for (uint32_t i = 0; i < ni; i++) fix_pair(d, &i2[i].srcQueueFamilyIndex, &i2[i].dstQueueFamilyIndex);
@@ -2002,13 +2010,14 @@ static void fix_dep(struct dev *d, const VkDependencyInfo *in, VkDependencyInfo 
 	out->pBufferMemoryBarriers = b; out->pImageMemoryBarriers = im; *bo = b; *io = im;
 }
 static VKAPI_ATTR void VKAPI_CALL q_CmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo *di)
-{ struct dev *d = dev_of(cb); VkDependencyInfo o; VkBufferMemoryBarrier2 *b; VkImageMemoryBarrier2 *i; fix_dep(d, di, &o, &b, &i); d->CmdPipelineBarrier2(cb, &o); free(b); free(i); }
+{ struct dev *d = dev_of(cb); rm_flush(cb); VkDependencyInfo o; VkBufferMemoryBarrier2 *b; VkImageMemoryBarrier2 *i; fix_dep(d, di, &o, &b, &i); d->CmdPipelineBarrier2(cb, &o); free(b); free(i); }
 static VKAPI_ATTR void VKAPI_CALL q_CmdPipelineBarrier2KHR(VkCommandBuffer cb, const VkDependencyInfo *di)
-{ struct dev *d = dev_of(cb); VkDependencyInfo o; VkBufferMemoryBarrier2 *b; VkImageMemoryBarrier2 *i; fix_dep(d, di, &o, &b, &i); d->CmdPipelineBarrier2KHR(cb, &o); free(b); free(i); }
+{ struct dev *d = dev_of(cb); rm_flush(cb); VkDependencyInfo o; VkBufferMemoryBarrier2 *b; VkImageMemoryBarrier2 *i; fix_dep(d, di, &o, &b, &i); d->CmdPipelineBarrier2KHR(cb, &o); free(b); free(i); }
 static VKAPI_ATTR void VKAPI_CALL q_CmdWaitEvents(VkCommandBuffer cb, uint32_t ne, const VkEvent *ev, VkPipelineStageFlags ss, VkPipelineStageFlags ds,
 	uint32_t nm, const VkMemoryBarrier *mb, uint32_t nb, const VkBufferMemoryBarrier *bb, uint32_t ni, const VkImageMemoryBarrier *ib)
 {
 	struct dev *d = dev_of(cb);
+	rm_flush(cb);
 	TMPARR(VkBufferMemoryBarrier, b2, nb, bb); TMPARR(VkImageMemoryBarrier, i2, ni, ib);
 	for (uint32_t i = 0; i < nb; i++) fix_pair(d, &b2[i].srcQueueFamilyIndex, &b2[i].dstQueueFamilyIndex);
 	for (uint32_t i = 0; i < ni; i++) fix_pair(d, &i2[i].srcQueueFamilyIndex, &i2[i].dstQueueFamilyIndex);
@@ -2017,6 +2026,7 @@ static VKAPI_ATTR void VKAPI_CALL q_CmdWaitEvents(VkCommandBuffer cb, uint32_t n
 }
 static void wait2(struct dev *d, PFN_vkCmdWaitEvents2 f, VkCommandBuffer cb, uint32_t ne, const VkEvent *ev, const VkDependencyInfo *di)
 {
+	rm_flush(cb);
 	VkDependencyInfo o[16]; VkBufferMemoryBarrier2 *b[16]; VkImageMemoryBarrier2 *i[16];
 	uint32_t n = ne < 16 ? ne : 16;
 	for (uint32_t k = 0; k < n; k++) fix_dep(d, &di[k], &o[k], &b[k], &i[k]);
@@ -2027,6 +2037,131 @@ static VKAPI_ATTR void VKAPI_CALL q_CmdWaitEvents2(VkCommandBuffer cb, uint32_t 
 { struct dev *d = dev_of(cb); wait2(d, d->CmdWaitEvents2, cb, ne, ev, di); }
 static VKAPI_ATTR void VKAPI_CALL q_CmdWaitEvents2KHR(VkCommandBuffer cb, uint32_t ne, const VkEvent *ev, const VkDependencyInfo *di)
 { struct dev *d = dev_of(cb); wait2(d, d->CmdWaitEvents2KHR, cb, ne, ev, di); }
+
+// ---- render pass merge hooks (q2rpmerge.c.inc; vrcompositor only, everything passes straight through elsewhere) ----
+static VKAPI_ATTR void VKAPI_CALL q_DestroyBuffer(VkDevice dv, VkBuffer b, const VkAllocationCallbacks *a)
+{ struct dev *d = dev_of(dv); rm_forget_buffer(b); d->DestroyBuffer(dv, b, a); }
+static VKAPI_ATTR VkResult VKAPI_CALL q_CreateDescriptorSetLayout(VkDevice dv, const VkDescriptorSetLayoutCreateInfo *ci, const VkAllocationCallbacks *a, VkDescriptorSetLayout *l)
+{ struct dev *d = dev_of(dv); VkResult r = d->CreateDescriptorSetLayout(dv, ci, a, l); if (r == VK_SUCCESS) rm_note_layout(*l, ci); return r; }
+static VKAPI_ATTR VkResult VKAPI_CALL q_AllocateDescriptorSets(VkDevice dv, const VkDescriptorSetAllocateInfo *ai, VkDescriptorSet *s)
+{ struct dev *d = dev_of(dv); VkResult r = d->AllocateDescriptorSets(dv, ai, s); if (r == VK_SUCCESS) rm_note_sets(ai, s); return r; }
+static VKAPI_ATTR void VKAPI_CALL q_UpdateDescriptorSets(VkDevice dv, uint32_t nw, const VkWriteDescriptorSet *w, uint32_t nc, const VkCopyDescriptorSet *c)
+{ struct dev *d = dev_of(dv); rm_note_writes(nw, w, nc, c); d->UpdateDescriptorSets(dv, nw, w, nc, c); }
+static VKAPI_ATTR void VKAPI_CALL q_UpdateDescriptorSetWithTemplate(VkDevice dv, VkDescriptorSet s, VkDescriptorUpdateTemplate t, const void *p)
+{ struct dev *d = dev_of(dv); rm_note_template_write(s); d->UpdateDescriptorSetWithTemplate(dv, s, t, p); }
+static VKAPI_ATTR void VKAPI_CALL q_UpdateDescriptorSetWithTemplateKHR(VkDevice dv, VkDescriptorSet s, VkDescriptorUpdateTemplate t, const void *p)
+{ struct dev *d = dev_of(dv); rm_note_template_write(s); d->UpdateDescriptorSetWithTemplateKHR(dv, s, t, p); }
+static VKAPI_ATTR VkResult VKAPI_CALL q_CreateRenderPass(VkDevice dv, const VkRenderPassCreateInfo *ci, const VkAllocationCallbacks *a, VkRenderPass *rp)
+{ struct dev *d = dev_of(dv); VkResult r = d->CreateRenderPass(dv, ci, a, rp); if (r == VK_SUCCESS) rm_note_rp(d, *rp, ci); return r; }
+static VKAPI_ATTR void VKAPI_CALL q_DestroyRenderPass(VkDevice dv, VkRenderPass rp, const VkAllocationCallbacks *a)
+{ struct dev *d = dev_of(dv); rm_forget_rp(d, rp); d->DestroyRenderPass(dv, rp, a); }
+static VKAPI_ATTR VkResult VKAPI_CALL q_AllocateCommandBuffers(VkDevice dv, const VkCommandBufferAllocateInfo *ai, VkCommandBuffer *cbs)
+{ struct dev *d = dev_of(dv); VkResult r = d->AllocateCommandBuffers(dv, ai, cbs); if (r == VK_SUCCESS) rm_note_cbs(ai, cbs); return r; }
+static VKAPI_ATTR void VKAPI_CALL q_FreeCommandBuffers(VkDevice dv, VkCommandPool p, uint32_t n, const VkCommandBuffer *cbs)
+{ struct dev *d = dev_of(dv); for (uint32_t i = 0; i < n; i++) if (cbs[i]) { rm_cb_drop(d, cbs[i]); rm_cbpool_forget(cbs[i]); } d->FreeCommandBuffers(dv, p, n, cbs); }
+static VKAPI_ATTR void VKAPI_CALL q_DestroyCommandPool(VkDevice dv, VkCommandPool p, const VkAllocationCallbacks *a)
+{ struct dev *d = dev_of(dv); if (p) rm_pool_drop(d, p); d->DestroyCommandPool(dv, p, a); }
+static VKAPI_ATTR VkResult VKAPI_CALL q_BeginCommandBuffer(VkCommandBuffer cb, const VkCommandBufferBeginInfo *bi)
+{ struct dev *d = dev_of(cb); VkResult r = d->BeginCommandBuffer(cb, bi); if (r == VK_SUCCESS && (!bi || !(bi->flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT))) rm_cb_begin(d, cb); return r; }
+static VKAPI_ATTR VkResult VKAPI_CALL q_EndCommandBuffer(VkCommandBuffer cb)
+{ struct dev *d = dev_of(cb); rm_flush(cb); return d->EndCommandBuffer(cb); }
+static VKAPI_ATTR void VKAPI_CALL q_CmdBeginRenderPass(VkCommandBuffer cb, const VkRenderPassBeginInfo *bi, VkSubpassContents c)
+{ struct dev *d = dev_of(cb); if (rm_begin(cb, bi, c)) return; d->CmdBeginRenderPass(cb, bi, c); }
+static VKAPI_ATTR void VKAPI_CALL q_CmdEndRenderPass(VkCommandBuffer cb)
+{ struct dev *d = dev_of(cb); if (rm_end(cb)) return; d->CmdEndRenderPass(cb); }
+static VKAPI_ATTR void VKAPI_CALL q_CmdUpdateBuffer(VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, VkDeviceSize n, const void *p)
+{ struct dev *d = dev_of(cb); if (rm_update(cb, b, o, n, p)) return; d->CmdUpdateBuffer(cb, b, o, n, p); }
+static VKAPI_ATTR void VKAPI_CALL q_CmdBindDescriptorSets(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout pl, uint32_t first, uint32_t n,
+	const VkDescriptorSet *s, uint32_t nd, const uint32_t *dyn)
+{ struct dev *d = dev_of(cb); rm_bind(cb, bp, pl, first, n, s, nd); d->CmdBindDescriptorSets(cb, bp, pl, first, n, s, nd, dyn); }
+static VKAPI_ATTR void VKAPI_CALL q_CmdDraw(VkCommandBuffer cb, uint32_t vc, uint32_t ic, uint32_t fv, uint32_t fi)
+{ struct dev *d = dev_of(cb); rm_draw(cb); d->CmdDraw(cb, vc, ic, fv, fi); }
+static VKAPI_ATTR void VKAPI_CALL q_CmdDrawIndexed(VkCommandBuffer cb, uint32_t ic, uint32_t inst, uint32_t fi, int32_t vo, uint32_t fin)
+{ struct dev *d = dev_of(cb); rm_draw(cb); d->CmdDrawIndexed(cb, ic, inst, fi, vo, fin); }
+static VKAPI_ATTR void VKAPI_CALL q_CmdDrawIndirect(VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, uint32_t n, uint32_t st)
+{ struct dev *d = dev_of(cb); rm_draw(cb); d->CmdDrawIndirect(cb, b, o, n, st); }
+static VKAPI_ATTR void VKAPI_CALL q_CmdDrawIndexedIndirect(VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, uint32_t n, uint32_t st)
+{ struct dev *d = dev_of(cb); rm_draw(cb); d->CmdDrawIndexedIndirect(cb, b, o, n, st); }
+
+// Commands that cannot be recorded inside a render pass (or start another kind of pass): they end a held-back one first.
+// The next function comes from the device below (one device in vrcompositor; Turnip's entry points dispatch on the
+// command buffer anyway).
+#define RM_FLUSH_HOOK(name, params, args, extra) \
+	static PFN_vk##name rmn_##name; \
+	static VKAPI_ATTR void VKAPI_CALL q_##name params { rm_flush(cb); extra; rmn_##name args; }
+RM_FLUSH_HOOK(CmdCopyBuffer, (VkCommandBuffer cb, VkBuffer s, VkBuffer d, uint32_t n, const VkBufferCopy *r), (cb, s, d, n, r),
+	for (uint32_t i = 0; i < n; i++) rm_buf_unknown(d, r[i].dstOffset, r[i].size))
+RM_FLUSH_HOOK(CmdCopyBuffer2, (VkCommandBuffer cb, const VkCopyBufferInfo2 *i), (cb, i),
+	for (uint32_t k = 0; k < i->regionCount; k++) rm_buf_unknown(i->dstBuffer, i->pRegions[k].dstOffset, i->pRegions[k].size))
+RM_FLUSH_HOOK(CmdCopyBuffer2KHR, (VkCommandBuffer cb, const VkCopyBufferInfo2 *i), (cb, i),
+	for (uint32_t k = 0; k < i->regionCount; k++) rm_buf_unknown(i->dstBuffer, i->pRegions[k].dstOffset, i->pRegions[k].size))
+RM_FLUSH_HOOK(CmdFillBuffer, (VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, VkDeviceSize n, uint32_t v), (cb, b, o, n, v), rm_buf_unknown(b, o, n))
+RM_FLUSH_HOOK(CmdCopyImage, (VkCommandBuffer cb, VkImage s, VkImageLayout sl, VkImage d, VkImageLayout dl, uint32_t n, const VkImageCopy *r), (cb, s, sl, d, dl, n, r), )
+RM_FLUSH_HOOK(CmdCopyImage2, (VkCommandBuffer cb, const VkCopyImageInfo2 *i), (cb, i), )
+RM_FLUSH_HOOK(CmdCopyImage2KHR, (VkCommandBuffer cb, const VkCopyImageInfo2 *i), (cb, i), )
+RM_FLUSH_HOOK(CmdBlitImage, (VkCommandBuffer cb, VkImage s, VkImageLayout sl, VkImage d, VkImageLayout dl, uint32_t n, const VkImageBlit *r, VkFilter f), (cb, s, sl, d, dl, n, r, f), )
+RM_FLUSH_HOOK(CmdBlitImage2, (VkCommandBuffer cb, const VkBlitImageInfo2 *i), (cb, i), )
+RM_FLUSH_HOOK(CmdBlitImage2KHR, (VkCommandBuffer cb, const VkBlitImageInfo2 *i), (cb, i), )
+RM_FLUSH_HOOK(CmdCopyBufferToImage, (VkCommandBuffer cb, VkBuffer s, VkImage d, VkImageLayout l, uint32_t n, const VkBufferImageCopy *r), (cb, s, d, l, n, r), )
+RM_FLUSH_HOOK(CmdCopyBufferToImage2, (VkCommandBuffer cb, const VkCopyBufferToImageInfo2 *i), (cb, i), )
+RM_FLUSH_HOOK(CmdCopyBufferToImage2KHR, (VkCommandBuffer cb, const VkCopyBufferToImageInfo2 *i), (cb, i), )
+RM_FLUSH_HOOK(CmdCopyImageToBuffer2, (VkCommandBuffer cb, const VkCopyImageToBufferInfo2 *i), (cb, i), )
+RM_FLUSH_HOOK(CmdCopyImageToBuffer2KHR, (VkCommandBuffer cb, const VkCopyImageToBufferInfo2 *i), (cb, i), )
+RM_FLUSH_HOOK(CmdClearColorImage, (VkCommandBuffer cb, VkImage i, VkImageLayout l, const VkClearColorValue *v, uint32_t n, const VkImageSubresourceRange *r), (cb, i, l, v, n, r), )
+RM_FLUSH_HOOK(CmdClearDepthStencilImage, (VkCommandBuffer cb, VkImage i, VkImageLayout l, const VkClearDepthStencilValue *v, uint32_t n, const VkImageSubresourceRange *r), (cb, i, l, v, n, r), )
+RM_FLUSH_HOOK(CmdResolveImage, (VkCommandBuffer cb, VkImage s, VkImageLayout sl, VkImage d, VkImageLayout dl, uint32_t n, const VkImageResolve *r), (cb, s, sl, d, dl, n, r), )
+RM_FLUSH_HOOK(CmdResolveImage2, (VkCommandBuffer cb, const VkResolveImageInfo2 *i), (cb, i), )
+RM_FLUSH_HOOK(CmdResolveImage2KHR, (VkCommandBuffer cb, const VkResolveImageInfo2 *i), (cb, i), )
+RM_FLUSH_HOOK(CmdDispatch, (VkCommandBuffer cb, uint32_t x, uint32_t y, uint32_t z), (cb, x, y, z), )
+RM_FLUSH_HOOK(CmdDispatchBase, (VkCommandBuffer cb, uint32_t bx, uint32_t by, uint32_t bz, uint32_t x, uint32_t y, uint32_t z), (cb, bx, by, bz, x, y, z), )
+RM_FLUSH_HOOK(CmdDispatchBaseKHR, (VkCommandBuffer cb, uint32_t bx, uint32_t by, uint32_t bz, uint32_t x, uint32_t y, uint32_t z), (cb, bx, by, bz, x, y, z), )
+RM_FLUSH_HOOK(CmdDispatchIndirect, (VkCommandBuffer cb, VkBuffer b, VkDeviceSize o), (cb, b, o), )
+RM_FLUSH_HOOK(CmdResetQueryPool, (VkCommandBuffer cb, VkQueryPool p, uint32_t f, uint32_t n), (cb, p, f, n), )
+RM_FLUSH_HOOK(CmdCopyQueryPoolResults, (VkCommandBuffer cb, VkQueryPool p, uint32_t f, uint32_t n, VkBuffer b, VkDeviceSize o, VkDeviceSize s, VkQueryResultFlags fl), (cb, p, f, n, b, o, s, fl), rm_buf_unknown(b, o, VK_WHOLE_SIZE))
+RM_FLUSH_HOOK(CmdSetEvent, (VkCommandBuffer cb, VkEvent e, VkPipelineStageFlags m), (cb, e, m), )
+RM_FLUSH_HOOK(CmdResetEvent, (VkCommandBuffer cb, VkEvent e, VkPipelineStageFlags m), (cb, e, m), )
+RM_FLUSH_HOOK(CmdSetEvent2, (VkCommandBuffer cb, VkEvent e, const VkDependencyInfo *di), (cb, e, di), )
+RM_FLUSH_HOOK(CmdSetEvent2KHR, (VkCommandBuffer cb, VkEvent e, const VkDependencyInfo *di), (cb, e, di), )
+RM_FLUSH_HOOK(CmdResetEvent2, (VkCommandBuffer cb, VkEvent e, VkPipelineStageFlags2 m), (cb, e, m), )
+RM_FLUSH_HOOK(CmdResetEvent2KHR, (VkCommandBuffer cb, VkEvent e, VkPipelineStageFlags2 m), (cb, e, m), )
+RM_FLUSH_HOOK(CmdExecuteCommands, (VkCommandBuffer cb, uint32_t n, const VkCommandBuffer *c), (cb, n, c), )
+RM_FLUSH_HOOK(CmdBeginRenderPass2, (VkCommandBuffer cb, const VkRenderPassBeginInfo *b, const VkSubpassBeginInfo *s), (cb, b, s), )
+RM_FLUSH_HOOK(CmdBeginRenderPass2KHR, (VkCommandBuffer cb, const VkRenderPassBeginInfo *b, const VkSubpassBeginInfo *s), (cb, b, s), )
+RM_FLUSH_HOOK(CmdBeginRendering, (VkCommandBuffer cb, const VkRenderingInfo *i), (cb, i), )
+RM_FLUSH_HOOK(CmdBeginRenderingKHR, (VkCommandBuffer cb, const VkRenderingInfo *i), (cb, i), )
+#undef RM_FLUSH_HOOK
+// name -> (hook, where its next function is kept); only handed out when the device below has the command
+struct rm_fh { const char *name; void *fn; void **next; };
+#define H(n) { "vk" #n, (void *)q_##n, (void **)&rmn_##n },
+static const struct rm_fh rm_flush_fns[] = {
+	H(CmdCopyBuffer) H(CmdCopyBuffer2) H(CmdCopyBuffer2KHR) H(CmdFillBuffer) H(CmdCopyImage) H(CmdCopyImage2) H(CmdCopyImage2KHR)
+	H(CmdBlitImage) H(CmdBlitImage2) H(CmdBlitImage2KHR) H(CmdCopyBufferToImage) H(CmdCopyBufferToImage2) H(CmdCopyBufferToImage2KHR)
+	H(CmdCopyImageToBuffer2) H(CmdCopyImageToBuffer2KHR) H(CmdClearColorImage) H(CmdClearDepthStencilImage) H(CmdResolveImage)
+	H(CmdResolveImage2) H(CmdResolveImage2KHR) H(CmdDispatch) H(CmdDispatchBase) H(CmdDispatchBaseKHR) H(CmdDispatchIndirect)
+	H(CmdResetQueryPool) H(CmdCopyQueryPoolResults) H(CmdSetEvent) H(CmdResetEvent) H(CmdSetEvent2) H(CmdSetEvent2KHR)
+	H(CmdResetEvent2) H(CmdResetEvent2KHR) H(CmdExecuteCommands) H(CmdBeginRenderPass2) H(CmdBeginRenderPass2KHR)
+	H(CmdBeginRendering) H(CmdBeginRenderingKHR)
+};
+#undef H
+// vrcompositor only: the merge hooks are not handed out to other processes at all
+static PFN_vkVoidFunction rm_proc(struct dev *d, const char *name)
+{
+	if (!rm_active()) return 0;
+	for (size_t i = 0; i < sizeof rm_flush_fns / sizeof rm_flush_fns[0]; i++)
+		if (!strcmp(rm_flush_fns[i].name, name)) {
+			PFN_vkVoidFunction nf = d->gdpa(d->dev, name);
+			if (!nf) return 0;
+			if (!*rm_flush_fns[i].next) *rm_flush_fns[i].next = (void *)nf;
+			return (PFN_vkVoidFunction)rm_flush_fns[i].fn;
+		}
+#define M(n) if (!strcmp(name, "vk" #n)) return d->n ? (PFN_vkVoidFunction)q_##n : 0;
+	M(DestroyBuffer) M(CreateDescriptorSetLayout) M(AllocateDescriptorSets) M(UpdateDescriptorSets) M(UpdateDescriptorSetWithTemplate)
+	M(UpdateDescriptorSetWithTemplateKHR) M(CreateRenderPass) M(DestroyRenderPass) M(AllocateCommandBuffers) M(FreeCommandBuffers)
+	M(DestroyCommandPool) M(BeginCommandBuffer) M(EndCommandBuffer) M(CmdBeginRenderPass) M(CmdEndRenderPass) M(CmdUpdateBuffer)
+	M(CmdBindDescriptorSets) M(CmdDraw) M(CmdDrawIndexed) M(CmdDrawIndirect) M(CmdDrawIndexedIndirect)
+#undef M
+	return 0;
+}
 
 // ---- cross-process timeline semaphores (OPAQUE_FD) ----
 // SteamVR shares timeline semaphores between its processes as OPAQUE_FD. Turnip on KGSL cannot export semaphores
@@ -2784,6 +2919,9 @@ static VKAPI_ATTR VkResult VKAPI_CALL q_CreateDevice(VkPhysicalDevice pd, const 
 	F(CmdBindPipeline) F(CmdBindDescriptorSets) F(CmdDispatch)
 	F(ReleaseSwapchainImagesEXT) F(ImportFenceFdKHR) F(BindImageMemory2) F(BindImageMemory2KHR) F(GetMemoryFdKHR)
 	F(GetBufferMemoryRequirements2) F(GetBufferMemoryRequirements2KHR) F(GetImageMemoryRequirements2) F(GetImageMemoryRequirements2KHR)
+	F(CreateRenderPass) F(DestroyRenderPass) F(ResetDescriptorPool) F(DestroyDescriptorPool) F(CmdCopyBuffer) F(CmdUpdateBuffer)
+	F(CmdBeginRenderPass) F(CmdEndRenderPass) F(FreeCommandBuffers) F(UpdateDescriptorSetWithTemplate)
+	F(UpdateDescriptorSetWithTemplateKHR) F(CmdDraw) F(CmdDrawIndexed) F(CmdDrawIndirect) F(CmdDrawIndexedIndirect)
 #undef F
 	in->GetPhysicalDeviceMemoryProperties(pd, &d->memprops);
 	d->cpufence = fencefd && d->ImportFenceFdKHR && envi("Q2VR_CPUFENCE", 1);
@@ -2869,6 +3007,8 @@ EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL q2vr_GetDeviceProcAddr(VkDevice 
 	if (!strcmp(name, "vkGetDeviceProcAddr")) return (PFN_vkVoidFunction)q2vr_GetDeviceProcAddr;
 	struct dev *d = dv ? dev_of(dv) : 0;
 	if (!d) return 0;
+	PFN_vkVoidFunction rf = rm_proc(d, name);   // desk-384: render pass merge (vrcompositor)
+	if (rf) return rf;
 	void *f = lookup(device_fns, sizeof device_fns / sizeof device_fns[0], name);
 	if (f) {
 		// only intercept what the device below actually has (so feature checks stay honest)
