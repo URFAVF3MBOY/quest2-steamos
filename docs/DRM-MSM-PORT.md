@@ -91,6 +91,13 @@ What it took (all in `adreno/a6xx_preempt.c` / `a6xx_gpu.c`):
     only active with `plevel=1`).
   - mainline a7xx's `CP_PREEMPT_ENABLE_LOCAL` (0x6a) and a5xx/KGSL's `CP_YIELD_ENABLE` (0x1c) before the IBs:
     both **CP opcode errors** on the a650 SQE firmware - removed.
+  - 2026-11-10: `plevel=1` again, live (`echo 1 > /sys/module/q2msm/parameters/plevel`) during SteamVR: 40 s idle
+    fine (0 dropped), then a whole-system hang ~1 min into Aurora with the laser on Steam's UI (watchdog reboot, nothing
+    in the persistent kernel log).  Not the SMMU info block: q2msm has no per-process pagetables
+    (`msm_iommu_pagetable_create` is a stub), every context shares one address space, so the CP never needs a
+    pagetable restore (a KGSL-style info block was tried, `15ebc0e`, and reverted: with its address set and no valid
+    magic the first switch never completed).  Still to compare with KGSL: its CP_SET_AMBLE KMD postamble, and whether
+    Turnip's a6xx IBs are safe to stop mid-way at all (KGSL runs the blob UMD).
   Left: no CP state at the hang (needs a crashdump / CP_SQE stat read), Meta's KGSL may set something q2msm doesn't
   (the record's info / SMMU magic, CP_CHICKEN bits).  Parked - ring level already gives most of the gain.
 
