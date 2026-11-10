@@ -190,8 +190,9 @@ void a6xx_preempt_hw_init(struct msm_gpu *gpu)
 		a6xx_gpu->preempt_smmu->context_idr = 0;
 		wmb();
 	}
-	/* set per switch in a6xx_preempt_trigger (only for a ring whose pagetable is known) */
-	gpu_write64(gpu, REG_A6XX_CP_CONTEXT_SWITCH_SMMU_INFO_LO, REG_A6XX_CP_CONTEXT_SWITCH_SMMU_INFO_HI, 0);
+	gpu_write64(gpu, REG_A6XX_CP_CONTEXT_SWITCH_SMMU_INFO_LO,
+		REG_A6XX_CP_CONTEXT_SWITCH_SMMU_INFO_HI,
+		(q2_psmmu && a6xx_gpu->preempt_smmu) ? a6xx_gpu->preempt_smmu_iova : 0);
 
 	/* Enable the GMEM save/restore feature for preemption */
 	gpu_write(gpu, REG_A6XX_RB_CONTEXT_SWITCH_GMEM_SAVE_RESTORE, 0x1);
@@ -255,22 +256,12 @@ void a6xx_preempt_trigger(struct msm_gpu *gpu)
 	 * (a6xx_set_pagetable writes TTBR0 | ASID << 48 to the ring's memptrs).  0 = the ring never switched pagetable:
 	 * leave the magic off so the CP keeps the current one (its first submission brings its own table update).
 	 */
-	/*
-	 * First test (2026-11-10): with the block's address set but no magic (incoming ring never switched pagetable) the
-	 * CP never completed the switch (timed out, cntl 0x310).  So the block's address is only handed over for a ring
-	 * whose pagetable is known; otherwise address 0, as before (the CP keeps the current pagetable).
-	 */
 	if (q2_psmmu && a6xx_gpu->preempt_smmu) {
 		u64 ttbr0 = READ_ONCE(ring->memptrs->ttbr0);
 
-		if (ttbr0) {
-			a6xx_gpu->preempt_smmu->ttbr0 = ttbr0;
-			a6xx_gpu->preempt_smmu->context_idr = 0;
-			a6xx_gpu->preempt_smmu->magic = A6XX_CP_SMMU_INFO_MAGIC_REF;
-			wmb();
-		}
-		gpu_write64(gpu, REG_A6XX_CP_CONTEXT_SWITCH_SMMU_INFO_LO, REG_A6XX_CP_CONTEXT_SWITCH_SMMU_INFO_HI,
-			ttbr0 ? a6xx_gpu->preempt_smmu_iova : 0);
+		a6xx_gpu->preempt_smmu->ttbr0 = ttbr0;
+		a6xx_gpu->preempt_smmu->context_idr = 0;
+		a6xx_gpu->preempt_smmu->magic = ttbr0 ? A6XX_CP_SMMU_INFO_MAGIC_REF : 0;
 	}
 
 	spin_lock_irqsave(&ring->lock, flags);
