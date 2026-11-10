@@ -252,6 +252,18 @@ static bool tw_map()
 // Measured on 40 s of real head motion (desk-385), predicting 32 ms ahead at each frame: average error 0.263 -> 0.245 deg,
 // but frame-to-frame jumps over 0.5 deg 155 -> 244 (max 3.1 -> 4.3 deg); every window/cap/scale tried was jumpier than
 // the angular velocity alone.  Through SteamVR's prediction the estimate adds more noise than it removes - off by default.
+// desk-389: how much of the head's turn rate SteamVR predicts with (percent).  Replaying 40 s of real head motion at the
+// 32 ms photon time: 100% = lag while turning 0.71 deg, 189 frame-to-frame wobbles over 0.5 deg; 75% = 0.71 deg, 146;
+// 50% = 0.89 deg, 93; 0% (Reframed VR's default: no velocity at all) = 1.46 deg, 37.  Default 75 (same accuracy as 100,
+// a quarter fewer wobbles).  /var/lib/q2/predict (0-100) changes it live, read twice a second.
+static volatile int g_pred_pct = 75;
+static void pred_poll()
+{
+	int fd = open("/var/lib/q2/predict", 0), v = 75;
+	if (fd >= 0) { char b[8] = { 0 }; long n = read(fd, b, 7); close(fd); if (n > 0 && b[0] >= '0' && b[0] <= '9') { v = 0; for (int i = 0; i < n && b[i] >= '0' && b[i] <= '9'; i++) v = v * 10 + (b[i] - '0'); } }
+	if (v > 100) v = 100;
+	if (v != g_pred_pct) { Log("q2hmd: head prediction %d%% of the turn rate\n", v); g_pred_pct = v; }
+}
 static double g_aacc[3];
 static int angacc_mode() { static int m = -1; if (m < 0) m = envi("Q2VR_ANGACC", 0); return m; }
 static void angacc_note(const double o[8])
@@ -918,6 +930,9 @@ public:
 		Log("q2hmd: eyes: IPD %d mm (slider position %d), left eye on the %s half of the panel\n", ipd_mm, IPDPOS, envi("Q2VR_EYESWAP", 0) ? "lower" : "upper");
 		setVal<float>(c, Prop_UserHeadToEyeDepthMeters_Float, 0.0f, k_unFloatPropertyTag);
 		setVal<float>(c, Prop_SecondsFromVsyncToPhotons_Float, envi("Q2VR_PHOTON_MS", 16) / 1000.0f, k_unFloatPropertyTag);   // vsync -> copy -> panel scan
+		// desk-389: SteamVR's lens mesh 193x193 instead of its default 49x49 (from Reframed VR: the default mesh misplaced its
+		// lens model by up to 7 render pixels, 193 keeps every sample under half a pixel).  Q2VR_MESHRES overrides, 0 = default.
+		{ int mr = envi("Q2VR_MESHRES", 193); if (mr > 0) setVal<int32_t>(c, Prop_DistortionMeshResolution_Int32, mr, k_unInt32PropertyTag); }
 		setVal<bool>(c, Prop_IsOnDesktop_Bool, disp.IsDisplayOnDesktop(), k_unBoolPropertyTag);
 		setVal<bool>(c, Prop_DisplayDebugMode_Bool, envi("Q2VR_DEBUGMODE", 0) != 0, k_unBoolPropertyTag);
 		setVal<int32_t>(c, Prop_EdidVendorID_Int32, 0xD222, k_unInt32PropertyTag);   // "VLV": first entry of SteamVR's direct-mode list
@@ -974,7 +989,8 @@ public:
 				if (pto && age > 0 && age < 0.1) p.poseTimeOffset = -age;
 			}
 			// angular velocity: head frame -> world (rotate by q) so SteamVR can predict ahead
-			double vx = held ? 0 : o[5], vy = held ? 0 : o[6], vz = held ? 0 : o[7];
+			double ps = g_pred_pct / 100.0;   // desk-389
+			double vx = held ? 0 : o[5] * ps, vy = held ? 0 : o[6] * ps, vz = held ? 0 : o[7] * ps;
 			double tx = 2 * (y * vz - z * vy), ty = 2 * (z * vx - x * vz), tz = 2 * (x * vy - y * vx);
 			p.vecAngularVelocity[0] = vx + w * tx + (y * tz - z * ty);
 			p.vecAngularVelocity[1] = vy + w * ty + (z * tx - x * tz);
@@ -1056,7 +1072,7 @@ public:
 		VREvent_t ev;
 		while (g_host->PollNextEvent(&ev, sizeof ev)) {}
 		if (++frames % 900 == 1) Log("q2hmd: RunFrame %d\n", frames);
-		if (frames % 30 == 0 && hmd) { hmd->PollIpd(); hmd->PollHz(); }
+		if (frames % 30 == 0 && hmd) { hmd->PollIpd(); hmd->PollHz(); pred_poll(); }
 		// q2vrtest touches /dev/shm/q2ctl-go once vrserver has answered Steam's SetActionManifestPath (fallback: ~90 s)
 		bool go = false;
 		if (!ctl_added && frames % 25 == 0) { int fd = open("/dev/shm/q2ctl-go", 0); if (fd >= 0) { close(fd); go = true; } else if (frames > 1200) go = true; /* desk-217: 90 s -> ~15 s */ }
