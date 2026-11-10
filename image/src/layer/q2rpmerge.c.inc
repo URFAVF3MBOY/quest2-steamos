@@ -29,7 +29,9 @@
 //   command buffer...), the updated buffers get their latest contents with one copy between two barriers, and the app's
 //   own descriptor sets are bound again.
 // - A draw whose sets cannot be redirected splits the pass: end, buffers updated, begin again with a loading render pass.
-// Off: /var/lib/q2/norpmerge (at start) or Q2VR_RPMERGE=0; at run time "touch /tmp/q2vr-nomerge" (from the next pass).
+// OFF by default (desk-387): with it on, objects split into doubles when looking left and down (one eye drew with the
+// wrong uniforms somewhere); gone at once with /tmp/q2vr-nomerge.  On: /var/lib/q2/rpmerge (at start) or Q2VR_RPMERGE=1;
+// at run time "touch /tmp/q2vr-nomerge" turns it off again (from the next pass).
 #include <stdbool.h>
 
 #define RM_BUF_MAX (64 * 1024)
@@ -53,11 +55,12 @@ static int rm_active(void)
 	if (f >= 0) { n = read(f, c, sizeof c - 1); close(f); }
 	if (n > 0 && c[n - 1] == '\n') n--;
 	c[n > 0 ? n : 0] = 0;
-	if (strstr(c, "vrcompositor") == c && envi("Q2VR_RPMERGE", 1)) {
-		int g = open("/var/lib/q2/norpmerge", 0);
-		if (g >= 0) close(g); else on = 1;
+	if (strstr(c, "vrcompositor") == c) {
+		int g = open("/var/lib/q2/rpmerge", 0);
+		if (g >= 0) { close(g); on = 1; }
+		if (envi("Q2VR_RPMERGE", on)) on = 1;
+		qlog("render pass merge: %s", on ? "on" : "off (default; /var/lib/q2/rpmerge or Q2VR_RPMERGE=1 turns it on)");
 	}
-	if (strstr(c, "vrcompositor") == c) qlog("render pass merge: %s", on ? "on" : "off (/var/lib/q2/norpmerge or Q2VR_RPMERGE=0)");
 	return on;
 }
 
