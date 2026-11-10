@@ -272,6 +272,33 @@ static void angacc_note(const double o[8])
 	double k = m > 60.0 ? 60.0 / m : 1.0;
 	for (int i = 0; i < 3; i++) g_aacc[i] = (a[i] == a[i]) ? a[i] * k : 0;
 }
+// desk-388: the head's turn rate from its own orientation over the last ~8 ms, instead of the rate q2pose reports.
+// On 40 s of real head motion, predicting 32 ms ahead at each frame: average error 0.264 -> 0.184 deg, lag along the
+// turn -0.17 -> -0.07 deg, frame-to-frame jumps unchanged (the reported rate differed from the orientation's own by
+// ~20 deg/s on average).  Head frame: rotvec(conj(q_old) * q_new) / dt.  Q2VR_ORIENTRATE=0: the reported rate.
+static void orient_rate(double o[8])
+{
+	static double h[64][5]; static int n, last = -1, on = -1;
+	if (on < 0) on = envi("Q2VR_ORIENTRATE", 1);
+	if (!on) return;
+	if (last < 0 || h[last][0] != o[4]) { last = (last + 1) % 64; h[last][0] = o[4]; for (int i = 0; i < 4; i++) h[last][1 + i] = o[i]; if (n < 64) n++; }
+	int j = -1;
+	for (int k = 1; k < n; k++) { int c = (last - k + 64) % 64; double dt = o[4] - h[c][0]; if (dt >= 0.008) { if (dt <= 0.030) j = c; break; } }
+	if (j < 0) return;                                            // no sample 8-30 ms back: keep the reported rate
+	const double *a = &h[j][1]; double dt = o[4] - h[j][0];
+	// r = conj(a) * o
+	double rw = a[0] * o[0] + a[1] * o[1] + a[2] * o[2] + a[3] * o[3];
+	double rx = a[0] * o[1] - a[1] * o[0] - a[2] * o[3] + a[3] * o[2];
+	double ry = a[0] * o[2] + a[1] * o[3] - a[2] * o[0] - a[3] * o[1];
+	double rz = a[0] * o[3] - a[1] * o[2] + a[2] * o[1] - a[3] * o[0];
+	if (rw < 0) { rw = -rw; rx = -rx; ry = -ry; rz = -rz; }
+	double sn = __builtin_sqrt(rx * rx + ry * ry + rz * rz);
+	if (sn < 1e-12) { o[5] = o[6] = o[7] = 0; return; }
+	double x2 = sn * sn;   // half angle = asin(sn) (sn <= ~0.45 here), series - no libm in this freestanding build
+	double ang = 2 * sn * (1 + x2 * (1.0 / 6 + x2 * (3.0 / 40 + x2 * (5.0 / 112)))), k = ang / sn / dt;
+	double wx = rx * k, wy = ry * k, wz = rz * k;
+	if (wx == wx && wy == wy && wz == wz && wx * wx + wy * wy + wz * wz < 900.0) { o[5] = wx; o[6] = wy; o[7] = wz; }   // sane (< ~1700 deg/s)
+}
 // head rotation o[0..3] as of o[4] (s), turning at o[5..7] (rad/s, head frame), carried on to time t (s); as the layer does it
 static void tw_predict(const double o[8], double t, double q[4])
 {
@@ -908,7 +935,8 @@ public:
 		p.vecPosition[1] = 1.6; p.willDriftInYaw = true;     // 3DoF IMU, no magnetometer
 		double o[8];
 		if (read_pose(o)) {
-			angacc_note(o);   // desk-385
+			orient_rate(o);   // desk-388: the turn rate from the orientation itself
+			angacc_note(o);   // desk-385 (off by default)
 			double w = o[0], x = o[1], y = o[2], z = o[3];
 			double hq[4]; bool held = tw_held(o, hq);   // desk-368: timewarp - the tick's rotation, no angular velocity
 			if (held) { w = hq[0]; x = hq[1]; y = hq[2]; z = hq[3]; }
