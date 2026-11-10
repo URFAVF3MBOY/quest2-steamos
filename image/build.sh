@@ -54,6 +54,9 @@ sh -n src/init/init
 OUT=out/boot_steamos.img; USBROOT=""
 [ -n "$USB" ] && { OUT=out/boot_steamos_usb.img; USBROOT="--cmdline-drop q2_rootdev"; echo "== USB=1: SteamOS from the USB drive"; }
 OPT=""
+# desk-403: falls back to image/prebuilt/q2gpu-android.tar.gz (build-q2gpu-android with turnip-q2-ssem: the Android
+# Turnip that can share SteamVR's semaphores - without it VRChat crashes creating its first swapchain)
+[ -f art/q2gpu-android.tar.gz ] || { [ -f prebuilt/q2gpu-android.tar.gz ] && mkdir -p art && cp prebuilt/q2gpu-android.tar.gz art/; }
 if [ -f art/q2gpu-android.tar.gz ]; then
   OPT="$OPT --file art/q2gpu-android.tar.gz:usr/share/q2gpu-android.tar.gz:644"
   echo "== including art/q2gpu-android.tar.gz (GPU driver for Android apps)"
