@@ -32,8 +32,9 @@ jobs:
         working-directory: sdk/src/tests/hello_xr
         run: |
           echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
-          GW=../../../gradlew; [ -x "$GW" ] || GW=gradle
-          $GW --no-daemon assembleDebug
+          chmod +x ./gradlew   # hello_xr's own wrapper (Gradle 8.5 for its Android plugin 8.1.4; the runner's Gradle 9 is too new)
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;23.2.8568313" > /dev/null
+          ./gradlew --no-daemon assembleDebug
           find . -name "*.apk" -exec ls -l {} \;
 
       - uses: actions/upload-artifact@v4
