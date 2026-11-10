@@ -2096,6 +2096,40 @@ static VKAPI_ATTR void VKAPI_CALL q_CmdWaitEvents2(VkCommandBuffer cb, uint32_t 
 static VKAPI_ATTR void VKAPI_CALL q_CmdWaitEvents2KHR(VkCommandBuffer cb, uint32_t ne, const VkEvent *ev, const VkDependencyInfo *di)
 { struct dev *d = dev_of(cb); wait2(d, d->CmdWaitEvents2KHR, cb, ne, ev, di); }
 
+// ---- desk-394: anisotropic filtering cap (vrcompositor) ----
+// SteamVR asks for 16x anisotropic filtering on its samplers.  Looking at Aurora's floor (a surface at a steep angle that
+// fills most of the view) with the laser on, the compositor's GPU time went over the frame budget; looking up, or with
+// the laser off, it fit.  At 16x a floor texel fetch is up to 16 samples; 4x looks the same at this panel resolution.
+// /var/lib/q2/maxaniso (1-16, default 4; 16 = SteamVR's own) - read when the compositor creates its samplers (VR restart).
+static int aniso_cap(void)
+{
+	static int cap = -1;
+	if (cap >= 0) return cap;
+	cap = 16;
+	char c[32]; long n = 0; int f = open("/proc/self/comm", 0);
+	if (f >= 0) { n = read(f, c, sizeof c - 1); close(f); }
+	c[n > 0 ? n : 0] = 0;
+	if (strstr(c, "vrcompositor") == c) {
+		cap = 4;
+		int g = open("/var/lib/q2/maxaniso", 0);
+		if (g >= 0) { char b[8] = { 0 }; long k = read(g, b, 7); close(g); int v = 0; for (long i = 0; i < k && b[i] >= '0' && b[i] <= '9'; i++) v = v * 10 + (b[i] - '0'); if (v >= 1 && v <= 16) cap = v; }
+		qlog("samplers: anisotropic filtering capped at %dx (/var/lib/q2/maxaniso)", cap);
+	}
+	return cap;
+}
+static volatile unsigned g_aniso_capped;
+static VKAPI_ATTR VkResult VKAPI_CALL q_CreateSampler(VkDevice dv, const VkSamplerCreateInfo *ci, const VkAllocationCallbacks *a, VkSampler *s)
+{
+	struct dev *d = dev_of(dv);
+	int cap = aniso_cap();
+	if (ci->anisotropyEnable && ci->maxAnisotropy > (float)cap) {
+		VkSamplerCreateInfo c = *ci; c.maxAnisotropy = (float)cap;
+		if (__atomic_add_fetch(&g_aniso_capped, 1, __ATOMIC_RELAXED) <= 3) qlog("samplers: anisotropy %.0fx -> %dx", (double)ci->maxAnisotropy, cap);
+		return d->CreateSampler(dv, &c, a, s);
+	}
+	return d->CreateSampler(dv, ci, a, s);
+}
+
 // ---- render pass merge hooks (q2rpmerge.c.inc; vrcompositor only, everything passes straight through elsewhere) ----
 static VKAPI_ATTR void VKAPI_CALL q_DestroyBuffer(VkDevice dv, VkBuffer b, const VkAllocationCallbacks *a)
 { struct dev *d = dev_of(dv); rm_forget_buffer(b); d->DestroyBuffer(dv, b, a); }
@@ -3041,7 +3075,7 @@ static const struct fn device_fns[] = {
 	E(WaitForPresentKHR) E(GetSwapchainStatusKHR) E(GetRefreshCycleDurationGOOGLE) E(GetPastPresentationTimingGOOGLE)
 	E(ReleaseSwapchainImagesEXT) E(WaitForFences) E(DestroyFence)
 E(GetBufferMemoryRequirements) E(GetBufferMemoryRequirements2) E(GetBufferMemoryRequirements2KHR) E(GetImageMemoryRequirements) E(GetImageMemoryRequirements2) E(GetImageMemoryRequirements2KHR)
-E(AllocateMemory) E(MapMemory) E(CmdCopyImageToBuffer) E(BindImageMemory) E(BindImageMemory2) E(BindImageMemory2KHR) E(GetMemoryFdKHR)
+E(CreateSampler) E(AllocateMemory) E(MapMemory) E(CmdCopyImageToBuffer) E(BindImageMemory) E(BindImageMemory2) E(BindImageMemory2KHR) E(GetMemoryFdKHR)
 };
 static const struct fn instance_fns[] = {
 	E(CreateInstance) E(DestroyInstance) E(CreateDevice) E(EnumerateInstanceLayerProperties) E(EnumerateInstanceExtensionProperties)
