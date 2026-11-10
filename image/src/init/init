@@ -7533,7 +7533,11 @@ if [ -d "$PH" ]; then
   # none) -> "ashmem creation failed", system_server died.  The Quest's ashmem goes in under both names.
   BID=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)
   [ -e /dev/ashmem ] && CDEV="$CDEV, \"/dev/ashmem:/dev/ashmem:rwm\"" && [ -n "$BID" ] && CDEV="$CDEV, \"/dev/ashmem:/dev/ashmem$BID:rwm\""
-  printf '[engine]\ncgroup_manager = "cgroupfs"\nevents_logger = "file"\n\n[containers]\nlog_driver = "k8s-file"\nnetns = "host"\nannotations = ["run.oci.keep_original_groups=1"]\ndevices = [%s]\n' "$CDEV" > "$PH/.config/containers/containers.conf"
+  # desk-403: Android's init reads ro.boot.* from /proc/cmdline.  Powered on by plugging in USB, the bootloader passes
+  # androidboot.mode=charger -> the container booted into charger mode (no zygote, Lepton stuck at "Waiting for boot").
+  # Containers get this boot's cmdline with the mode forced to normal.
+  sed 's/androidboot\.mode=[^ ]*/androidboot.mode=normal/' /proc/cmdline > "$NR/var/lib/q2/lepton-cmdline"; chmod 644 "$NR/var/lib/q2/lepton-cmdline"
+  printf '[engine]\ncgroup_manager = "cgroupfs"\nevents_logger = "file"\n\n[containers]\nlog_driver = "k8s-file"\nnetns = "host"\nannotations = ["run.oci.keep_original_groups=1"]\ndevices = [%s]\nvolumes = ["/var/lib/q2/lepton-cmdline:/proc/cmdline:ro"]\n' "$CDEV" > "$PH/.config/containers/containers.conf"
   log "desk-263: devices for Android containers: $CDEV"
   # storage made with the failing overlay driver cannot be reused with another driver: start it fresh once
   if [ "$(cat "$NR/var/lib/q2/podman-driver" 2>/dev/null)" != "$PDRV" ]; then
