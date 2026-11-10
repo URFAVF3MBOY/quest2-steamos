@@ -903,7 +903,9 @@ public:
 		double nom = 1e9 / (double)envi("Q2VR_HZ", 72);
 		int mult = (int)((nom + P / 2) / P); if (mult < 1) mult = 1;   // ticks every Nth refresh (e.g. 45 Hz on a 90 Hz panel)
 		float hz = (float)(1e9 / ((double)P * mult));
-		if (hz_now != 0 && (hz - hz_now < 0.01f && hz_now - hz < 0.01f)) return;
+		// desk-402: only a real change (72 <-> 90 Hz mode), not the measurement drifting by 0.01 Hz: every update makes
+		// SteamVR redo its frame timing, and after VRChat it stayed at half rate (22.2 ms frames) while the value drifted.
+		if (hz_now != 0 && (hz - hz_now < 0.5f && hz_now - hz < 0.5f)) return;
 		if (hz < 30 || hz > 150) return;
 		setVal<float>(cont, Prop_DisplayFrequency_Float, hz, k_unFloatPropertyTag);
 		Log("q2hmd: display frequency %.3f Hz (measured panel refresh %.3f ms%s)\n", hz, P / 1e6, mult > 1 ? ", every Nth" : "");
