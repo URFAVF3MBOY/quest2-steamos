@@ -700,6 +700,10 @@ public:
 		if (have && o[0] != lastcnt) { lastcnt = o[0]; stale = 0; } else if (stale < 100000) stale++;
 		bool btn = have && stale < 1000;                   // buttons fresh within 2 s (a failed read reuses the last data)
 		bool meta = g_mctl_ok[slot];                       // desk-251: pose from Meta's tracker (q2metapose)
+		// desk-397: a benchmark (tools/q2laserbench.py) can take the right hand over even while the real controller is
+		// awake: magic 'FRCE' at /dev/shm/q2ptr + 48 while it drives the pointer
+		double ptf[5];
+		if (slot == 1 && read_ptr(ptf) && g_ptr && g_ptr[12] == 0x45435246u) { btn = false; meta = false; }
 		bool real = btn || meta;
 		double pt[5] = { 0, 0, 0, 0, 0 };
 		bool mouse = !real && slot == 1 && read_ptr(pt);

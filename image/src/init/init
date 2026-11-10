@@ -2943,6 +2943,9 @@ cat > "$HOMED/.config/openvr/openvrpaths.vrpath" <<EOF
 EOF
 [ -f "$CFG/steamvr.vrsettings" ] && [ ! -f "$CFG/steamvr.vrsettings.q2bak" ] && cp "$CFG/steamvr.vrsettings" "$CFG/steamvr.vrsettings.q2bak"
 SSCALE=$(cat /var/lib/q2/vrscale 2>/dev/null | tr -cd 0-9.); SSCALE=${SSCALE:-1.0}   # render resolution scale (1.0 = 1440x1542 per eye; desk-140 default 0.7 so frames keep up; Ctrl+Alt+O cycles)
+# desk-396: keep what the user chose in SteamVR (environment such as Aurora, other settings): the file is rewritten from
+# the template below at every start, so the previous one is merged back afterwards for every key the template does not set
+cp -f "$CFG/steamvr.vrsettings" /tmp/q2vrsettings.prev 2>/dev/null || rm -f /tmp/q2vrsettings.prev
 cat > "$CFG/steamvr.vrsettings" <<'EOF'
 {
   "steamvr": { "forcedDriver": "q2hmd", "activateMultipleDrivers": false, "requireHmd": true, "useFacetRenderer": @FACET@,
@@ -3008,6 +3011,22 @@ if { [ ! -e /var/lib/q2/bench294.done ] && [ ! -e /var/lib/q2/nobench ]; } || [ 
   sed -i 's/^  POWERJSON$/  "power": { "pauseCompositorOnStandby": false, "turnOffScreensTimeout": 1800 },/' "$CFG/steamvr.vrsettings"
 else sed -i '/^  POWERJSON$/d' "$CFG/steamvr.vrsettings"; fi
 sed -i -e "s/PREFHZ/$PREFHZ/" -e "s/SSCALE/$SSCALE/" -e "s/ACHRO/$ACHRO/" -e "s/SIMPL/$SIMPL/" -e "s/VASYNC/$VASYNC/" "$CFG/steamvr.vrsettings"
+if [ -f /tmp/q2vrsettings.prev ]; then
+  python3 - "$CFG/steamvr.vrsettings" /tmp/q2vrsettings.prev <<'Q2MERGE_EOF' && L "steamvr settings: kept the user's own choices from the previous file" || L "steamvr settings: merge skipped"
+import json, sys
+new_p, old_p = sys.argv[1], sys.argv[2]
+new = json.load(open(new_p)); old = json.load(open(old_p))
+kept = 0
+for sec, vals in old.items():
+    if not isinstance(vals, dict): continue
+    tgt = new.setdefault(sec, {})
+    if not isinstance(tgt, dict): continue
+    for k, v in vals.items():
+        if k not in tgt: tgt[k] = v; kept += 1
+json.dump(new, open(new_p, 'w'), indent=3, sort_keys=True)
+print(kept)
+Q2MERGE_EOF
+fi
 L "compositor async (compute-queue late warp): $VASYNC"
 # a copy of the compositor for offline analysis (goes to the PC log drive once; ~6 MB)
 L "speed level $LVL (0 = all speed-ups; $(cat /var/lib/q2/vrlevel2 2>/dev/null | head -c 3 | sed 's/^/remembered /')): achromatic lens correction $ACHRO, simplified shaders $SIMPL"
