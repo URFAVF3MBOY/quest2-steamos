@@ -18,6 +18,8 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--put", action="append", default=[], metavar="RAMDISK_PATH=LOCAL_FILE",
                     help="also replace this ramdisk file (e.g. usr/share/q2vr/driver_q2hmd.so=image/prebuilt/driver_q2hmd.so)")
+    ap.add_argument("--kernel-from", metavar="IMG",
+                    help="take the kernel from this boot image (e.g. a CI kernel build); everything else stays from --in")
     a = ap.parse_args()
 
     d = open(a.src, "rb").read()
@@ -33,6 +35,11 @@ def main():
     if dtbo_sz and dtbo_off != do_:
         sys.exit("unexpected recovery_dtbo offset")
     kern, rd = d[ps:ps + ks], d[ro:ro + rs]
+    if a.kernel_from:
+        k2 = open(a.kernel_from, "rb").read()
+        if k2[:8] != b"ANDROID!" or struct.unpack_from("<I", k2, 36)[0] != ps:
+            sys.exit("--kernel-from: not a boot image with the same page size")
+        kern = k2[ps:ps + struct.unpack_from("<I", k2, 8)[0]]
     sec, dtbo, dtb = d[so:so + ss], d[do_:do_ + dtbo_sz], d[dto:dto + dtb_sz]
     tail = d[dto + al(dtb_sz):]
 
@@ -76,8 +83,9 @@ def main():
 
     h = bytearray(d[:ps])
     struct.pack_into("<I", h, 16, len(nrd))
+    struct.pack_into("<I", h, 8, len(kern))
     if dtbo_sz:
-        struct.pack_into("<Q", h, 1636, ro + al(len(nrd)) + al(ss))
+        struct.pack_into("<Q", h, 1636, ps + al(len(kern)) + al(len(nrd)) + al(ss))
     sh = hashlib.sha1()
     for blob in (kern, nrd, sec):
         sh.update(blob); sh.update(struct.pack("<I", len(blob)))
