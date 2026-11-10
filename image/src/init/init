@@ -5263,24 +5263,44 @@ UNIT
   # RAM until someone deletes them - ~1 GB after a day (Steam's UI GPU process restarts, Steam restarts), the headset
   # then swapped and SteamVR missed frames.  Every minute: delete the ones no process has open or mapped, if they were
   # already unused a minute earlier (a segment handed from one process to the next is never caught in between).
+  # desk-398: one scan of every process's open files and mappings per round.  The shell version ran fuser once per
+  # segment (333 of them) and every fuser walks all of /proc: a burst of >100% CPU every minute.
   cat > $NR/usr/bin/q2shmclean <<'Q2SHM_EOF'
-#!/bin/sh
-LOG=/var/log/q2/shmclean.txt; prev=""
-while true; do
-  now=""
-  for f in /dev/shm/u1000-*; do
-    [ -f "$f" ] || continue
-    fuser -s "$f" 2>/dev/null && continue
-    now="$now $f"
-  done
-  n=0; kb=0
-  for f in $now; do
-    case " $prev " in *" $f "*) s=$(du -k "$f" 2>/dev/null | cut -f1); fuser -s "$f" 2>/dev/null || { rm -f "$f" && n=$((n + 1)) && kb=$((kb + ${s:-0})); };; esac
-  done
-  [ $n -gt 0 ] && echo "$(date '+%F %T') removed $n unused segments, $((kb / 1024)) MB" >> $LOG
-  prev="$now"
-  sleep 60
-done
+#!/usr/bin/env python3
+import glob, os, time
+LOG = '/var/log/q2/shmclean.txt'
+PFX = '/dev/shm/u1000-'
+def in_use():
+    used = set()
+    for pid in os.listdir('/proc'):
+        if not pid.isdigit(): continue
+        try:
+            for fd in os.listdir('/proc/%s/fd' % pid):
+                try:
+                    t = os.readlink('/proc/%s/fd/%s' % (pid, fd))
+                    if t.startswith(PFX): used.add(t.split(' (deleted)')[0])
+                except OSError: pass
+        except OSError: pass
+        try:
+            with open('/proc/%s/maps' % pid) as m:
+                for line in m:
+                    k = line.find(PFX)
+                    if k >= 0: used.add(line[k:].strip().split(' (deleted)')[0])
+        except OSError: pass
+    return used
+prev = set()
+while True:
+    used = in_use()
+    unused = {f for f in glob.glob(PFX + '*') if os.path.isfile(f) and f not in used}
+    n = kb = 0
+    for f in unused & prev:      # unused now and a minute ago
+        try:
+            kb += os.path.getsize(f) // 1024; os.remove(f); n += 1
+        except OSError: pass
+    if n:
+        with open(LOG, 'a') as lg: lg.write('%s removed %d unused segments, %d MB\n' % (time.strftime('%F %T'), n, kb // 1024))
+    prev = unused
+    time.sleep(60)
 Q2SHM_EOF
   chmod 755 $NR/usr/bin/q2shmclean
   cat > $NR/etc/systemd/system/q2-shmclean.service <<'UNIT'
