@@ -7711,7 +7711,14 @@ while :; do
   if [ -n "$RUNNING" ] && [ $(( $(date +%s) % 10 )) -lt 2 ]; then
     for c in $RUNNING; do
       CP=$(pgrep -f "conmon .*-n $c" | head -n 1); [ -n "$CP" ] || continue
-      ps -eo pid=,ppid= | awk -v r=$CP '{p[$1]=$2} END{for(i in p){j=i; while(j in p && j!=r && j>1) j=p[j]; if(j==r && i!=r) print i}}' | xargs -r renice -n 15 -p >/dev/null 2>&1
+      # desk-405: except the app itself (process named by its package, not Android's own com.android.* / com.google.* /
+      # android.* / system_server), all of whose threads stay at normal priority: at nice 15 Open Brush rendered ~40 fps
+      # instead of ~55 (renice per thread: threads made before a renice keep their old nice)
+      for pid in $(ps -eo pid=,ppid= | awk -v r=$CP '{p[$1]=$2} END{for(i in p){j=i; while(j in p && j!=r && j>1) j=p[j]; if(j==r && i!=r) print i}}'); do
+        n=15; cmd=$(tr '\0' ' ' < /proc/$pid/cmdline 2>/dev/null | cut -d' ' -f1)
+        case "$cmd" in com.android.*|com.google.*|android.*|*:*|/*|"") ;; *.*) n=0 ;; esac
+        for t in /proc/$pid/task/*; do renice -n $n -p ${t##*/} >/dev/null 2>&1; done
+      done
     done
   fi
   for c in "${!SP[@]}"; do
