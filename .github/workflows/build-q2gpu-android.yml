@@ -48,6 +48,7 @@ jobs:
         run: |
           python3 patches/turnip-q2-async.py mesa
           python3 patches/turnip-q2-drm.py mesa
+          python3 patches/turnip-q2-ssem.py mesa   # desk-399: cross-process OPAQUE_FD timeline semaphores (Lepton apps)
           python3 - <<'PY'
           p = 'mesa/src/freedreno/vulkan/tu_knl.cc'; s = open(p).read()
           old = 'static const char path[] = "/dev/kgsl-3d0";'
