@@ -28,16 +28,6 @@
 static int q2_plevel;
 module_param_named(plevel, q2_plevel, int, 0644);
 
-/*
- * q2msm.psmmu (desk-393): 1 = the CP gets each incoming ring's pagetable through the SMMU info block (KGSL), and the
- * pagetable shortcut is per ring.  Needed for plevel=1 (a submission resumed mid-way must run in its own pagetable -
- * with the info block at address 0 it continued in the other ring's one: the October rb2 hang) and more correct at
- * plevel=0 too (a ring switched back in at a yield kept the previous ring's pagetable when its next submission skipped
- * the table update).  Read at hw init (needs a GPU restart to change).
- */
-int q2_psmmu;
-module_param_named(psmmu, q2_psmmu, int, 0444);
-
 /* Try to move the preemption state from old to new; false if it wasn't 'old' */
 static inline bool try_preempt_state(struct a6xx_gpu *a6xx_gpu,
 		enum a6xx_preempt_state old, enum a6xx_preempt_state new)
@@ -182,17 +172,9 @@ void a6xx_preempt_hw_init(struct msm_gpu *gpu)
 		a6xx_gpu->preempt_scratch[i] = 0;
 	}
 
-	/* desk-393: the SMMU info block the CP reads at every switch (0 = none: the CP leaves the pagetable alone) */
-	if (q2_psmmu && a6xx_gpu->preempt_smmu) {
-		a6xx_gpu->preempt_smmu->magic = 0;   /* armed per switch, once the incoming ring's TTBR0 is known */
-		a6xx_gpu->preempt_smmu->ttbr0 = 0;
-		a6xx_gpu->preempt_smmu->asid = 0xDECAFBAD;   /* KGSL: the CP doesn't use it */
-		a6xx_gpu->preempt_smmu->context_idr = 0;
-		wmb();
-	}
+	/* 0 = we don't switch pagetables (one address space for everything) */
 	gpu_write64(gpu, REG_A6XX_CP_CONTEXT_SWITCH_SMMU_INFO_LO,
-		REG_A6XX_CP_CONTEXT_SWITCH_SMMU_INFO_HI,
-		(q2_psmmu && a6xx_gpu->preempt_smmu) ? a6xx_gpu->preempt_smmu_iova : 0);
+		REG_A6XX_CP_CONTEXT_SWITCH_SMMU_INFO_HI, 0);
 
 	/* Enable the GMEM save/restore feature for preemption */
 	gpu_write(gpu, REG_A6XX_RB_CONTEXT_SWITCH_GMEM_SAVE_RESTORE, 0x1);
@@ -250,19 +232,6 @@ void a6xx_preempt_trigger(struct msm_gpu *gpu)
 	}
 
 	spin_unlock_irqrestore(&a6xx_gpu->eval_lock, flags);
-
-	/*
-	 * desk-393: the incoming ring's pagetable, as the GPU recorded it at that ring's last CP_SMMU_TABLE_UPDATE
-	 * (a6xx_set_pagetable writes TTBR0 | ASID << 48 to the ring's memptrs).  0 = the ring never switched pagetable:
-	 * leave the magic off so the CP keeps the current one (its first submission brings its own table update).
-	 */
-	if (q2_psmmu && a6xx_gpu->preempt_smmu) {
-		u64 ttbr0 = READ_ONCE(ring->memptrs->ttbr0);
-
-		a6xx_gpu->preempt_smmu->ttbr0 = ttbr0;
-		a6xx_gpu->preempt_smmu->context_idr = 0;
-		a6xx_gpu->preempt_smmu->magic = ttbr0 ? A6XX_CP_SMMU_INFO_MAGIC_REF : 0;
-	}
 
 	spin_lock_irqsave(&ring->lock, flags);
 	a6xx_gpu->preempt[ring->id]->wptr = get_wptr(ring);
@@ -478,9 +447,6 @@ void a6xx_preempt_fini(struct msm_gpu *gpu)
 	}
 	msm_gem_kernel_put(a6xx_gpu->preempt_scratch_bo, gpu->aspace, false);
 	a6xx_gpu->preempt_scratch_bo = NULL;
-	msm_gem_kernel_put(a6xx_gpu->preempt_smmu_bo, gpu->aspace, false);
-	a6xx_gpu->preempt_smmu_bo = NULL;
-	a6xx_gpu->preempt_smmu = NULL;
 }
 
 void a6xx_preempt_init(struct msm_gpu *gpu)
@@ -499,15 +465,6 @@ void a6xx_preempt_init(struct msm_gpu *gpu)
 		goto fail;
 	memset(a6xx_gpu->preempt_scratch, 0, PAGE_SIZE);
 
-	/* desk-393: the SMMU info block (KGSL: a privileged global buffer) */
-	a6xx_gpu->preempt_smmu = preempt_bo(gpu, PAGE_SIZE, &a6xx_gpu->preempt_smmu_bo,
-		&a6xx_gpu->preempt_smmu_iova, "preempt_smmu", 0);
-	if (IS_ERR(a6xx_gpu->preempt_smmu)) {
-		a6xx_gpu->preempt_smmu = NULL;
-		goto fail;
-	}
-	memset(a6xx_gpu->preempt_smmu, 0, PAGE_SIZE);
-
 	for (i = 0; i < gpu->nr_rings; i++) {
 		if (preempt_init_ring(a6xx_gpu, gpu->rb[i]))
 			goto fail;
@@ -520,8 +477,7 @@ void a6xx_preempt_init(struct msm_gpu *gpu)
 
 	timer_setup(&a6xx_gpu->preempt_timer, a6xx_preempt_timer, 0);
 
-	DRM_DEV_INFO(&gpu->pdev->dev, "q2msm: preemption on, %d rings, level %d, pagetable restore %s\n", gpu->nr_rings,
-		q2_plevel, q2_psmmu ? "on (psmmu=1)" : "off");
+	DRM_DEV_INFO(&gpu->pdev->dev, "q2msm: preemption on, %d rings\n", gpu->nr_rings);
 	return;
 fail:
 	/* On any failure: clean up and fall back to one ring, no preemption */

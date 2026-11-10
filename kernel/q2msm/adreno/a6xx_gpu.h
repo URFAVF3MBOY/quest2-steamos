@@ -52,27 +52,7 @@ struct a6xx_gpu {
 	bool uses_gmem;
 	bool skip_save_restore;
 	unsigned long preempt_count;
-	/*
-	 * q2msm.psmmu (desk-393): the pagetable each ring runs in, for the CP's switch.  With per-process pagetables a ring
-	 * that is switched back in must get ITS pagetable back: the CP loads the TTBR0 in the SMMU info block
-	 * (CP_CONTEXT_SWITCH_SMMU_INFO) at every switch, as KGSL does it (a6xx_preemption_trigger).  And the "same context,
-	 * skip the table update" shortcut must be per ring: the hardware pagetable is whatever the last ring to run set.
-	 */
-	struct msm_file_private *cur_ctx_rb[MSM_GPU_MAX_RINGS];
-	struct drm_gem_object *preempt_smmu_bo;
-	struct a6xx_cp_smmu_info *preempt_smmu;
-	uint64_t preempt_smmu_iova;
 };
-
-/* KGSL struct a6xx_cp_smmu_info (adreno_a6xx.h) */
-struct a6xx_cp_smmu_info {
-	uint32_t magic;
-	uint32_t _pad4;
-	uint64_t ttbr0;
-	uint32_t asid;
-	uint32_t context_idr;
-};
-#define A6XX_CP_SMMU_INFO_MAGIC_REF	0x241350D5UL
 
 #define to_a6xx_gpu(x) container_of(x, struct a6xx_gpu, base)
 
@@ -140,7 +120,6 @@ void a6xx_preempt_fini(struct msm_gpu *gpu);
 void a6xx_preempt_emit_pseudo_regs(struct msm_gpu *gpu, struct msm_ringbuffer *ring);
 void a6xx_preempt_emit_yield(struct msm_gpu *gpu, struct msm_ringbuffer *ring);
 extern int q2_preempt;
-extern int q2_psmmu;
 
 /*
  * Given a register and a count, return a value to program into

@@ -111,11 +111,7 @@ static void a6xx_set_pagetable(struct a6xx_gpu *a6xx_gpu,
 	u32 asid;
 	u64 memptr = rbmemptr(ring, ttbr0);
 
-	/* desk-393: per ring when the CP restores each ring's pagetable on a switch (q2msm.psmmu) */
-	if (q2_psmmu && a6xx_gpu->base.base.nr_rings > 1) {
-		if (ctx == a6xx_gpu->cur_ctx_rb[ring->id])
-			return;
-	} else if (ctx == a6xx_gpu->cur_ctx)
+	if (ctx == a6xx_gpu->cur_ctx)
 		return;
 
 	if (msm_iommu_pagetable_params(ctx->aspace->mmu, &ttbr, &asid))
@@ -149,7 +145,6 @@ static void a6xx_set_pagetable(struct a6xx_gpu *a6xx_gpu,
 	OUT_RING(ring, 0x31);
 
 	a6xx_gpu->cur_ctx = ctx;
-	a6xx_gpu->cur_ctx_rb[ring->id] = ctx;
 }
 
 static void a6xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
@@ -866,7 +861,6 @@ static int a6xx_hw_init(struct msm_gpu *gpu)
 	a6xx_preempt_hw_init(gpu);
 
 	a6xx_gpu->cur_ctx = NULL;
-	memset(a6xx_gpu->cur_ctx_rb, 0, sizeof(a6xx_gpu->cur_ctx_rb));   /* desk-393: pagetables unknown after a (re)init */
 
 	/* Enable the SQE_to start the CP engine */
 	gpu_write(gpu, REG_A6XX_CP_SQE_CNTL, 1);
