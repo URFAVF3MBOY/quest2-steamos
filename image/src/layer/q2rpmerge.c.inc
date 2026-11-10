@@ -396,6 +396,13 @@ static void rm_cb_begin(struct dev *d, VkCommandBuffer cb)   // vkBeginCommandBu
 	memset(c, 0, sizeof(*c));
 	c->cb = cb; c->d = d; c->pool = pool; memcpy(c->ch, ch, sizeof ch); c->nch = nch;
 	if (pool) d->ResetDescriptorPool(d->dev, pool, 0);
+	// desk-387: the staging arena is rewritten by the CPU every frame at the same GPU addresses.  Doubled objects while the
+	// head moved (merge on) look like draws reading last frame's uniforms from a stale GPU cache line - the same kind of
+	// staleness TU_DEBUG=flushpass exists for.  An explicit host-write -> uniform-read barrier at the start of the command
+	// buffer makes Turnip invalidate its caches before anything reads the snapshots.
+	VkMemoryBarrier hb = { VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_HOST_WRITE_BIT, VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT };
+	d->CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+	                      0, 1, &hb, 0, NULL, 0, NULL);
 }
 
 static void rm_cb_drop(struct dev *d, VkCommandBuffer cb)   // freed (or its pool destroyed / reset with release)
