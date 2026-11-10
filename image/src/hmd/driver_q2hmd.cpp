@@ -244,11 +244,37 @@ static bool tw_map()
 	Log("q2hmd: timewarp: render pose held per vblank tick (/dev/shm/q2tw)\n");
 	return true;
 }
+// desk-385: angular acceleration of the head, for prediction (idea and numbers from Quest1-SteamOS by nicolas-riera:
+// the change of the gyro rate over the last ~10 ms as angular acceleration, capped at 60 rad/s^2, cut the head
+// prediction error from 0.106 to 0.060 deg on average there).  Head frame, from the poses read (o[4] time, o[5..7]
+// rate); zero until there is a sample 8-50 ms older.  Q2VR_ANGACC: 0 off, 1 (default) sent to SteamVR as the pose's
+// angular acceleration (and used by the timewarp prediction), 2 folded into the angular velocity instead.
+static double g_aacc[3];
+static int angacc_mode() { static int m = -1; if (m < 0) m = envi("Q2VR_ANGACC", 1); return m; }
+static void angacc_note(const double o[8])
+{
+	static double h[32][4]; static int n, last = -1;
+	if (!angacc_mode()) { g_aacc[0] = g_aacc[1] = g_aacc[2] = 0; return; }
+	if (last >= 0 && h[last][0] == o[4]) return;                  // same sample as before
+	last = (last + 1) % 32; h[last][0] = o[4]; for (int i = 0; i < 3; i++) h[last][1 + i] = o[5 + i]; if (n < 32) n++;
+	int best = -1;
+	for (int k = 1; k < n; k++) {                                   // newest sample at least 10 ms older
+		int j = (last - k + 32) % 32; double dt = o[4] - h[j][0];
+		if (dt >= 0.010) { if (dt <= 0.050) best = j; break; }
+	}
+	if (best < 0) { g_aacc[0] = g_aacc[1] = g_aacc[2] = 0; return; }
+	double dt = o[4] - h[best][0], a[3], m = 0;
+	for (int i = 0; i < 3; i++) { a[i] = (o[5 + i] - h[best][1 + i]) / dt; m += a[i] * a[i]; }
+	m = __builtin_sqrt(m);
+	double k = m > 60.0 ? 60.0 / m : 1.0;
+	for (int i = 0; i < 3; i++) g_aacc[i] = (a[i] == a[i]) ? a[i] * k : 0;
+}
 // head rotation o[0..3] as of o[4] (s), turning at o[5..7] (rad/s, head frame), carried on to time t (s); as the layer does it
 static void tw_predict(const double o[8], double t, double q[4])
 {
 	double dt = t - o[4]; if (!(dt > 0)) dt = 0; if (dt > 0.08) dt = 0.08;
-	double a[3] = { o[5] * dt, o[6] * dt, o[7] * dt }, aa = a[0] * a[0] + a[1] * a[1] + a[2] * a[2];
+	double a[3] = { o[5] * dt + 0.5 * g_aacc[0] * dt * dt, o[6] * dt + 0.5 * g_aacc[1] * dt * dt, o[7] * dt + 0.5 * g_aacc[2] * dt * dt },
+	       aa = a[0] * a[0] + a[1] * a[1] + a[2] * a[2];
 	double d[4] = { 1 - aa / 8, a[0] / 2, a[1] / 2, a[2] / 2 };
 	q[0] = o[0] * d[0] - o[1] * d[1] - o[2] * d[2] - o[3] * d[3];
 	q[1] = o[0] * d[1] + o[1] * d[0] + o[2] * d[3] - o[3] * d[2];
@@ -851,6 +877,7 @@ public:
 		p.vecPosition[1] = 1.6; p.willDriftInYaw = true;     // 3DoF IMU, no magnetometer
 		double o[8];
 		if (read_pose(o)) {
+			angacc_note(o);   // desk-385
 			double w = o[0], x = o[1], y = o[2], z = o[3];
 			double hq[4]; bool held = tw_held(o, hq);   // desk-368: timewarp - the tick's rotation, no angular velocity
 			if (held) { w = hq[0]; x = hq[1]; y = hq[2]; z = hq[3]; }
@@ -870,6 +897,17 @@ public:
 			p.vecAngularVelocity[0] = vx + w * tx + (y * tz - z * ty);
 			p.vecAngularVelocity[1] = vy + w * ty + (z * tx - x * tz);
 			p.vecAngularVelocity[2] = vz + w * tz + (x * ty - y * tx);
+			// desk-385: angular acceleration (head frame -> world, as the velocity); not with the held timewarp pose
+			if (!held && angacc_mode()) {
+				double ax = g_aacc[0], ay = g_aacc[1], az = g_aacc[2], aw[3];
+				double ux = 2 * (y * az - z * ay), uy = 2 * (z * ax - x * az), uz = 2 * (x * ay - y * ax);
+				aw[0] = ax + w * ux + (y * uz - z * uy); aw[1] = ay + w * uy + (z * ux - x * uz); aw[2] = az + w * uz + (x * uy - y * ux);
+				if (angacc_mode() == 2) {   // folded in: the mean rate over the prediction (photon time + pose age)
+					static double T = envi("Q2VR_PHOTON_MS", 16) * 1e-3;
+					double hT = 0.5 * (T - p.poseTimeOffset);
+					for (int i = 0; i < 3; i++) p.vecAngularVelocity[i] += aw[i] * hT;
+				} else for (int i = 0; i < 3; i++) p.vecAngularAcceleration[i] = aw[i];
+			}
 			// neck model (Oculus SDK defaults, as in nicolas-riera/quest1-steamos): the eyes sit 7.5 cm above and
 			// 8.05 cm in front of the neck pivot, so turning the head also moves them a little. Q2VR_NECK=0 turns it off.
 			static int neck = envi("Q2VR_NECK", 1);

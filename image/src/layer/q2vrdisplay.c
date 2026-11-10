@@ -711,10 +711,32 @@ static void tw_shm(void)
 	void *m = mmap(0, 4096, 3, 1, fd, 0); close(fd);
 	if (m != (void *)-1) g_twm = m;
 }
+// desk-385: angular acceleration of the head (head frame) from the poses read, as driver_q2hmd.cpp angacc_note does it
+// (idea from Quest1-SteamOS by nicolas-riera: gyro change over ~10 ms, capped at 60 rad/s^2).  Q2VR_ANGACC=0: off.
+static double g_aacc[3];
+static void angacc_note(const double o[8])
+{
+	static double h[32][4]; static int n, last = -1, mode = -1;
+	if (mode < 0) mode = envi("Q2VR_ANGACC", 1);
+	if (!mode) return;
+	if (last >= 0 && h[last][0] == o[4]) return;
+	last = (last + 1) % 32; h[last][0] = o[4]; for (int i = 0; i < 3; i++) h[last][1 + i] = o[5 + i]; if (n < 32) n++;
+	int best = -1;
+	for (int k = 1; k < n; k++) {
+		int j = (last - k + 32) % 32; double dt = o[4] - h[j][0];
+		if (dt >= 0.010) { if (dt <= 0.050) best = j; break; }
+	}
+	if (best < 0) { g_aacc[0] = g_aacc[1] = g_aacc[2] = 0; return; }
+	double dt = o[4] - h[best][0], a[3], m = 0;
+	for (int i = 0; i < 3; i++) { a[i] = (o[5 + i] - h[best][1 + i]) / dt; m += a[i] * a[i]; }
+	double r = m > 3600.0 ? 60.0 : 0;
+	if (r > 0) { double y = 60.0; for (int it = 0; it < 20; it++) y = 0.5 * (y + m / y); r = 60.0 / y; } else r = 1.0;   // cap |a| at 60
+	for (int i = 0; i < 3; i++) g_aacc[i] = (a[i] == a[i]) ? a[i] * r : 0;
+}
 static int tw_newest(double o[8])   // seqlock read of /dev/shm/q2pose; while the writer holds it, the last good one
 {
 	static double last[8]; static int have;
-	if (tw_newest_read(o)) { for (int i = 0; i < 8; i++) last[i] = o[i]; have = 1; return 1; }
+	if (tw_newest_read(o)) { for (int i = 0; i < 8; i++) last[i] = o[i]; have = 1; angacc_note(o); return 1; }
 	if (have) for (int i = 0; i < 8; i++) o[i] = last[i];
 	return have;
 }
@@ -761,11 +783,28 @@ static void q_mul(const double a[4], const double b[4], double r[4])
 static void tw_predict(const double o[8], double t, double q[4])
 {
 	double dt = t - o[4]; if (!(dt > 0)) dt = 0; if (dt > 0.08) dt = 0.08;
-	double a[3] = { o[5] * dt, o[6] * dt, o[7] * dt }, aa = a[0] * a[0] + a[1] * a[1] + a[2] * a[2];
+	double a[3] = { o[5] * dt + 0.5 * g_aacc[0] * dt * dt, o[6] * dt + 0.5 * g_aacc[1] * dt * dt, o[7] * dt + 0.5 * g_aacc[2] * dt * dt },
+	       aa = a[0] * a[0] + a[1] * a[1] + a[2] * a[2];
 	double dq[4] = { 1 - aa / 8, a[0] / 2, a[1] / 2, a[2] / 2 };
 	q_mul(o, dq, q);
 	double n = tw_sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
 	if (n > 0) for (int i = 0; i < 4; i++) q[i] /= n;
+}
+// desk-385: when each eye's picture lights up.  The Quest 2 LCD has one backlight per eye, each flashed once per refresh
+// (Meta's dsi_panel_jdi_update_backlight, re-run on every refresh-rate switch): the first-scanned half (right eye) from
+// scanline min(target, vtotal + vsw + vbp - on), the other half from min(target, that + vactive / 2), both for `on`
+// lines, target = end of the active lines + jdi max scanline offset (1200).  on = level * vtotal * duty / 1e6 with duty
+// 100 and the level at most 1200 (bl-max-level; full brightness assumed).  At 72 Hz both clamp to the target - the eyes
+// flash together; at 90 Hz the right eye flashes ~1.2 ms earlier.  Line time from the 90 Hz mode (4916 lines at 90 Hz,
+// the same pixel clock at every rate).  Out: ns of each flash's middle relative to their mean, [0] = first-scanned half.
+static void tw_eye_flash(int64_t ofs[2])
+{
+	const double line = 1e9 / (4916.0 * 90.0);
+	double vt = (double)g_panel_P / line, on = 1200.0 * vt * 100.0 / 1e6, target = (1 + 20 + 3664) + 1200.0;
+	double ru = vt + 1 + 20 - on, r = ru < target ? ru : target, l = ru + 1832.0 < target ? ru + 1832.0 : target;
+	double mean = 0.5 * (r + l);
+	ofs[0] = (int64_t)((r - mean) * line); ofs[1] = (int64_t)((l - mean) * line);
+	if (!envi("Q2VR_TWEYE", 1)) ofs[0] = ofs[1] = 0;
 }
 static void tw_pose_l(struct swapchain *c, uint32_t i, int kk);
 static qmutex g_twpm;   // present thread and late-warp thread both come here
@@ -795,7 +834,9 @@ static void tw_pose_l(struct swapchain *c, uint32_t i, int kk)
 	if (!on || !g_twm) return;
 	double qo[4], o[8], qn[4], qi[4], r[4];
 	uint64_t T = c->acq_tick[i] + (uint64_t)(int64_t)tofs;
-	float rot[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
+	float rot[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } }, rot2[3][3];
+	int64_t eofs[2]; tw_eye_flash(eofs);
+	int has2 = 0;
 	n++;
 	if (!tw_slot(T, qo)) miss++;
 	else if (!tw_newest(o)) nopose++;
@@ -803,8 +844,20 @@ static void tw_pose_l(struct swapchain *c, uint32_t i, int kk)
 		// the flip this frame gets: the first panel refresh after the warp is done (ticks run g_vblead ahead of refreshes)
 		uint64_t P = g_panel_P, ref = g_tick_ns + g_vblead, ready = now_ns() + (uint64_t)gpu_ns;
 		uint64_t flip = ready > ref ? ref + ((ready - ref + P - 1) / P) * P : ref;
-		tw_predict(o, (double)(flip + (uint64_t)scan_ns) * 1e-9, qn);
+		double tph = (double)(flip + (uint64_t)scan_ns) * 1e-9;
+		tw_predict(o, tph + (double)eofs[0] * 1e-9, qn);   // the first-scanned half's flash
 		qi[0] = qo[0]; qi[1] = -qo[1]; qi[2] = -qo[2]; qi[3] = -qo[3];
+		if (eofs[0] != eofs[1]) {   // desk-385: the other half lights at another time - its own correction
+			double qn2[4], r2[4];
+			tw_predict(o, tph + (double)eofs[1] * 1e-9, qn2);
+			q_mul(qi, qn2, r2);
+			if (r2[0] < 0) for (int j = 0; j < 4; j++) r2[j] = -r2[j];
+			double w2 = r2[0], x2 = r2[1], y2 = r2[2], z2 = r2[3];
+			rot2[0][0] = (float)(1 - 2 * (y2 * y2 + z2 * z2)); rot2[0][1] = (float)(2 * (x2 * y2 - w2 * z2)); rot2[0][2] = (float)(2 * (x2 * z2 + w2 * y2));
+			rot2[1][0] = (float)(2 * (x2 * y2 + w2 * z2)); rot2[1][1] = (float)(1 - 2 * (x2 * x2 + z2 * z2)); rot2[1][2] = (float)(2 * (y2 * z2 - w2 * x2));
+			rot2[2][0] = (float)(2 * (x2 * z2 - w2 * y2)); rot2[2][1] = (float)(2 * (y2 * z2 + w2 * x2)); rot2[2][2] = (float)(1 - 2 * (x2 * x2 + y2 * y2));
+			has2 = 1;
+		}
 		q_mul(qi, qn, r);   // new-head view direction -> old-head (rendered) view direction
 		if (r[0] < 0) for (int j = 0; j < 4; j++) r[j] = -r[j];
 		double w = r[0], x = r[1], y = r[2], z = r[3];
@@ -822,8 +875,11 @@ static void tw_pose_l(struct swapchain *c, uint32_t i, int kk)
 			nsum[j] += 2 * tw_sqrt(rj[1] * rj[1] + rj[2] * rj[2] + rj[3] * rj[3]) * 57.29578; nn[j]++;
 		}
 	}
-	float *u = (float *)c->tumap[kk];   // struct twp: rot[6][4] first, both eyes the same rotation
-	for (int e = 0; e < 2; e++) for (int a = 0; a < 3; a++) for (int b = 0; b < 3; b++) u[(e * 3 + a) * 4 + b] = rot[a][b];
+	float *u = (float *)c->tumap[kk];   // struct twp: rot[6][4] first, per eye
+	// the shader's eye index of the first-scanned (upper) half: 0, or 1 with the eyes swapped
+	int up = envi("Q2VR_EYESWAP", 0) != 0 ? 1 : 0;
+	for (int e = 0; e < 2; e++) for (int a = 0; a < 3; a++) for (int b = 0; b < 3; b++)
+		u[(e * 3 + a) * 4 + b] = (has2 && e != up) ? rot2[a][b] : rot[a][b];
 	((volatile int32_t *)c->tumap[kk])[34] = warp;   // twp.flags[2] (byte 136): lens round trip + rotation, else exact copy
 	uint64_t t = now_ns();
 	if (t - tlog > 10000000000ull) {
