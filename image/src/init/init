@@ -3168,7 +3168,9 @@ VRHZ=$(cat /var/lib/q2/vrhz 2>/dev/null | tr -cd 0-9); VRHZ=${VRHZ:-72}   # desk
 PANELHZ=90
 # desk-407: the panel clock runs ~0.7 % fast, so Meta's 72 Hz mode refreshed at 72.507 Hz and apps pacing at 72.000
 # (Android ones through SteamVR's client) drifted against it (Open Brush: 40-50 % of frames on the wrong refresh).
-# The kernel lengthens lower dfps rates by q2_dfps_ppm (patch q2-dfps-trim); /var/lib/q2/dfpsppm overrides, 0 = off.
+# The kernel lengthens lower dfps rates by q2_dfps_ppm (patch q2-dfps-trim).  The dfps modes are computed at probe, so
+# the value that counts is msm_drm.q2_dfps_ppm= on the boot command line (7042: 72.5 -> 71.93 Hz, measured); writing
+# the parameter here (/var/lib/q2/dfpsppm) only matters for a kernel that recomputes on switch.
 DPPM=$(cat /var/lib/q2/dfpsppm 2>/dev/null | tr -cd 0-9-); DPPM=${DPPM:-7042}
 [ -w /sys/module/msm_drm/parameters/q2_dfps_ppm ] && echo "$DPPM" > /sys/module/msm_drm/parameters/q2_dfps_ppm
 if [ "$VRHZ" = 72 ]; then

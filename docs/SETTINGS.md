@@ -30,7 +30,7 @@ These apply when SteamVR starts (`sh /var/lib/q2/q2vrrestart.sh` restarts SteamV
 
 | File            | Default | What it does |
 | --------------- | ------- | ------------ |
-| `vrhz`          | `72`    | SteamVR's frame rate and the panel mode (`72` or `90`). 72 Hz uses Meta's own panel mode through `q2kmsd`; SteamVR plans frames for the measured rate (about 72.3 Hz) |
+| `vrhz`          | `72`    | SteamVR's frame rate and the panel mode (`72` or `90`). 72 Hz uses Meta's own panel mode through `q2kmsd`. The panel clock runs 0.7 % fast, so the kernel lengthens the 72 Hz frame (`msm_drm.q2_dfps_ppm=7042` on the boot command line): about 71.93 Hz instead of 72.5, close to the 72 apps pace at |
 | `vblead`        | `15000` | How far (µs) the compositor's vsync comes before the panel refresh it renders for. Too little and frames miss their refresh under load (stutter); at 13000, Steam's panels open in VR made over a third of the frames miss their refresh |
 | `photonms`      | `32` (`27` at 90 Hz) | The time (ms) SteamVR predicts the head pose for, from its vsync. Must match the real vsync-to-panel time (26 ms with the default `vblead`), or fast head turns overshoot or lag |
 | `direct`        | `1`     | The compositor draws straight into the display's scanout buffers (no copy per frame, ~1.3 ms of GPU time saved). `0` = the copy below |
