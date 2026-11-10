@@ -815,6 +815,34 @@ class Q2Hmd : public ITrackedDeviceServerDriver {
 public:
 	uint32_t id = k_unTrackedDeviceIndexInvalid;
 	PropertyContainerHandle_t cont = 0; int ipd_mm = 63;
+	// desk-386: the refresh rate SteamVR plans its frames for = the panel's MEASURED rate (q2blit publishes the refresh
+	// period in /dev/shm/q2warp's header, u32 [10] ns), not the nominal Q2VR_HZ.  The "72 Hz" mode really refreshes every
+	// 13.830 ms (72.31 Hz); told 72, SteamVR delivered 71.8 frames a second and the panel showed one frame twice about
+	// every 2 s (a hitch while the head turns).  Same idea as Quest1-SteamOS (nicolas-riera: its panels run at 71.82 Hz).
+	// Checked about twice a second (RunFrame); Q2VR_MEASUREDHZ=0 keeps the nominal rate.
+	float hz_now = 0;
+	void PollHz()
+	{
+		static volatile uint32_t *hd; static int tries;
+		if (!cont || !envi("Q2VR_MEASUREDHZ", 1)) return;
+		if (!hd) {
+			if (tries++ % 5) return;
+			int fd = open("/dev/shm/q2warp", 0); if (fd < 0) return;
+			void *m = mmap(0, 4096, 1 /*PROT_READ*/, 1 /*MAP_SHARED*/, fd, 0); close(fd);
+			if (m == (void *)-1) return;
+			hd = (volatile uint32_t *)m;
+		}
+		uint32_t P = hd[10];
+		if (P < 5000000 || P > 20000000) return;
+		double nom = 1e9 / (double)envi("Q2VR_HZ", 72);
+		int mult = (int)((nom + P / 2) / P); if (mult < 1) mult = 1;   // ticks every Nth refresh (e.g. 45 Hz on a 90 Hz panel)
+		float hz = (float)(1e9 / ((double)P * mult));
+		if (hz_now != 0 && (hz - hz_now < 0.01f && hz_now - hz < 0.01f)) return;
+		if (hz < 30 || hz > 150) return;
+		setVal<float>(cont, Prop_DisplayFrequency_Float, hz, k_unFloatPropertyTag);
+		Log("q2hmd: display frequency %.3f Hz (measured panel refresh %.3f ms%s)\n", hz, P / 1e6, mult > 1 ? ", every Nth" : "");
+		hz_now = hz;
+	}
 	void PollIpd()
 	{
 		int mm = ipd_file();
@@ -977,7 +1005,7 @@ public:
 		VREvent_t ev;
 		while (g_host->PollNextEvent(&ev, sizeof ev)) {}
 		if (++frames % 900 == 1) Log("q2hmd: RunFrame %d\n", frames);
-		if (frames % 30 == 0 && hmd) hmd->PollIpd();
+		if (frames % 30 == 0 && hmd) { hmd->PollIpd(); hmd->PollHz(); }
 		// q2vrtest touches /dev/shm/q2ctl-go once vrserver has answered Steam's SetActionManifestPath (fallback: ~90 s)
 		bool go = false;
 		if (!ctl_added && frames % 25 == 0) { int fd = open("/dev/shm/q2ctl-go", 0); if (fd >= 0) { close(fd); go = true; } else if (frames > 1200) go = true; /* desk-217: 90 s -> ~15 s */ }

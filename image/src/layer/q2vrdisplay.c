@@ -215,6 +215,7 @@ static qmutex g_evm; static qcond g_evc;   // zero-initialised = valid glibc def
 static int ev_slot(uint64_t f) { for (int j = 0; j < 16; j++) if (g_evt[j].f && g_evt[j].f == f) return j; return -1; }                  // present-wait completes at the real flip (1) or at GPU-copy done (0)
 static volatile uint64_t g_pi_hist[6], g_pi_last, g_phase_sum, g_phase_n;   // desk-171: present intervals (in panel refreshes) and phase after the tick
 static uint64_t g_t0;
+static volatile uint64_t g_tick_P;   // desk-386: the real interval between our vblank ticks (measured refresh x N), 0 = unknown
 static qthread g_vbthr;
 static int g_vbstarted;
 static uint8_t *shm_map(void);
@@ -246,6 +247,7 @@ static void *vblank_thread(void *arg)
 			uint64_t k = (t + 500000 - vs) / P + 1, n = vs + k * P;          // first refresh start > t + 0.5 ms
 			while (last && n < last + mult * P - P / 2) n += P;             // keep N refreshes between ticks
 			next = n;
+			g_tick_P = P * mult;
 			if (s2 != src) qlog("vblank ticks now follow %s: refresh %.3f ms, tick every %llu refresh(es) = %.2f Hz, %.1f ms ahead",
 			                    s2 == 0 ? "the real KMS flip times" : "q2blit's scan timing", (double)P / 1e6, (unsigned long long)mult, 1e9 / (double)(P * mult),
 			                    (double)g_vblead / 1e6);
@@ -1367,7 +1369,7 @@ static void fill_display_props(VkDisplayPropertiesKHR *p)
 static void fill_mode_props(VkDisplayModePropertiesKHR *p)
 {
 	p->displayMode = Q_MODE; p->parameters.visibleRegion.width = DW; p->parameters.visibleRegion.height = DH;
-	p->parameters.refreshRate = DHZ * 1000;
+	p->parameters.refreshRate = g_tick_P && envi("Q2VR_MEASUREDHZ", 1) ? (uint32_t)(1000000000000ull / g_tick_P) : DHZ * 1000;   // mHz; desk-386
 }
 static void fill_plane_caps(VkDisplayPlaneCapabilitiesKHR *c)
 {
@@ -2705,7 +2707,8 @@ static VKAPI_ATTR VkResult VKAPI_CALL q_GetSwapchainStatusKHR(VkDevice dv, VkSwa
 static VKAPI_ATTR VkResult VKAPI_CALL q_GetRefreshCycleDurationGOOGLE(VkDevice dv, VkSwapchainKHR s, VkRefreshCycleDurationGOOGLE *r)
 {
 	struct dev *d = dev_of(dv);
-	if (sc_of(s) || !d->GetRefreshCycleDurationGOOGLE) { r->refreshDuration = 1000000000ull / DHZ; return VK_SUCCESS; }
+	// desk-386: the measured tick interval (the "72 Hz" mode refreshes every 13.830 ms), not 1 s / DHZ
+	if (sc_of(s) || !d->GetRefreshCycleDurationGOOGLE) { r->refreshDuration = g_tick_P && envi("Q2VR_MEASUREDHZ", 1) ? g_tick_P : 1000000000ull / DHZ; return VK_SUCCESS; }
 	return d->GetRefreshCycleDurationGOOGLE(dv, s, r);
 }
 static VKAPI_ATTR VkResult VKAPI_CALL q_GetPastPresentationTimingGOOGLE(VkDevice dv, VkSwapchainKHR s, uint32_t *n, VkPastPresentationTimingGOOGLE *t)
