@@ -7586,6 +7586,39 @@ if [ -f "$LL/mounting.sh" ]; then
       # said "The app has changed, baked app data will be cleared" and then skipped it, so Android kept the old install
       # record, found no base.apk under /data/app and dropped VRChat ("Skipping PackageSetting ... missing metadata").
       sed -i 's/^    if \[\[ "\${LEPTON_NO_CLEANUP:-true}" != "false" \]\]; then$/    if [[ "${LEPTON_NO_CLEANUP:-true}" != "false" \&\& "$REASON" != "app or depot changed" \&\& "$REASON" != "app installation failure" ]]; then  # q2: early-exit cleanups only (desk-400)/' "$LL/liblepton.sh" && LP="$LP rebake-on-update"
+      # desk-401: install Steam-launched apps WITHOUT adb.  Lepton installs with "adb install" over the container's adbd;
+      # on the shared network (needed: SteamVR's IPC sockets are abstract, per network namespace) that adbd resets every
+      # host connection ("offline"), so the install hung forever (desk-279: why the first run used to need pasta).  The APK
+      # is copied into the container and installed by Android's own package manager instead - works on any network.
+      # Non-Steam launches keep Lepton's adb path.  Off: LEPTON_Q2_ADB_INSTALL=1.
+      if grep -q '^function install_app()$' "$LL/liblepton.sh" && ! grep -q 'q2_install_apk' "$LL/liblepton.sh"; then
+        awk '
+          /^function install_app\(\)$/ && !d {
+            print "function q2_install_apk()   # q2: desk-401 - pm install inside the container instead of adb"
+            print "{"
+            print "    podman cp \"$1\" \"lepton-${LEPTON_CONTEXT}:/data/local/tmp/q2install.apk\" || return 1"
+            print "    podman_attach --no-term sh -c \"pm install -r -g /data/local/tmp/q2install.apk; r=\\$?; rm -f /data/local/tmp/q2install.apk; exit \\$r\" </dev/null"
+            print "}"
+            print ""
+            d = 1
+          }
+          { print }
+          /^function install_app\(\)$/ { inf = 1 }
+          inf && /^        ret=0$/ && !r {
+            print "        if is_steamlaunch && [[ \"${LEPTON_Q2_ADB_INSTALL:-}\" != 1 ]]; then   # q2: desk-401"
+            print "            q2_install_apk \"${APK_PATH}\" && return 0"
+            print "            println \"App installation failed!\""
+            print "            export LEPTON_DUMP_LOGCAT=1"
+            print "            kill_container \"${LEPTON_CONTEXT}\""
+            print "            clear_baked_app_data \"app installation failure\""
+            print "            return 1"
+            print "        fi"
+            r = 1
+          }
+        ' "$LL/liblepton.sh" > "$LL/liblepton.sh.q2new" && grep -q 'q2_install_apk' "$LL/liblepton.sh.q2new" \
+          && cat "$LL/liblepton.sh.q2new" > "$LL/liblepton.sh" && LP="$LP install-without-adb"
+        rm -f "$LL/liblepton.sh.q2new"
+      fi
     fi
     # desk-276: Android's first boot on the Quest takes ~3 min (it also prepares the 327 MB VRChat app); Lepton gave the
     # app 60 s to appear, so VRChat never showed.  5 min instead (LEPTON_APP_LAUNCH_TIMEOUT still overrides).
