@@ -3166,8 +3166,14 @@ VRHZ=$(cat /var/lib/q2/vrhz 2>/dev/null | tr -cd 0-9); VRHZ=${VRHZ:-72}   # desk
 # the bootloader really runs - and the rate changes like on Quest OS: a DRM mode with another refresh rate from the
 # driver's own list, asked of q2kmsd (q2kms hz N); Meta's dynamic-fps code does the switch and the backlight strobe.
 PANELHZ=90
+# desk-407: the panel clock runs ~0.7 % fast, so Meta's 72 Hz mode refreshed at 72.507 Hz and apps pacing at 72.000
+# (Android ones through SteamVR's client) drifted against it (Open Brush: 40-50 % of frames on the wrong refresh).
+# The kernel lengthens lower dfps rates by q2_dfps_ppm (patch q2-dfps-trim); /var/lib/q2/dfpsppm overrides, 0 = off.
+DPPM=$(cat /var/lib/q2/dfpsppm 2>/dev/null | tr -cd 0-9-); DPPM=${DPPM:-7042}
+[ -w /sys/module/msm_drm/parameters/q2_dfps_ppm ] && echo "$DPPM" > /sys/module/msm_drm/parameters/q2_dfps_ppm
 if [ "$VRHZ" = 72 ]; then
-  if R=$(q2kms hz 72 2>&1); then PANELHZ=72; L "panel: 72 Hz ($R)"
+  [ -w /sys/module/msm_drm/parameters/q2_dfps_ppm ] && [ "$PANELHZ" = 90 ] && q2kms hz 90 >/dev/null 2>&1   # a new ppm applies at the next switch down
+  if R=$(q2kms hz 72 2>&1); then PANELHZ=72; L "panel: 72 Hz ($R), dfps trim ${DPPM} ppm"
   else VRHZ=90; L "panel: 72 Hz asked for, but q2kmsd could not switch ($R) - staying at 90 Hz"; fi
 elif [ -S /run/q2kms-ctl.sock ]; then q2kms hz 90 >/dev/null 2>&1; fi
 export Q2VR_PANEL_HZ=$PANELHZ

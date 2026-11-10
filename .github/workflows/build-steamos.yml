@@ -132,6 +132,9 @@ jobs:
           # the boot image picks the panel entry the bootloader really runs (msm_drm.q2_dsi_display0=) - desk-382
           git apply --check ../patches/q2-dsi-panel-entry.patch
           git apply ../patches/q2-dsi-panel-entry.patch; echo "applied q2-dsi-panel-entry.patch"
+          # lower dynamic-fps rates corrected for the panel clock (msm_drm.q2_dfps_ppm: 72 Hz mode = 72.000, not 72.507) - desk-407
+          git apply --check ../patches/q2-dfps-trim.patch
+          git apply ../patches/q2-dfps-trim.patch; echo "applied q2-dfps-trim.patch"
 
       - name: Configure kernel
         shell: bash

@@ -1,0 +1,32 @@
+--- a/techpack/display/msm/dsi/dsi_display.c
++++ b/techpack/display/msm/dsi/dsi_display.c
+@@ -4495,6 +4495,16 @@
+ 	display->dfps_transition_worker = NULL;
+ }
+ 
++/*
++ * q2 (desk-407): the Quest 2's panel clock runs ~0.7 % faster than its panel entry says, so Meta's 72 Hz mode
++ * (4916 x 90/72 = 6145 lines) refreshes at 72.507 Hz.  Apps (Android ones through SteamVR's client) pace at the
++ * 72.000 they asked for and drift against the real refresh.  q2_dfps_ppm lengthens the front porch of every
++ * lower dynamic-fps rate (not the boot rate) by that many parts per million of the new frame length (7042 -> 6188 lines
++ * = 72.000 Hz).  Writable at runtime; takes effect at the next rate switch.
++ */
++static int q2_dfps_ppm;
++module_param(q2_dfps_ppm, int, 0644);
++
+ static int dsi_display_dfps_calc_front_porch(
+ 		u32 old_fps,
+ 		u32 new_fps,
+@@ -4530,6 +4540,12 @@
+ 	else
+ 		b_fp_new = b_fp - add_porches;
+ 
++	if (q2_dfps_ppm && old_fps > new_fps && q2_dfps_ppm > -50000 && q2_dfps_ppm < 50000) {   /* q2 (desk-407) */
++		s32 trim = (s32)div_s64((s64)(b_total + add_porches) * q2_dfps_ppm + 500000, 1000000);
++		pr_info_ratelimited("q2: dfps %u -> %u fps: front porch %d %+d (q2_dfps_ppm %d)\n", old_fps, new_fps, b_fp_new, trim, q2_dfps_ppm);
++		b_fp_new += trim;
++	}
++
+ 	DSI_DEBUG("fps %u a %u b %u b_fp %u new_fp %d\n",
+ 			new_fps, a_total, b_total, b_fp, b_fp_new);
+ 
