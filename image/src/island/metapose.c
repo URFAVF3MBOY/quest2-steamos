@@ -11,6 +11,9 @@
 //   +72 doubles: px py pz (metres, standing height added)   +96 u32 'META' magic   +100 u32 update counter
 //   +104 double: monotonic time of this update (the driver ignores the position when it is older than 0.3 s)
 //   +112 doubles: linear velocity vx vy vz (m/s, world) - desk-248: SteamVR predicts position too
+//   +136 doubles: Meta's angular acceleration ax ay az (rad/s^2, world), +160 linear acceleration (m/s^2, world),
+//   +184 u32 'ACC1' when they are filled - desk-390: from Meta's own head filter (HeadTrackingStateV5 +0x44 / +0x50,
+//   what libposeprediction's extrapolateHeadTrackingStateToTimeV5 predicts with)
 // Nothing is ever written to Meta's process.  Status every 5 s: /var/log/q2/metapose.txt (Ctrl+Alt+U exports it while it runs)
 // Usage: q2metapose <tracker pid>
 typedef unsigned long size_t; typedef unsigned int u32; typedef long i64;
@@ -291,6 +294,8 @@ __attribute__((used)) int q2main(int argc, char **argv)
 			double px = F(bp + 0x20), py = F(bp + 0x24), pz = F(bp + 0x28);
 			double wx = F(bp + 0x2c), wy = F(bp + 0x30), wz = F(bp + 0x34);           // world frame
 			double vx = F(bp + 0x38), vy = F(bp + 0x3c), vz = F(bp + 0x40);
+			double aax = F(bp + 0x44), aay = F(bp + 0x48), aaz = F(bp + 0x4c);       // desk-390: Meta's angular accel (world)
+			double lax = F(bp + 0x50), lay = F(bp + 0x54), laz = F(bp + 0x58);       // linear accel (world)
 			// predict to now: q' = exp(w*dt/2) * q (world-frame angular velocity), p' = p + v*dt
 			double hx = wx * dt * 0.5, hy = wy * dt * 0.5, hz = wz * dt * 0.5, hw = 1;
 			double nw = hw * qw - hx * qx - hy * qy - hz * qz, nx = hw * qx + hx * qw + hy * qz - hz * qy;
@@ -310,6 +315,9 @@ __attribute__((used)) int q2main(int argc, char **argv)
 			*(volatile u32 *)(shm + 96) = 0x4154454d;   /* 'META' */ *(volatile u32 *)(shm + 100) = ++counter;
 			*(volatile double *)(shm + 104) = tn;
 			*(volatile double *)(shm + 112) = vx; *(volatile double *)(shm + 120) = vy; *(volatile double *)(shm + 128) = vz;
+			*(volatile double *)(shm + 136) = aax; *(volatile double *)(shm + 144) = aay; *(volatile double *)(shm + 152) = aaz;
+			*(volatile double *)(shm + 160) = lax; *(volatile double *)(shm + 168) = lay; *(volatile double *)(shm + 176) = laz;
+			*(volatile u32 *)(shm + 184) = 0x31434341;   /* 'ACC1' */
 			for (int h = 0; h < 2; h++) {                // desk-251: controllers at +256 / +384
 				volatile unsigned char *b = shm + 256 + 128 * h; volatile double *cd = (volatile double *)(b + 8);
 				if (!CO[h].ok) { *(volatile u32 *)b = 0; continue; }
