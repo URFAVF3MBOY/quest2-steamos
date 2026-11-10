@@ -1435,7 +1435,16 @@ echo "$MODE" > /var/lib/q2/cefmode
 grep -q disable-gpu-compositing /var/lib/q2/steamargs 2>/dev/null && : > /var/lib/q2/steamargs   # desk-81 probe result: that switch turns the GPU off
 DBG=""; { grep -q q2_diag=1 /proc/cmdline || [ ! -f /var/lib/q2/cefflags.ok9 ]; } && DBG="-cef-enable-debugging"   # DevTools only while probing / with q2_diag=1
 CEFGPU="-cef-disable-gpu"; [ "$MODE" = gpu ] && CEFGPU="$DBG -cef-disable-xcomposite-workaround -cef-disable-gpu-sandbox"   # Quest1-SteamOS: Steam otherwise redirects CEF windows offscreen into its own composer, so GPU frames never reach the screen   # DevTools on 127.0.0.1:8080 -> q2cefdiag reads chrome://gpu
-if [ -n "$1" ]; then touch /tmp/q2steam-stopping; pkill -f q2steam-run.sh 2>/dev/null; pkill -u "$U" -x steam 2>/dev/null; pkill -u "$U" -f steamwebhelper 2>/dev/null; sleep 3; fi
+if [ -n "$1" ]; then touch /tmp/q2steam-stopping; pkill -f q2steam-run.sh 2>/dev/null; pkill -u "$U" -x steam 2>/dev/null; pkill -u "$U" -f steamwebhelper 2>/dev/null; sleep 3
+  # desk-392: also the gamescope Steam runs in for VR (and its dbus-run-session).  It does not always exit with its Steam:
+  # after a restart two gamescope + Steam UIs rendered at once (SteamVR's compositor 20+ ms a frame until one was killed).
+  # By process name only (pgrep -x), so this never matches the shell that runs it.
+  for i in 1 2 3 4 5 6; do
+    G=$(pgrep -u "$U" -x q2gamescope-vr; pgrep -u "$U" -x gamescope-wl); [ -z "$G" ] && break
+    [ $i -le 3 ] && kill -TERM $G 2>/dev/null || kill -KILL $G 2>/dev/null; sleep 1
+  done
+  for d in $(pgrep -u "$U" -x dbus-run-sessio); do grep -qa q2gamescope-vr /proc/$d/cmdline 2>/dev/null && kill -TERM $d 2>/dev/null; done
+fi
 # desk-253b: vrgpu mode - Steam's Vulkan (CEF/ANGLE and zink GL) on the same Turnip build as SteamVR (/opt/q2gpu)
 Q2GPUICD=/opt/q2gpu/share/vulkan/icd.d/freedreno_icd.aarch64.json
 if [ -f $Q2GPUICD ] && [ -e /tmp/q2vrgpu-on ]; then
