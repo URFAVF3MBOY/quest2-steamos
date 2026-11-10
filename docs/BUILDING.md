@@ -40,7 +40,7 @@ What it does:
 1. Adds the kernel, the boot script (`image/src/init/init`), the GPU driver and the port's programs to the base image (`tools/inject_boot.py`).
 2. Merges all ramdisk layers into one (`tools/flatten_boot.py`); the boot partition is only 80 MiB.
 3. Patches Meta's device tree for the stock 587 MHz GPU level (`tools/patch_dtb.py`, two values; it refuses any other device tree).
-4. Sets the kernel command line (`tools/rebase_boot.py`): `initcall_blacklist=kgsl_3d_init` (the GPU runs on q2msm, Qualcomm's KGSL driver never starts), `loglevel=4`, SteamVR starts by itself, and for `USB=1` no `q2_rootdev=userdata`.
+4. Sets the kernel command line (`tools/rebase_boot.py`): the GPU runs on Qualcomm's KGSL driver (with `Q2GPU_MSM=1` it adds `initcall_blacklist=kgsl_3d_init` and the GPU runs on q2msm instead), `loglevel=4`, SteamVR starts by itself, and for `USB=1` no `q2_rootdev=userdata`.
 5. Refuses an image bigger than the 80 MiB boot partition and prints its SHA-256.
 
 `REBUILD=1 sh build.sh` also recompiles the SteamVR driver, the pose reader and the camera tools from `image/src/` with `clang` + `lld` instead of using `image/prebuilt/`. The `build-q2tools` workflow does the same in CI.

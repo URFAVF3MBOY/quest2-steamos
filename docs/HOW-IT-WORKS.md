@@ -30,7 +30,7 @@ Most of the port lives in that one script, about 7,000 lines. The comments are t
 
 ## Kernel
 
-Uses Meta's own Quest 2 kernel (4.19) with Meta's display driver (SDE `msm_drm`). Qualcomm's GPU driver (KGSL) is kept from starting (`initcall_blacklist=kgsl_3d_init` on the command line); the GPU runs on `q2msm` instead, the mainline Linux `drm/msm` GPU driver ported to this kernel as a module (`kernel/q2msm/`, details in [DRM-MSM-PORT.md](DRM-MSM-PORT.md)). Kernel changes:
+Uses Meta's own Quest 2 kernel (4.19) with Meta's display driver (SDE `msm_drm`). The GPU runs on Qualcomm's KGSL driver, the one Quest OS uses: its draw-level preemption lets SteamVR's compositor interrupt Steam's UI work mid-way. `q2msm` (the mainline Linux `drm/msm` GPU driver ported to this kernel as a module, `kernel/q2msm/`, details in [DRM-MSM-PORT.md](DRM-MSM-PORT.md)) is still in the image: with `initcall_blacklist=kgsl_3d_init` on the command line (build with `Q2GPU_MSM=1`) the GPU runs on it instead. Kernel changes:
 
 | Patch                                | Why                                                                                                          |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
