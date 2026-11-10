@@ -439,14 +439,17 @@ PKRULE
     case "$u" in deckard-*|steamvr-*|gpu-trace.service|setubootenv.service) hit=1 ;; *) hit=0 ;; esac
     # desk-179: USB network gadget DHCP (start-pre timed out every 90 s, forever) and root-disk repartitioning (always fails)
     case "$u" in usb-ncm-dnsmasq@.service|systemd-repart.service) hit=1 ;; esac
+    # desk-391: Valve's log submitter uploads error logs to Valve (34 MB of RAM; nothing it would send applies to this port)
+    case "$u" in steamos-log-submitter.service) hit=1 ;; esac
     if [ "$hit" = 0 ] && grep -qE '^Description=.*(Deckard|SteamVR|Predistort|FPGA|Type-C tcpm|Uboot)' "$f"; then hit=1; fi
     if [ "$hit" = 1 ]; then ln -sf /dev/null "$NR/etc/systemd/system/$u"; MASKED="$MASKED $u"; fi
   done
   log "fixup: masked:$MASKED"
   # desk-180: journald took 16.2 s to start (its on-disk journal), holding up the whole boot.  Keep the journal in RAM only;
   # the port's own log (/var/log/q2) is unaffected.  Undo: rm /etc/systemd/journald.conf.d/q2-volatile.conf
+  # desk-391: at most 16 MB of RAM (was 48; ~14 MB in use after an hour of VR)
   mkdir -p $NR/etc/systemd/journald.conf.d
-  printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=48M\n' > $NR/etc/systemd/journald.conf.d/q2-volatile.conf
+  printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=16M\n' > $NR/etc/systemd/journald.conf.d/q2-volatile.conf
   # (c) no GPU/compositor yet: boot to multi-user instead of the graphical (gamescope/steam) session
   if [ "$(getarg q2_target)" != "graphical" ]; then
     ln -sf /usr/lib/systemd/system/multi-user.target $NR/etc/systemd/system/default.target
