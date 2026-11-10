@@ -275,16 +275,30 @@ static void angacc_note(const double o[8])
 // desk-388: the head's turn rate from its own orientation over the last ~8 ms, instead of the rate q2pose reports.
 // On 40 s of real head motion, predicting 32 ms ahead at each frame: average error 0.264 -> 0.184 deg, lag along the
 // turn -0.17 -> -0.07 deg, frame-to-frame jumps unchanged (the reported rate differed from the orientation's own by
-// ~20 deg/s on average).  Head frame: rotvec(conj(q_old) * q_new) / dt.  Q2VR_ORIENTRATE=0: the reported rate.
+// ~20 deg/s on average).  Head frame: rotvec(conj(q_old) * q_new) / dt.
+// OFF by default: worn, it lagged behind more and doubled on fast left-right shakes.  The replay above scored against
+// Meta's own (smoothed) orientation stream, which a smoothed rate naturally matches; the eyes compare against the real
+// head, which the reported (gyro) rate follows sooner.  Q2VR_ORIENTRATE=1 or /tmp/q2-orientrate = 1 turns it on.
+// Live switch for comparing: /tmp/q2-orientrate containing 0 = the reported rate, 1 = this (read about once a second).
+// Several threads call GetPose (our 500 Hz pose loop, and vrserver): only one at a time updates the history.
+static volatile int g_or_busy; static volatile long g_or_calls, g_or_skips; static double g_or_diff; static long g_or_ndiff;
 static void orient_rate(double o[8])
 {
-	static double h[64][5]; static int n, last = -1, on = -1;
-	if (on < 0) on = envi("Q2VR_ORIENTRATE", 1);
+	static double h[64][5]; static int n, last = -1, on = -1; static double tchk;
+	if (on < 0) on = envi("Q2VR_ORIENTRATE", 0);
+	if (o[4] - tchk > 1.0 || o[4] < tchk) {
+		tchk = o[4];
+		int fd = open("/tmp/q2-orientrate", 0);
+		if (fd >= 0) { char b[4] = { 0 }; if (read(fd, b, 3) > 0) { int v = b[0] == '0' ? 0 : 1; if (v != on) Log("q2hmd: head turn rate from %s\n", v ? "the orientation" : "q2pose (reported)"); on = v; } close(fd); }
+	}
+	__atomic_add_fetch(&g_or_calls, 1, __ATOMIC_RELAXED);
 	if (!on) return;
+	if (__atomic_exchange_n(&g_or_busy, 1, __ATOMIC_ACQUIRE)) { __atomic_add_fetch(&g_or_skips, 1, __ATOMIC_RELAXED); return; }   // another thread is in here
+	double rep0 = o[5], rep1 = o[6], rep2 = o[7];
 	if (last < 0 || h[last][0] != o[4]) { last = (last + 1) % 64; h[last][0] = o[4]; for (int i = 0; i < 4; i++) h[last][1 + i] = o[i]; if (n < 64) n++; }
 	int j = -1;
 	for (int k = 1; k < n; k++) { int c = (last - k + 64) % 64; double dt = o[4] - h[c][0]; if (dt >= 0.008) { if (dt <= 0.030) j = c; break; } }
-	if (j < 0) return;                                            // no sample 8-30 ms back: keep the reported rate
+	if (j < 0) { __atomic_store_n(&g_or_busy, 0, __ATOMIC_RELEASE); return; }   // no sample 8-30 ms back: keep the reported rate
 	const double *a = &h[j][1]; double dt = o[4] - h[j][0];
 	// r = conj(a) * o
 	double rw = a[0] * o[0] + a[1] * o[1] + a[2] * o[2] + a[3] * o[3];
@@ -293,11 +307,20 @@ static void orient_rate(double o[8])
 	double rz = a[0] * o[3] - a[1] * o[2] + a[2] * o[1] - a[3] * o[0];
 	if (rw < 0) { rw = -rw; rx = -rx; ry = -ry; rz = -rz; }
 	double sn = __builtin_sqrt(rx * rx + ry * ry + rz * rz);
-	if (sn < 1e-12) { o[5] = o[6] = o[7] = 0; return; }
+	if (sn < 1e-12) { o[5] = o[6] = o[7] = 0; __atomic_store_n(&g_or_busy, 0, __ATOMIC_RELEASE); return; }
 	double x2 = sn * sn;   // half angle = asin(sn) (sn <= ~0.45 here), series - no libm in this freestanding build
 	double ang = 2 * sn * (1 + x2 * (1.0 / 6 + x2 * (3.0 / 40 + x2 * (5.0 / 112)))), k = ang / sn / dt;
 	double wx = rx * k, wy = ry * k, wz = rz * k;
 	if (wx == wx && wy == wy && wz == wz && wx * wx + wy * wy + wz * wz < 900.0) { o[5] = wx; o[6] = wy; o[7] = wz; }   // sane (< ~1700 deg/s)
+	double dx = o[5] - rep0, dy = o[6] - rep1, dz = o[7] - rep2;
+	g_or_diff += __builtin_sqrt(dx * dx + dy * dy + dz * dz); g_or_ndiff++;
+	static double tlog;
+	if (o[4] - tlog > 10.0 || o[4] < tlog) {
+		if (tlog > 0) Log("q2hmd: orientation rate: %ld GetPose calls in 10 s (%ld while another thread was in), differs from the reported rate by %.1f deg/s on average\n",
+		                  g_or_calls, g_or_skips, g_or_ndiff ? g_or_diff / g_or_ndiff * 57.29578 : 0.0);
+		tlog = o[4]; g_or_calls = g_or_skips = 0; g_or_diff = 0; g_or_ndiff = 0;
+	}
+	__atomic_store_n(&g_or_busy, 0, __ATOMIC_RELEASE);
 }
 // head rotation o[0..3] as of o[4] (s), turning at o[5..7] (rad/s, head frame), carried on to time t (s); as the layer does it
 static void tw_predict(const double o[8], double t, double q[4])
