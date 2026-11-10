@@ -1,0 +1,43 @@
+name: build-hello-xr
+
+# Khronos' OpenXR sample app (hello_xr, OpenXR-SDK-Source) as Android APKs, the lightest OpenXR app there is: a few
+# cubes and the controllers.  Used to bring up Android apps in Lepton before VRChat (desk-399): if hello_xr runs, the
+# Android OpenXR path through SteamVR works and anything else is the app's own weight.
+# Artifact "hello-xr": the OpenGL ES and the Vulkan build (debug APKs, install with `pm install` inside Lepton).
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "OpenXR-SDK-Source tag/commit"
+        default: "release-1.1.49"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Fetch OpenXR-SDK-Source
+        run: |
+          git clone --depth 1 --branch "${{ github.event.inputs.ref }}" https://github.com/KhronosGroup/OpenXR-SDK-Source.git sdk \
+            || { git clone https://github.com/KhronosGroup/OpenXR-SDK-Source.git sdk && git -C sdk checkout "${{ github.event.inputs.ref }}"; }
+          ls sdk/src/tests/hello_xr
+
+      - name: Build the APKs
+        working-directory: sdk/src/tests/hello_xr
+        run: |
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+          GW=../../../gradlew; [ -x "$GW" ] || GW=gradle
+          $GW --no-daemon assembleDebug
+          find . -name "*.apk" -exec ls -l {} \;
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hello-xr
+          path: sdk/src/tests/hello_xr/build/outputs/apk/**/*.apk
+          if-no-files-found: error
