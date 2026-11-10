@@ -3092,6 +3092,26 @@ for t in ([want] if want else []) + ['oculus_touch', 'frame_controller', 'knuckl
         pick = t; break
 if pick:
     prof, f, j = profiles[pick]
+    # desk-402: SteamVR's generated OpenXR bindings use /pose/grip and /pose/tip; frame_controller's profile has no
+    # /pose/grip, so OpenXR apps (Open Brush via Lepton) got an unbound grip pose = controllers on the floor at the
+    # origin.  Ship a copy of the profile in our driver with /pose/grip added (same point as openxr_grip).
+    isrc0 = j.get('input_source') or {}
+    if isinstance(isrc0, dict) and '/pose/grip' not in isrc0 and not os.environ.get('Q2VR_NO_GRIPPOSE'):
+        try:
+            g = isrc0.get('/pose/openxr_grip') or isrc0.get('/pose/handgrip') or isrc0.get('/pose/raw') or {}
+            isrc0['/pose/grip'] = {'type': 'pose', 'binding_image_point': g.get('binding_image_point', [0, 0])}
+            base = os.path.dirname(prof)   # relative per-app binding_url paths must keep pointing at the original driver
+            for b in j.get('default_bindings') or []:
+                u = b.get('binding_url') if isinstance(b, dict) else None
+                if u and not u.startswith('{') and not u.startswith('/'):
+                    b['binding_url'] = base + '/' + u
+            od = '/var/lib/q2/vr/q2hmd/resources/input'; os.makedirs(od, exist_ok=True)
+            name = 'q2_' + os.path.basename(f)
+            json.dump(j, open(os.path.join(od, name), 'w'), indent=3)
+            prof = '{q2hmd}/input/' + name
+            print('LOG added /pose/grip to %s -> %s' % (f, prof))
+        except Exception as e:
+            print('LOG /pose/grip profile copy failed: %s' % e)
     src = {'a': 'a', 'x': 'a', 'b': 'b', 'y': 'b', 'system': 'sys', 'menu': 'sys', 'application_menu': 'sys',
            'trigger': 't', 'grip': 'g', 'squeeze': 'g', 'joystick': 'k', 'thumbstick': 'k', 'trackpad': 'k', 'thumbrest': 'r'}
     comps = []; skipped = []
