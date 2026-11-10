@@ -712,12 +712,12 @@ static void tw_shm(void)
 	if (m != (void *)-1) g_twm = m;
 }
 // desk-385: angular acceleration of the head (head frame) from the poses read, as driver_q2hmd.cpp angacc_note does it
-// (idea from Quest1-SteamOS by nicolas-riera: gyro change over ~10 ms, capped at 60 rad/s^2).  Q2VR_ANGACC=0: off.
+// (idea from Quest1-SteamOS by nicolas-riera: gyro change over ~10 ms, capped at 60 rad/s^2).  Off by default: it made frames jumpier (driver_q2hmd.cpp); Q2VR_ANGACC=1 on.
 static double g_aacc[3];
 static void angacc_note(const double o[8])
 {
 	static double h[32][4]; static int n, last = -1, mode = -1;
-	if (mode < 0) mode = envi("Q2VR_ANGACC", 1);
+	if (mode < 0) mode = envi("Q2VR_ANGACC", 0);
 	if (!mode) return;
 	if (last >= 0 && h[last][0] == o[4]) return;
 	last = (last + 1) % 32; h[last][0] = o[4]; for (int i = 0; i < 3; i++) h[last][1 + i] = o[5 + i]; if (n < 32) n++;

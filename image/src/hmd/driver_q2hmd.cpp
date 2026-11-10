@@ -247,10 +247,13 @@ static bool tw_map()
 // desk-385: angular acceleration of the head, for prediction (idea and numbers from Quest1-SteamOS by nicolas-riera:
 // the change of the gyro rate over the last ~10 ms as angular acceleration, capped at 60 rad/s^2, cut the head
 // prediction error from 0.106 to 0.060 deg on average there).  Head frame, from the poses read (o[4] time, o[5..7]
-// rate); zero until there is a sample 8-50 ms older.  Q2VR_ANGACC: 0 off, 1 (default) sent to SteamVR as the pose's
+// rate); zero until there is a sample 8-50 ms older.  Q2VR_ANGACC: 0 (default) off, 1 sent to SteamVR as the pose's
 // angular acceleration (and used by the timewarp prediction), 2 folded into the angular velocity instead.
+// Measured on 40 s of real head motion (desk-385), predicting 32 ms ahead at each frame: average error 0.263 -> 0.245 deg,
+// but frame-to-frame jumps over 0.5 deg 155 -> 244 (max 3.1 -> 4.3 deg); every window/cap/scale tried was jumpier than
+// the angular velocity alone.  Through SteamVR's prediction the estimate adds more noise than it removes - off by default.
 static double g_aacc[3];
-static int angacc_mode() { static int m = -1; if (m < 0) m = envi("Q2VR_ANGACC", 1); return m; }
+static int angacc_mode() { static int m = -1; if (m < 0) m = envi("Q2VR_ANGACC", 0); return m; }
 static void angacc_note(const double o[8])
 {
 	static double h[32][4]; static int n, last = -1;
