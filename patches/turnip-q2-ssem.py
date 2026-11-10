@@ -80,7 +80,8 @@ q2s_thread(void *arg)
          if (q2s_tab[i].ctr)
             q2s_sync(&q2s_tab[i]);
       pthread_mutex_unlock(&q2s_lock);
-      struct timespec ts = { 0, 1000000 };
+      /* desk-406: 250 us (was 1 ms); with the compositor side polling too, a finished app frame was often seen ~2 ms late */
+      struct timespec ts = { 0, 250000 };
       nanosleep(&ts, NULL);
    }
    return NULL;

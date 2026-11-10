@@ -2297,13 +2297,18 @@ static void ssem_free(struct ssem *e)   // g_semlock held
 static void *sem_thread(void *arg)
 {
 	(void)arg; int tick = 0; unsigned long ln = ~0ul, li = ~0ul, ld = ~0ul, lf = ~0ul;
+	// desk-406: 250 us instead of 1 ms (Q2VR_SEMPOLL_US).  Each hand-off between processes waits up to one interval
+	// here and one on the other side (Android Turnip), so an app frame that finished just before the compositor's
+	// deadline was often seen ~2 ms late and shown a refresh later (Open Brush: 40-50 % mis-presented)
+	long iv = envi("Q2VR_SEMPOLL_US", 250); if (iv < 50) iv = 50; if (iv > 5000) iv = 5000;
+	int report = (int)(10000000 / iv);   // ~10 s
 	for (;;) {
 		pthread_mutex_lock(&g_semlock);
 		int live = 0;
 		for (int i = 0; i < g_semhi; i++) if (ssems[i].ctr && ssems[i].d && ssems[i].d->key) { sem_sync(&ssems[i]); live++; }
 		unsigned long n = g_sem_new, im = g_sem_imp, de = g_sem_del, fa = g_sem_fail;
 		pthread_mutex_unlock(&g_semlock);
-		if (++tick >= 10000) {   // ~10 s
+		if (++tick >= report) {   // ~10 s
 			tick = 0;
 			if (n != ln || im != li || de != ld || fa != lf)
 				qlog("shared semaphores: %d live (slots up to %d of %d); total %lu created, %lu imported, %lu released, %lu failed", live, g_semhi, MAXSEM, n, im, de, fa);
@@ -2313,7 +2318,7 @@ static void *sem_thread(void *arg)
 			  pthread_mutex_unlock(&g_semlock);
 			  if (late) report_sem_waits("semaphore waits unmet for 2 s+"); }
 		}
-		sleep_ns(1000000);
+		sleep_ns(iv * 1000);
 	}
 	return 0;
 }
