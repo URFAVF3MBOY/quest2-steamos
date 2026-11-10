@@ -935,8 +935,10 @@ public:
 		setVal<float>(c, Prop_UserHeadToEyeDepthMeters_Float, 0.0f, k_unFloatPropertyTag);
 		setVal<float>(c, Prop_SecondsFromVsyncToPhotons_Float, envi("Q2VR_PHOTON_MS", 16) / 1000.0f, k_unFloatPropertyTag);   // vsync -> copy -> panel scan
 		// desk-389: SteamVR's lens mesh 193x193 instead of its default 49x49 (from Reframed VR: the default mesh misplaced its
-		// lens model by up to 7 render pixels, 193 keeps every sample under half a pixel).  Q2VR_MESHRES overrides, 0 = default.
-		{ int mr = envi("Q2VR_MESHRES", 193); if (mr > 0) setVal<int32_t>(c, Prop_DistortionMeshResolution_Int32, mr, k_unInt32PropertyTag); }
+		// lens model by up to 7 render pixels, 193 keeps every sample under half a pixel).  OFF by default: on this
+		// headset 193 cost ~0.9 ms of compositor GPU a frame (q2laserbench, Aurora floor 12.6 -> 11.7 ms, drops 11-13 -> 0-3 in
+		// 30 s).  Q2VR_MESHRES=N sets N x N; 0 (default) = SteamVR's own 49 x 49.
+		{ int mr = envi("Q2VR_MESHRES", 0); if (mr > 0) setVal<int32_t>(c, Prop_DistortionMeshResolution_Int32, mr, k_unInt32PropertyTag); }
 		setVal<bool>(c, Prop_IsOnDesktop_Bool, disp.IsDisplayOnDesktop(), k_unBoolPropertyTag);
 		setVal<bool>(c, Prop_DisplayDebugMode_Bool, envi("Q2VR_DEBUGMODE", 0) != 0, k_unBoolPropertyTag);
 		setVal<int32_t>(c, Prop_EdidVendorID_Int32, 0xD222, k_unInt32PropertyTag);   // "VLV": first entry of SteamVR's direct-mode list
