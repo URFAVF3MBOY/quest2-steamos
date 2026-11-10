@@ -36,7 +36,8 @@ if PITCH != W * 4:
     sys.exit('pitch %d != width*4' % PITCH)
 sw, sh = W // 2 // 2 * 2, H // 2 // 4 * 4    # half resolution, even sizes; each eye is the top / bottom half
 eh = sh // 2
-vf = ('scale=%d:%d,split[a][b];[a]crop=%d:%d:0:0,transpose=2[l];[b]crop=%d:%d:0:%d,transpose=2[r];[l][r]hstack'
+# turned clockwise; the buffer's bottom half goes on the left (checked: handwriting in Open Brush reads correctly)
+vf = ('scale=%d:%d,split[a][b];[a]crop=%d:%d:0:0,transpose=1[t];[b]crop=%d:%d:0:%d,transpose=1[u];[u][t]hstack'
       % (sw, sh, sw, eh, sw, eh, eh))
 ff = subprocess.Popen(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'bgr0',
                        '-s', '%dx%d' % (W, H), '-framerate', str(fps), '-i', '-', '-vf', vf, '-c:v', 'libx264',
