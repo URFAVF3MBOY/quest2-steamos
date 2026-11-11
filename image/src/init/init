@@ -450,6 +450,16 @@ PKRULE
   # desk-391: at most 16 MB of RAM (was 48; ~14 MB in use after an hour of VR)
   mkdir -p $NR/etc/systemd/journald.conf.d
   printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=16M\n' > $NR/etc/systemd/journald.conf.d/q2-volatile.conf
+  # desk-409: memory for Android games.  VRChat (1.3 GB) filled RAM and the 2.8 GB zram swap; the stall made SteamVR's
+  # watchdog abort ("Failed Watchdog timeout in thread Web ... Aborting") and Steam, gamescope and the container went down.
+  # zram as big as RAM with zstd (compresses ~3-4x, only pages in use cost RAM), swap earlier (swappiness 100 is the most
+  # kernel 4.19 takes) and single-page reads (page-cluster 0: zram is RAM, not a disk).  btrfs on 4.19 can't hold a swap
+  # file.  Off: /var/lib/q2/nozramtune
+  if [ ! -e "$NR/var/lib/q2/nozramtune" ]; then
+    printf '[zram0]\nzram-size = ram\ncompression-algorithm = zstd\nswap-priority = 100\nfs-type = swap\n' > $NR/etc/systemd/zram-generator.conf
+    mkdir -p $NR/etc/sysctl.d
+    printf 'vm.swappiness = 100\nvm.page-cluster = 0\nvm.watermark_scale_factor = 100\n' > $NR/etc/sysctl.d/90-q2-memory.conf
+  fi
   # (c) no GPU/compositor yet: boot to multi-user instead of the graphical (gamescope/steam) session
   if [ "$(getarg q2_target)" != "graphical" ]; then
     ln -sf /usr/lib/systemd/system/multi-user.target $NR/etc/systemd/system/default.target
