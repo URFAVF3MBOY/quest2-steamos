@@ -3266,6 +3266,11 @@ export Q2VR_KMSTRIM=$(cat /var/lib/q2/kmstrim 2>/dev/null | tr -cd 0-9 | grep . 
 export Q2VR_TW=$(cat /var/lib/q2/tw 2>/dev/null | tr -cd 0-9 | grep . || echo 0)
 ${TUPRIO:+export TU_KGSL_PRIO=$TUPRIO}
 export Q2VR_EYESWAP=$EYESWAP Q2VR_IPDPOS=$IPDPOS Q2VR_OLDLENS=$OLDLENS Q2VR_HZ=$VRHZ Q2VR_PHOTON_MS=$PHOTON Q2VR_CTLTYPE="$CTLTYPE" Q2VR_CTLPROFILE="$CTLPROF" Q2VR_CTLCOMP="$CTLCOMP" Q2VR_CTLMODEL="$CTLMODEL"
+# desk-410: SteamVR's thread watchdogs abort vrserver / vrcompositor when a thread stalls ~5 s.  With an Android game
+# near the memory limit, a reclaim stall tripped them ("Failed Watchdog timeout in thread Web ... Aborting", then
+# vrcompositor ThreadWatchdog SIGABRT) and SteamVR, Steam and the container went down.  Valve's own switch turns
+# them off: a stall is a hitch instead.  Back on: /var/lib/q2/vrwatchdog
+[ -e /var/lib/q2/vrwatchdog ] || export STEAMVR_DISABLE_THREAD_WATCHDOGS=1
 # desk-383: extra environment for SteamVR (profiling, e.g. MESA_GPU_TRACES); /var/lib/q2/vrenv is a shell snippet, rm = off
 [ -r /var/lib/q2/vrenv ] && . /var/lib/q2/vrenv
 cd $B
@@ -7615,9 +7620,12 @@ if [ -f "$LL/mounting.sh" ]; then
     for f in networking.sh; do [ -f "$LL/$f.q2orig" ] || cp -a "$LL/$f" "$LL/$f.q2orig"; grep -q 'q2:' "$LL/$f" && cp -a "$LL/$f.q2orig" "$LL/$f"; done
     # desk-281: decided at each launch - separate network (pasta) until the app has started once (Lepton installs over adb
     # through pasta's port forward; on the shared network the install hung, desk-279), shared network after that.
-    # q2leptonlog writes /var/lib/q2/lepton_installed when Android starts the app.  Always separate: /var/lib/q2/lepton_pasta
+    # desk-411: Lepton's own setup again, as on the Steam Frame: every container on its own network (pasta, a real eth0
+    # with Lepton's static config, DNS forwarded).  On the shared network Android found no eth0, brought no network up and
+    # resolved no names (VRChat could not log in).  SteamVR's abstract sockets are reached through q2vrrelay, which
+    # q2leptonlog attaches to each container.  The old shared network: /var/lib/q2/lepton_hostnet
     if grep -q 'print "--network=pasta:' "$LL/networking.sh"; then
-      sed -i 's|^\( *\)print "--network=pasta:\(.*\)"$|\1if [[ -e /var/lib/q2/lepton_installed \&\& ! -e /var/lib/q2/lepton_pasta ]]; then print "--network=host"; else print "--network=pasta:\2"; fi  # q2: shared network once installed|' "$LL/networking.sh" && LP="$LP net-auto"
+      sed -i 's|^\( *\)print "--network=pasta:\(.*\)"$|\1if [[ -e /var/lib/q2/lepton_hostnet ]]; then print "--network=host"; else print "--network=pasta:\2"; fi  # q2: own network + q2vrrelay|' "$LL/networking.sh" && LP="$LP net-pasta"
     fi
     # desk-280: keep VRChat's prepared install when a run ends early (Lepton deletes it after every early exit -> each test
     # reinstalled the 327 MB app).  Lepton's own LEPTON_NO_CLEANUP switch, on by default here; off: /var/lib/q2/lepton_cleanup
@@ -7694,20 +7702,172 @@ fi
 # runs, its logcat is streamed to /var/log/q2/lepton/; the last ~1.9 MB (and an errors-only copy) go to
 # /var/log/q2/lepton-logcat.txt / lepton-errors.txt; when it stops, "podman logs" + "podman inspect" are saved and the
 # logs are handed to the PC by themselves (Ctrl+Alt+U), once per boot.  Off: /var/lib/q2/lepton_nolog, no PC: lepton_nopc
+# desk-411: q2vrrelay (tools/q2vrrelay.py) - SteamVR's abstract IPC sockets mirrored into a container's own network
+cat > "$NR/usr/bin/q2vrrelay" <<'Q2VRRELAY'
+#!/usr/bin/env python3
+"""q2vrrelay - make SteamVR reachable from an Android container on its own network (Lepton's pasta, as on the Steam Frame).
+
+    q2vrrelay.py CONTAINER_PID          (as root; exits when that process is gone)
+
+SteamVR's IPC endpoints are abstract Unix sockets (@/steamvr/SteamVR_Namespace, @/steamvr/VR_ServerPipe_<pid>,
+@/steamvr/VR_CompositorPipe_<pid>).  Abstract names belong to a network namespace, so an app in pasta's private network
+gets "connection refused".  This relay watches the host's listening @/steamvr/ sockets (/proc/thread-self/net/unix),
+binds a twin of each inside the container's network namespace, and pipes every connection through to the real one -
+bytes and passed file descriptors (SCM_RIGHTS: SteamVR hands shared memory and semaphores over these sockets; the
+kernel lets descriptors cross namespaces).
+
+Namespaces: setns(CLONE_NEWNET) applies to the calling thread, and a socket stays in the namespace it was created in.
+One thread lives in the container's namespace and only creates the twin listeners; everything else (accepting,
+connecting to the real socket, pumping) runs in host-namespace threads.
+"""
+import array, os, queue, socket, sys, threading, time
+
+PREFIX = '@/steamvr/'
+CLONE_NEWNET = 0x40000000
+pid = int(sys.argv[1])
+nsfd = os.open('/proc/%d/ns/net' % pid, os.O_RDONLY)
+verbose = os.environ.get('Q2VRRELAY_VERBOSE') == '1'
+
+def log(*a):
+    print(time.strftime('%H:%M:%S'), *a, flush=True)
+
+# ---- the container-namespace thread: creates listeners on request ----
+req, rep = queue.Queue(), queue.Queue()
+entered = threading.Event()
+
+def ns_thread():
+    os.setns(nsfd, CLONE_NEWNET)
+    entered.set()
+    while True:
+        name = req.get()
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.bind('\0' + name[1:])
+            s.listen(64)
+            rep.put((name, s))
+        except OSError as e:
+            rep.put((name, e))
+
+threading.Thread(target=ns_thread, daemon=True).start()
+entered.wait()
+# setns needs root; the rest runs as the container's owner (the same user SteamVR runs as), so SteamVR sees its usual
+# uid on every connection.  glibc applies setuid to all threads.
+uid = os.stat('/proc/%d' % pid).st_uid
+if os.getuid() == 0 and uid != 0:
+    import pwd
+    pw = pwd.getpwuid(uid)
+    os.initgroups(pw.pw_name, pw.pw_gid); os.setgid(pw.pw_gid); os.setuid(uid)
+
+# ---- pumping ----
+FDSPACE = socket.CMSG_SPACE(64 * array.array('i').itemsize)
+
+def pump(src, dst, tag):
+    n = 0
+    try:
+        while True:
+            data, anc, flags, _ = src.recvmsg(1 << 18, FDSPACE)
+            fds = []
+            for lvl, typ, cdata in anc:
+                if lvl == socket.SOL_SOCKET and typ == socket.SCM_RIGHTS:
+                    a = array.array('i'); a.frombytes(cdata[:len(cdata) - len(cdata) % a.itemsize]); fds += list(a)
+            if not data and not fds:
+                break
+            try:
+                if fds:
+                    sent = dst.sendmsg([data], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', fds))])
+                    if sent < len(data):
+                        dst.sendall(data[sent:])
+                else:
+                    dst.sendall(data)
+            finally:
+                for f in fds:
+                    os.close(f)
+            n += 1
+    except OSError:
+        pass
+    finally:
+        for s in (src, dst):
+            try: s.shutdown(socket.SHUT_RDWR)
+            except OSError: pass
+        if verbose: log('closed', tag, n, 'messages')
+
+def serve(name, lst):
+    while True:
+        try:
+            c, _ = lst.accept()
+        except OSError:
+            return                                   # listener closed (the real socket went away)
+        h = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)   # created in this (host) thread's namespace
+        try:
+            h.connect('\0' + name[1:])
+        except OSError as e:
+            log('connect', name, 'failed:', e); c.close(); h.close(); continue
+        if verbose: log('connection', name)
+        threading.Thread(target=pump, args=(c, h, name + ' ->'), daemon=True).start()
+        threading.Thread(target=pump, args=(h, c, name + ' <-'), daemon=True).start()
+
+# ---- watch the host's listening SteamVR sockets ----
+def host_listeners():
+    names = set()
+    try:
+        with open('/proc/thread-self/net/unix') as f:
+            next(f)
+            for line in f:
+                p = line.split()
+                # Num RefCount Protocol Flags Type St Inode Path ; flags 00010000 = listening
+                if len(p) >= 8 and p[4] == '0001' and p[3] == '00010000' and p[7].startswith(PREFIX):
+                    names.add(p[7])
+    except OSError:
+        pass
+    return names
+
+mirrors = {}
+log('relaying SteamVR sockets into the network namespace of pid %d' % pid)
+while os.path.exists('/proc/%d' % pid):
+    want = host_listeners()
+    for name in want - set(mirrors):
+        req.put(name)
+        n, s = rep.get()
+        if isinstance(s, Exception):
+            log('mirror', name, 'failed:', s); mirrors[name] = None; continue
+        mirrors[name] = s
+        threading.Thread(target=serve, args=(name, s), daemon=True).start()
+        log('mirrored', name)
+    for name in set(mirrors) - want:
+        s = mirrors.pop(name)
+        if s:
+            try: s.shutdown(socket.SHUT_RDWR)
+            except OSError: pass
+            s.close()
+        log('removed', name)
+    time.sleep(0.2)
+log('container gone, exiting')
+Q2VRRELAY
+chmod 755 "$NR/usr/bin/q2vrrelay"
 cat > "$NR/usr/bin/q2leptonlog" <<'Q2LEPTONLOG'
 #!/bin/bash
 D=/var/log/q2/lepton; mkdir -p $D
 # desk-279: with the container on SteamOS's network (desk-278 test) podman passes in the host /sys, and rootless crun could
 # not re-open the root-only BPF mount ("cannot reopen sys/fs/bpf: Permission denied").  Readable by all (listing only).
-[ -e /var/lib/q2/lepton_pasta ] || { mount -o remount,mode=0755 /sys/fs/bpf 2>/dev/null; chmod 755 /sys/fs/bpf 2>/dev/null; }
+[ -e /var/lib/q2/lepton_hostnet ] && { mount -o remount,mode=0755 /sys/fs/bpf 2>/dev/null; chmod 755 /sys/fs/bpf 2>/dev/null; }
 P() { runuser -u steamos -- env XDG_RUNTIME_DIR=/run/user/1000 timeout 30 podman "$@"; }
 log() { echo "$(date +%T) $*" >> $D/watch.txt; }
-declare -A SP; SENT=0
+declare -A SP RP; SENT=0
+HOSTNS=$(readlink /proc/1/ns/net)
 while :; do
   [ -e /var/lib/q2/lepton_nolog ] && exit 0
   # cheap check (no podman call): each running container has a conmon process with "-n <name>"
   RUNNING=$(pgrep -a conmon 2>/dev/null | grep -o -E ' -n lepton-[^ ]+' | cut -c5- | sort -u)
   for c in $RUNNING; do
+    # desk-411: SteamVR's sockets into the container's own network (q2vrrelay), as soon as its init exists
+    if [ -z "${RP[$c]}" ] || ! kill -0 ${RP[$c]} 2>/dev/null; then
+      CM=$(pgrep -f "^/usr/bin/conmon .*-n $c( |$)" | head -n 1); IP=
+      for k in $(pgrep -P "${CM:-0}" 2>/dev/null); do ns=$(readlink /proc/$k/ns/net 2>/dev/null); [ -n "$ns" ] && [ "$ns" != "$HOSTNS" ] && { IP=$k; break; }; done
+      if [ -n "$IP" ]; then
+        /usr/bin/q2vrrelay $IP >> $D/$c-relay.log 2>&1 &
+        RP[$c]=$!; log "$c: SteamVR relay into pid $IP's network (pid ${RP[$c]})"
+      fi
+    fi
     if [ -z "${SP[$c]}" ] || ! kill -0 ${SP[$c]} 2>/dev/null; then
       [ -n "${SP[$c]}" ] && sleep 3   # logcat ended early (Android's log service not up yet): try again shortly
       log "$c running - streaming its logcat"
