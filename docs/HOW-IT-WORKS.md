@@ -106,11 +106,12 @@ Lepton is Valve's Android container (rootless podman). For it, the port adds `fu
 
 The changes that get Steam-launched apps running:
 
-- **Shared network.** SteamVR's IPC sockets are abstract Unix sockets, which only reach processes in the same network namespace, so the container uses the headset's network.
-- **Install without adb.** On the shared network the container's adbd drops every connection from the headset, so `adb install` hung. Steam-launched apps are copied into the container and installed with Android's own `pm install`. Apps launched any other way still use adb and are unsupported.
+- **Own network, as on the Steam Frame.** Containers use Lepton's own pasta network (a real `eth0`, DNS forwarded), so Android has internet. SteamVR's IPC sockets are abstract Unix sockets, which only exist inside one network namespace, so `q2vrrelay` (started for each container by `q2leptonlog`) mirrors them into the container: the three stream pipes (`SteamVR_Namespace`, `VR_ServerPipe_<pid>`, `VR_CompositorPipe_<pid>`) and, in both directions, the short-lived datagram sockets SteamVR hands textures and semaphores over with (`@fd-srv-<id>`). New handover sockets are found the moment they are bound (a kprobe on `unix_bind`) and mirrored before the message naming them is forwarded. The old shared network: `/var/lib/q2/lepton_hostnet`.
+- **Install without adb.** Steam-launched apps are copied into the container and installed with Android's own `pm install`. Apps launched any other way use Lepton's adb path and are unsupported.
 - **Re-bake after an update.** When Steam updates an app, Lepton rebuilds its container data (VRChat had no `base.apk` after an update until this).
 - **Shared semaphores.** SteamVR's client imports the compositor's timeline semaphores as `OPAQUE_FD`, which the Android Turnip on KGSL didn't support (VRChat crashed at address 0). `patches/turnip-q2-ssem.py` emulates them with the same shared-memory counter the port's Linux layer uses.
 - **Normal boot mode.** Android reads `androidboot.mode` from `/proc/cmdline`. After a power-on with USB plugged in, the bootloader passes `charger`, and Android stopped before starting its app framework. Containers get a copy of the command line with the mode set to `normal` (`/var/lib/q2/lepton-cmdline`).
+- **Game at normal priority.** Android's own services run at low CPU priority so they can't freeze the headset; the game's process and threads stay at normal priority.
 - **Controller grip pose.** SteamVR's generated OpenXR bindings use `/pose/grip`, which the Frame controller profile lacks. The VR start writes a copy of the profile with it added.
 
-VRChat reaches its VR session and Open Brush runs. Controller positions don't reach Android apps yet (rotation does).
+Controller positions reach Android apps since the driver reports no yaw drift while Meta's tracker drives a hand (SteamVR's OpenXR client withholds the position otherwise). VRChat runs in VR and online; Open Brush runs at 72 fps.

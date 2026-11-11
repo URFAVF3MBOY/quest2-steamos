@@ -45,6 +45,8 @@ These apply when SteamVR starts (`sh /var/lib/q2/q2vrrestart.sh` restarts SteamV
 | `vrdirect`      | `1`     | Outside the zero-copy path: the GPU writes frames straight into the panel buffer (`0` = old CPU copy) |
 | `maxaniso`      | `4`     | Cap on SteamVR's anisotropic texture filtering (`1` to `16`; `16` = SteamVR's own). Lower is cheaper on floors seen at a shallow angle (`1` looked the same in Aurora). Read at VR start |
 | `predict`       | `75`    | Head prediction, in percent of the measured turn rate. Read live |
+| `vrwatchdog`    | off     | SteamVR's thread watchdogs back on (they abort SteamVR when a thread stalls ~5 s, e.g. under memory pressure) |
+| `nozramtune`    | off     | Keep SteamOS's own zram (half of RAM) instead of zram = RAM with zstd and `swappiness` 100 |
 | `rpmerge`       | off     | Merge the compositor's one-draw render passes (from Quest1-SteamOS). Leave it off with KGSL: it made frames much slower |
 | `deskres` (`WxH`) | `1280x720` | Resolution of the desktop view ("+" in Steam) |
 | `vrenv`         | none    | Shell lines sourced before SteamVR starts, to add environment variables (for profiling) |
@@ -88,7 +90,7 @@ These apply when SteamVR starts (`sh /var/lib/q2/q2vrrestart.sh` restarts SteamV
 | `nokwinwrap`      | Desktop ("+") without the kwin wrapper                        |
 | `android_gpu_off` | Lepton keeps Valve's Android GPU files                        |
 | `lepton_nopatch`  | Don't patch Lepton's start scripts                            |
-| `lepton_pasta`    | Lepton apps on their own network (for debugging installs; they can't reach SteamVR then) |
+| `lepton_hostnet`  | Lepton apps on the headset's own network instead of their own (old setup: no DNS inside Android) |
 
 ## Debugging
 

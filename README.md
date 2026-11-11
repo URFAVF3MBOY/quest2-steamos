@@ -27,7 +27,7 @@ Last tested build: **desk-403** (November 2026).
 | Power menu                                              | Works                        | Shut down and Restart in Steam's power menu                                                            |
 | SSH over Wi-Fi                                          | Works (opt-in)               | Put public keys in `/var/lib/q2/authorized_keys` ([SETTINGS.md](docs/SETTINGS.md))                    |
 | Sleep                                                   | Doesn't work                 | Turned off on purpose: the headset does not wake up again                                              |
-| Android apps (VRChat through Lepton)                    | Partly                       | Steam-launched Android apps install and start (VRChat reaches its VR session, Open Brush runs). Controller positions don't reach Android apps yet (rotation does) |
+| Android apps (VRChat through Lepton)                    | Partly                       | Steam-launched Android apps run on their own network as on the Steam Frame: VRChat in VR and online, Open Brush at 72 fps. Memory is tight with VRChat |
 | Linux x86 games (through FEX)                           | Not tested                   | Windows x86 games do run through FEX inside Proton                                                     |
 | Firmware updates                                        | **Blocked on purpose** | Headset and controller firmware updates would brick the hardware                                       |
 

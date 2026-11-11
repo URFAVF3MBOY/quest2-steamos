@@ -31,7 +31,7 @@ Sleep is turned off, because the panel and the GPU don't come back yet. The powe
 
 ## 5. VRChat and Android apps
 
-Steam-launched Android apps install and start through Lepton (Valve's Android container): VRChat reaches its VR session, Open Brush runs. Next: controller positions in Android apps (rotation arrives, position stays at zero), then VRChat's performance.
+Steam-launched Android apps run through Lepton on their own network, as on the Steam Frame (VRChat in VR and online, Open Brush at 72 fps). Next: memory headroom for VRChat (about 200 MB free while it runs) and Steam's interface crashing during some game launches.
 
 ## Also on the list
 
