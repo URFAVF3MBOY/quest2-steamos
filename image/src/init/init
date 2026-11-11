@@ -8052,6 +8052,14 @@ D=/var/log/q2/lepton; mkdir -p $D
 [ -e /var/lib/q2/lepton_hostnet ] && { mount -o remount,mode=0755 /sys/fs/bpf 2>/dev/null; chmod 755 /sys/fs/bpf 2>/dev/null; }
 P() { runuser -u steamos -- env XDG_RUNTIME_DIR=/run/user/1000 timeout 30 podman "$@"; }
 log() { echo "$(date +%T) $*" >> $D/watch.txt; }
+# desk-412: rootless podman keeps a "pause" process whose namespaces every container is created from.  When the first
+# podman call of a boot came from a Steam game launch (inside Steam's pw-audio-namespace wrapper), containers on their
+# own network could not mount a fresh /sys and crun's fallback needs open_tree (kernel 5.2+): "crun: open_tree /sys:
+# Function not implemented", the container stayed "Created".  "podman system migrate" from a clean context fixed it, so
+# do that once at boot, before any game can start.
+for i in $(seq 1 180); do [ -d /run/user/1000 ] && break; sleep 1; done
+systemd-run --quiet --wait --uid=steamos --setenv=XDG_RUNTIME_DIR=/run/user/1000 -p WorkingDirectory=/ podman system migrate >/dev/null 2>&1 \
+  && log "podman system migrate at boot (clean pause process)"
 declare -A SP RP; SENT=0
 HOSTNS=$(readlink /proc/1/ns/net)
 while :; do
