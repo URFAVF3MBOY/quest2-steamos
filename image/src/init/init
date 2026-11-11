@@ -7420,6 +7420,9 @@ ConditionPathExists=/usr/bin/q2island-wait
 Type=simple
 ExecStart=/usr/bin/q2island-wait
 TimeoutStopSec=60
+# desk-413: Meta's tracking never goes to swap.  With VRChat near the memory limit, 189 MB of trackingservice ended up
+# in zram (tracking hitches while pages come back); a game can only push out less critical memory now.
+MemorySwapMax=0
 
 [Install]
 WantedBy=multi-user.target
