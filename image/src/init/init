@@ -3171,7 +3171,7 @@ PANELHZ=90
 # The kernel lengthens lower dfps rates by q2_dfps_ppm (patch q2-dfps-trim).  The dfps modes are computed at probe, so
 # the value that counts is msm_drm.q2_dfps_ppm= on the boot command line (7042: 72.5 -> 71.93 Hz, measured); writing
 # the parameter here (/var/lib/q2/dfpsppm) only matters for a kernel that recomputes on switch.
-DPPM=$(cat /var/lib/q2/dfpsppm 2>/dev/null | tr -cd 0-9-); DPPM=${DPPM:-7042}
+DPPM=$(cat /var/lib/q2/dfpsppm 2>/dev/null | tr -cd 0-9-); DPPM=${DPPM:-0}   # desk-408: 0 - the clock is nominal (q2vblank: 90.0013 Hz); the 72.507 was q2blit's drifting estimate
 [ -w /sys/module/msm_drm/parameters/q2_dfps_ppm ] && echo "$DPPM" > /sys/module/msm_drm/parameters/q2_dfps_ppm
 if [ "$VRHZ" = 72 ]; then
   [ -w /sys/module/msm_drm/parameters/q2_dfps_ppm ] && [ "$PANELHZ" = 90 ] && q2kms hz 90 >/dev/null 2>&1   # a new ppm applies at the next switch down

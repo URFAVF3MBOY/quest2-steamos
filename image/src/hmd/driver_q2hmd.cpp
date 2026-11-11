@@ -891,11 +891,14 @@ public:
 	// 13.830 ms (72.31 Hz); told 72, SteamVR delivered 71.8 frames a second and the panel showed one frame twice about
 	// every 2 s (a hitch while the head turns).  Same idea as Quest1-SteamOS (nicolas-riera: its panels run at 71.82 Hz).
 	// Checked about twice a second (RunFrame); Q2VR_MEASUREDHZ=0 keeps the nominal rate.
+	// desk-408: OFF by default.  The kernel's vblank timestamps (tools/q2vblank.py) show the panel at exactly its nominal
+	// rate (90 Hz mode 90.0013, 72 Hz mode 72.00 by its 6145 lines); q2blit's period estimate read 72.3-72.7 and drifts,
+	// so SteamVR (and the layer's vsync grid) ran on a wrong clock.  Q2VR_MEASUREDHZ=1 brings the estimate back.
 	float hz_now = 0;
 	void PollHz()
 	{
 		static volatile uint32_t *hd; static int tries;
-		if (!cont || !envi("Q2VR_MEASUREDHZ", 1)) return;
+		if (!cont || !envi("Q2VR_MEASUREDHZ", 0)) return;
 		if (!hd) {
 			if (tries++ % 5) return;
 			int fd = open("/dev/shm/q2warp", 0); if (fd < 0) return;

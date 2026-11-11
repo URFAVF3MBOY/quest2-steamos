@@ -239,7 +239,7 @@ static void *vblank_thread(void *arg)
 		volatile uint32_t *hd = 0; uint8_t *shm = shm_map(); if (shm) hd = (volatile uint32_t *)shm;
 		uint64_t sP = hd ? hd[10] : 0; if (!(sP > 5000000 && sP < 20000000)) sP = 0;
 		uint64_t fn = g_flip_ns;
-		if (fn && t >= fn && t - fn < 1000000000ull && envi("Q2VR_FLIPCLOCK", 1)) { vs = fn; P = sP ? sP : g_panel_P; s2 = 0; }
+		if (fn && t >= fn && t - fn < 1000000000ull && envi("Q2VR_FLIPCLOCK", 1)) { vs = fn; P = (sP && envi("Q2VR_MEASUREDHZ", 0)) ? sP : g_panel_P; s2 = 0; }   /* desk-408: nominal period (q2blit's estimate drifts) */
 		else if (hd && sP) { uint64_t v2 = (uint64_t)hd[8] | (uint64_t)hd[9] << 32; if (v2 && t >= v2 && t - v2 < 200000000ull) { vs = v2; P = sP; s2 = 1; } }
 		if (vs) {
 			uint64_t mult = (period + P / 2) / P; if (mult < 1) mult = 1;
@@ -1369,7 +1369,7 @@ static void fill_display_props(VkDisplayPropertiesKHR *p)
 static void fill_mode_props(VkDisplayModePropertiesKHR *p)
 {
 	p->displayMode = Q_MODE; p->parameters.visibleRegion.width = DW; p->parameters.visibleRegion.height = DH;
-	p->parameters.refreshRate = g_tick_P && envi("Q2VR_MEASUREDHZ", 1) ? (uint32_t)(1000000000000ull / g_tick_P) : DHZ * 1000;   // mHz; desk-386
+	p->parameters.refreshRate = g_tick_P && envi("Q2VR_MEASUREDHZ", 0) ? (uint32_t)(1000000000000ull / g_tick_P) : DHZ * 1000;   // mHz; desk-386
 }
 static void fill_plane_caps(VkDisplayPlaneCapabilitiesKHR *c)
 {
@@ -2747,7 +2747,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL q_GetRefreshCycleDurationGOOGLE(VkDevice d
 {
 	struct dev *d = dev_of(dv);
 	// desk-386: the measured tick interval (the "72 Hz" mode refreshes every 13.830 ms), not 1 s / DHZ
-	if (sc_of(s) || !d->GetRefreshCycleDurationGOOGLE) { r->refreshDuration = g_tick_P && envi("Q2VR_MEASUREDHZ", 1) ? g_tick_P : 1000000000ull / DHZ; return VK_SUCCESS; }
+	if (sc_of(s) || !d->GetRefreshCycleDurationGOOGLE) { r->refreshDuration = g_tick_P && envi("Q2VR_MEASUREDHZ", 0) ? g_tick_P : 1000000000ull / DHZ; return VK_SUCCESS; }
 	return d->GetRefreshCycleDurationGOOGLE(dv, s, r);
 }
 static VKAPI_ATTR VkResult VKAPI_CALL q_GetPastPresentationTimingGOOGLE(VkDevice dv, VkSwapchainKHR s, uint32_t *n, VkPastPresentationTimingGOOGLE *t)
