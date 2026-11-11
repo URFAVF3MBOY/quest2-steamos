@@ -7527,6 +7527,55 @@ for u in q2-camd q2-ctltrack q2-stockcam q2-stockcam2 q2-islandprobe q2-gpucheck
          q2-blobs q2-camlive q2-camtpg q2-camframe q2-camframe2 q2-imgcheck q2-fetch; do
   [ -e "$W/$u.service" ] || [ -L "$W/$u.service" ] && { rm -f "$W/$u.service"; log "desk-255: $u no longer starts at boot"; }
 done
+# desk-414: Steam's performance panel (quick access menu) showed an error.  steamos-manager offers performance profiles
+# only for devices it has a file for (/usr/share/steamos-manager/devices, matched by device-tree compatible); the Frame's
+# is steam-frame.toml (qcom,sm8650).  With none for qcom,kona Steam got an empty profile list ("invalid profile", then a
+# TypeError in the slider).  Same format, the Quest 2's clusters; no GPU section (the GPU stays at its 587 MHz cap).
+# The per-user steamos-manager is started by graphical-session.target on SteamOS, which this session never reaches:
+# started with the user's default.target instead.
+if [ -d "$NR/usr/share/steamos-manager/devices" ]; then
+  cat > "$NR/usr/share/steamos-manager/devices/quest-2.toml" <<'Q2SOMDEV'
+[[device]]
+dt.compatible = "qcom,kona"
+device = "steam_frame"
+variant = "Deckard"
+friendly_name = "Steam Frame"
+
+[performance_profile]
+platform_profile_driver = "custom"
+suggested_default = "Performance"
+
+[[performance_profile.custom_profile]]
+name = "Performance"
+cpufreq = [
+  { policy = 0, max = 1804800 },
+  { policy = 4, max = 2419200 },
+  { policy = 7, max = 2841600 },
+]
+
+[[performance_profile.custom_profile]]
+name = "Balanced"
+cpufreq = [
+  { policy = 0, max = 1804800 },
+  { policy = 4, max = 2054400 },
+  { policy = 7, max = 2073600 },
+]
+
+[[performance_profile.custom_profile]]
+name = "Powersave"
+cpufreq = [
+  { policy = 0, max = 1516800 },
+  { policy = 4, max = 1574400 },
+  { policy = 7, max = 1632000 },
+]
+Q2SOMDEV
+  if [ -d "$NR/home/steamos" ] && [ -f "$NR/usr/lib/systemd/user/steamos-manager.service" ]; then
+    mkdir -p "$NR/home/steamos/.config/systemd/user/default.target.wants"
+    ln -sf /usr/lib/systemd/user/steamos-manager.service "$NR/home/steamos/.config/systemd/user/default.target.wants/steamos-manager.service"
+    chown -h 1000:1000 "$NR/home/steamos/.config/systemd" "$NR/home/steamos/.config/systemd/user" "$NR/home/steamos/.config/systemd/user/default.target.wants" "$NR/home/steamos/.config/systemd/user/default.target.wants/steamos-manager.service" 2>/dev/null
+  fi
+  log "desk-414: steamos-manager device file for the Quest 2 (performance profiles)"
+fi
 # desk-256: Lepton (Valve's Android layer: VRChat etc.) runs Android in rootless podman.  Kernel 4.19 cannot mount
 # overlayfs inside a user namespace (that came in 5.11): every podman command failed with "kernel does not support
 # overlay fs: unable to create kernel-style whiteout" and the app never started.  podman storage for the steamos user:
