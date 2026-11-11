@@ -98,7 +98,7 @@ python3 tools/patch_dtb.py --in out/flat.img --out out/dtb.img
 python3 tools/rebase_boot.py --base out/dtb.img --ramdisk-from out/dtb.img --out $OUT \
   --cmdline-drop q2_vrauto --cmdline-drop kgsl.force_lazy_gpumem --cmdline-set loglevel=4 \
   --cmdline-drop dhash_entries --cmdline-drop ihash_entries --cmdline-drop mhash_entries --cmdline-drop mphash_entries \
-  ${Q2GPU_MSM:+--cmdline-add initcall_blacklist=kgsl_3d_init} --cmdline-add msm_drm.q2_dsi_display0=qcom,mdss_dsi_jdi_4k_90Hz_dsc_video: --cmdline-add msm_drm.q2_dfps_ppm=7042 $USBROOT
+  ${Q2GPU_MSM:+--cmdline-add initcall_blacklist=kgsl_3d_init} --cmdline-add msm_drm.q2_dsi_display0=qcom,mdss_dsi_jdi_4k_90Hz_dsc_video: --cmdline-add msm_drm.q2_dfps_ppm=6184 $USBROOT
 rm -f out/layered.img out/flat.img out/dtb.img
 SIZE=$(stat -c %s $OUT)
 [ "$SIZE" -le 83886080 ] || { echo "image is $SIZE bytes - larger than the 80 MiB boot partition"; exit 1; }
