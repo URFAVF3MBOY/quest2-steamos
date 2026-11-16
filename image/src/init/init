@@ -455,8 +455,14 @@ PKRULE
   # zram as big as RAM with zstd (compresses ~3-4x, only pages in use cost RAM), swap earlier (swappiness 100 is the most
   # kernel 4.19 takes) and single-page reads (page-cluster 0: zram is RAM, not a disk).  btrfs on 4.19 can't hold a swap
   # file.  Off: /var/lib/q2/nozramtune
-  if [ ! -e "$NR/var/lib/q2/nozramtune" ]; then
-    printf '[zram0]\nzram-size = ram\ncompression-algorithm = zstd\nswap-priority = 100\nfs-type = swap\n' > $NR/etc/systemd/zram-generator.conf
+  # q2_zram=<percent of RAM> on the cmdline (the locked-headset installer app's zram option; 0 = zram off) sets the size;
+  # without it zram = all of RAM.  The unlocked boot never passes it.
+  ZP=$(getarg q2_zram | tr -cd 0-9)
+  if [ "$ZP" = 0 ]; then
+    printf '# zram off (q2_zram=0)\n' > $NR/etc/systemd/zram-generator.conf
+  elif [ ! -e "$NR/var/lib/q2/nozramtune" ]; then
+    ZS=ram; [ -n "$ZP" ] && ZS="ram * $ZP / 100"
+    printf '[zram0]\nzram-size = %s\ncompression-algorithm = zstd\nswap-priority = 100\nfs-type = swap\n' "$ZS" > $NR/etc/systemd/zram-generator.conf
     mkdir -p $NR/etc/sysctl.d
     printf 'vm.swappiness = 100\nvm.page-cluster = 0\nvm.watermark_scale_factor = 100\n' > $NR/etc/sysctl.d/90-q2-memory.conf
   fi
@@ -4798,11 +4804,20 @@ def serve(fd, info):
         open('/run/q2kms.failed', 'w').write(why + '\n'); sys.exit(2)
     con = next((c for c in info['cons'] if c['conn'] == 1 and c['modes']), None)
     crtc = info['crtcs'][0] if info['crtcs'] else 0
-    if not con or crtc not in info['crtcmode']: fail('no active display (crtc %d)' % crtc)
-    mraw, m = info['crtcmode'][crtc]
+    if not con: fail('no connected display (crtc %d)' % crtc)
+    modeset = crtc not in info['crtcmode']
+    if modeset:
+        # kexec: nothing handed the lit panel over (no cont-splash), so the CRTC is off - switch it on ourselves
+        # with the panel's own 90 Hz mode (DSI-1 lists 120/90/72/60; never anything else)
+        pick = next((i for i, x in enumerate(con['modes']) if (x['hdisplay'], x['vdisplay'], x['vrefresh']) == (1920, 3664, 90)), None)
+        if pick is None: fail('no active display and no 1920x3664 90 Hz mode to set (crtc %d)' % crtc)
+        mraw, m = con['modes_raw'][pick * 68:pick * 68 + 68], con['modes'][pick]
+        P('kmsd: kexec: crtc %d is off - will mode set %s ourselves' % (crtc, m['name']))
+    else:
+        mraw, m = info['crtcmode'][crtc]
     if (m['hdisplay'], m['vdisplay']) != (1920, 3664): fail('unexpected mode %dx%d' % (m['hdisplay'], m['vdisplay']))
     try:
-        en, ht, vt = intf_timing()
+        en, ht, vt = (1, 432, 4916) if modeset else intf_timing()
     except Exception as e:
         fail('cannot read the display timing (%s)' % e)
     P('kmsd: display interface: enabled %d, htotal %d, vtotal %d' % (en, ht, vt))

@@ -46,7 +46,7 @@ These apply when SteamVR starts (`sh /var/lib/q2/q2vrrestart.sh` restarts SteamV
 | `maxaniso`      | `4`     | Cap on SteamVR's anisotropic texture filtering (`1` to `16`; `16` = SteamVR's own). Lower is cheaper on floors seen at a shallow angle (`1` looked the same in Aurora). Read at VR start |
 | `predict`       | `75`    | Head prediction, in percent of the measured turn rate. Read live |
 | `vrwatchdog`    | off     | SteamVR's thread watchdogs back on (they abort SteamVR when a thread stalls ~5 s, e.g. under memory pressure) |
-| `nozramtune`    | off     | Keep SteamOS's own zram (half of RAM) instead of zram = RAM with zstd and `swappiness` 100 |
+| `nozramtune`    | off     | Keep SteamOS's own zram (half of RAM) instead of zram = RAM with zstd and `swappiness` 100. The boot argument `q2_zram=<percent>` (from the locked-headset installer app) sets the size instead; `q2_zram=0` turns zram off |
 | `rpmerge`       | off     | Merge the compositor's one-draw render passes (from Quest1-SteamOS). Leave it off with KGSL: it made frames much slower |
 | `deskres` (`WxH`) | `1280x720` | Resolution of the desktop view ("+" in Steam) |
 | `vrenv`         | none    | Shell lines sourced before SteamVR starts, to add environment variables (for profiling) |
