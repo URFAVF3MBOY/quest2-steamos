@@ -97,76 +97,14 @@ jobs:
 
       - name: Apply source fixes
         working-directory: src
-        run: |
-          # the fixes patch is per kernel generation: try the newer-commit patch, then the older-commit one
-          if git apply --check ../patches/oculus-kernel-fixes.patch 2>/dev/null; then
-            git apply ../patches/oculus-kernel-fixes.patch; echo "applied oculus-kernel-fixes.patch"
-          else
-            git apply --check ../patches/oculus-kernel-fixes-old.patch
-            git apply ../patches/oculus-kernel-fixes-old.patch; echo "applied oculus-kernel-fixes-old.patch"
-          fi
-          # newer kernel only: swap in the older SyncBoss driver, whose DT bindings (oculus,syncboss-*) match the headset's device tree
-          if git apply --check ../patches/oculus-syncboss-old-driver.patch 2>/dev/null; then
-            git apply ../patches/oculus-syncboss-old-driver.patch; echo "applied oculus-syncboss-old-driver.patch"
-          else
-            echo "syncboss patch not applicable to this kernel commit, skipping"
-          fi
-          # GPU stack (custom KGSL route): dma-buf sync_file import/export ioctls (v6.0 backport) for implicit sync
-          # between Turnip/zink, compositors and the display (pairs with build-q2gpu / patches/turnip-q2-drm.py)
-          git apply --check ../patches/q2-dmabuf-sync-file.patch
-          git apply ../patches/q2-dmabuf-sync-file.patch; echo "applied q2-dmabuf-sync-file.patch"
-          # audio: give techpack/audio's LPI pinctrl driver the kernel pinctrl include path (core.h / pinctrl-utils.h)
-          git apply --check ../patches/q2-audio-pinctrl-lpi-include.patch
-          git apply ../patches/q2-audio-pinctrl-lpi-include.patch; echo "applied q2-audio-pinctrl-lpi-include.patch"
-          # audio: no PDR (Android's pd-mapper locator, absent on SteamOS: audio waited ~5 min for its timeout) -> the audio
-          # notifier uses the plain ADSP subsystem-up event right away
-          git apply --check ../patches/q2-audio-no-pdr.patch
-          git apply ../patches/q2-audio-no-pdr.patch; echo "applied q2-audio-no-pdr.patch"
-          # Bluetooth over the UART line discipline (q2bt / q2btattach): hu->serdev is NULL there - treat the chip as ROME
-          # instead of oopsing in qca_setup (desk-330: NULL dereference at qca_setup+0x3c, so hci0 never came up)
-          git apply --check ../patches/q2-bt-hci-qca-ldisc.patch
-          git apply ../patches/q2-bt-hci-qca-ldisc.patch; echo "applied q2-bt-hci-qca-ldisc.patch"
-          # panel refresh by frame length (/sys/kernel/q2display/vtotal: 4916 lines = 90 Hz, 6145 = 72 Hz) - desk-377
-          git apply --check ../patches/q2-display-vtotal.patch
-          git apply ../patches/q2-display-vtotal.patch; echo "applied q2-display-vtotal.patch"
-          # the boot image picks the panel entry the bootloader really runs (msm_drm.q2_dsi_display0=) - desk-382
-          git apply --check ../patches/q2-dsi-panel-entry.patch
-          git apply ../patches/q2-dsi-panel-entry.patch; echo "applied q2-dsi-panel-entry.patch"
-          # lower dynamic-fps rates corrected for the panel clock (msm_drm.q2_dfps_ppm: 72 Hz mode = 72.000, not 72.507) - desk-407
-          git apply --check ../patches/q2-dfps-trim.patch
-          git apply ../patches/q2-dfps-trim.patch; echo "applied q2-dfps-trim.patch"
+        run: bash ../scripts/kernel-patches.sh ..
 
       - name: Configure kernel
         shell: bash
         working-directory: src
         run: |
           export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$PATH"
-          cp ../config/kernel.config .config
-          sed -i 's/^CONFIG_SYSTEM_TRUSTED_KEYS=.*/CONFIG_SYSTEM_TRUSTED_KEYS=""/' .config
-          # apply fragments: "CONFIG_X=y" -> enable, "# CONFIG_X is not set" -> disable
-          for frag in ../config/ramonly.fragment ../config/steamos.fragment; do
-            while IFS= read -r line; do
-              case "$line" in
-                CONFIG_*=y)          ./scripts/config --file .config -e "$(echo "$line" | sed -E 's/^CONFIG_([A-Z0-9_]+)=y$/\1/')" ;;
-                "# CONFIG_"*" is not set") ./scripts/config --file .config -d "$(echo "$line" | sed -E 's/^# CONFIG_([A-Z0-9_]+) is not set$/\1/')" ;;
-              esac
-            done < "$frag"
-          done
-          make $MAKEVARS olddefconfig
-          echo "--- requested options after olddefconfig:"
-          for frag in ../config/ramonly.fragment ../config/steamos.fragment; do
-            grep -E '^CONFIG_[A-Z0-9_]+=y$' "$frag" | while read -r l; do
-              opt="${l%%=*}"
-              if grep -q "^${opt}=y" .config; then echo "ok       $opt"; else echo "MISSING  $opt"; fi
-            done
-          done
-          # options that must be OFF (Lepton / Android apps in rootless podman need normal Linux network rules)
-          for off in CONFIG_ANDROID_PARANOID_NETWORK CONFIG_SDCARD_FS; do
-            grep -q "^${off}=y" .config && { echo "required-off option $off is still on"; exit 1; }; echo "off      $off"
-          done
-          for must in CONFIG_DEVTMPFS CONFIG_USB_CONFIGFS_ACM CONFIG_BTRFS_FS CONFIG_USER_NS CONFIG_OVERLAY_FS CONFIG_USB_STORAGE CONFIG_USB_XHCI_HCD; do
-            grep -q "^${must}=y" .config || { echo "required option $must did not stick (unmet dependency?)"; exit 1; }
-          done
+          bash ../scripts/kernel-config.sh ..
 
       - name: Build kernel Image
         shell: bash
