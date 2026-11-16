@@ -450,6 +450,14 @@ PKRULE
   # desk-391: at most 16 MB of RAM (was 48; ~14 MB in use after an hour of VR)
   mkdir -p $NR/etc/systemd/journald.conf.d
   printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=16M\n' > $NR/etc/systemd/journald.conf.d/q2-volatile.conf
+  # The root filesystem fills its device.  Valve's rootfs is 10 GiB; on a locked headset (kexec) it is written into a
+  # bigger pinned file, so the first boot grows it (a no-op after that, and on the unlocked install, whose q2install
+  # already grew it).
+  if [ -f $NR/usr/bin/btrfs ]; then
+    printf '[Unit]\nDescription=Grow the root filesystem to fill its device (Quest 2)\nDefaultDependencies=no\nAfter=local-fs.target\nBefore=multi-user.target\n\n[Service]\nType=oneshot\nExecStart=/usr/bin/btrfs filesystem resize max /\nRemainAfterExit=yes\n' > $NR/etc/systemd/system/q2-growfs.service
+    mkdir -p $NR/etc/systemd/system/multi-user.target.wants
+    ln -sf ../q2-growfs.service $NR/etc/systemd/system/multi-user.target.wants/q2-growfs.service
+  fi
   # desk-409: memory for Android games.  VRChat (1.3 GB) filled RAM and the 2.8 GB zram swap; the stall made SteamVR's
   # watchdog abort ("Failed Watchdog timeout in thread Web ... Aborting") and Steam, gamescope and the container went down.
   # zram as big as RAM with zstd (compresses ~3-4x, only pages in use cost RAM), swap earlier (swappiness 100 is the most
