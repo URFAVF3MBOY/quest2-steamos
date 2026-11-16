@@ -5543,7 +5543,7 @@ for nm in ('system_a', 'system_ext_a', 'product_a', 'vendor_a'):
 # per-unit display calibration on persist: names only (no copies; it also holds serials/keys)
 if 'persist' in names:
     os.makedirs('/mnt/q2persist', exist_ok=True)
-    if sh('mount', '-o', 'ro,noload', '-t', 'ext4', names['persist'], '/mnt/q2persist')[0] == 0:
+    if sh('mount', '-o', 'ro,noload,loop', '-t', 'ext4', names['persist'], '/mnt/q2persist')[0] == 0:
         lst = []
         for r, ds, fs in os.walk('/mnt/q2persist'):
             if any(k in r.lower() for k in ('calib', 'display', 'lens')):
@@ -6129,12 +6129,15 @@ def copy_resolving(src, dst, mp):
 
 def mount_scan(dev, label, offset=None, size=None):
     """mount dev (or a loop of it) read-only, list firmware, copy any a650 files.  Returns number of files copied."""
-    lo = None
+    # always through a READ-ONLY loop device: nothing can write the partition, and the locked-headset kernel
+    # (q2-partlock) refuses any direct mount of an internal partition
     if offset is not None:
         rc, lo = sh('losetup', '-f', '--show', '-r', '-o', str(offset), '--sizelimit', str(size), dev)
-        if rc:
-            log('%s: losetup failed %s' % (label, lo)); return 0
-        dev = lo
+    else:
+        rc, lo = sh('losetup', '-f', '--show', '-r', dev)
+    if rc:
+        log('%s: losetup failed %s' % (label, lo)); return 0
+    dev = lo
     mp = '/mnt/q2scan'
     os.makedirs(mp, exist_ok=True)
     ok = None; errs = []
@@ -6243,7 +6246,7 @@ def mine():
     if 'persist' in names:
         try:
             os.makedirs('/mnt/q2persist', exist_ok=True)
-            if sh('mount', '-o', 'ro,noload', '-t', 'ext4', names['persist'], '/mnt/q2persist')[0] == 0:
+            if sh('mount', '-o', 'ro,noload,loop', '-t', 'ext4', names['persist'], '/mnt/q2persist')[0] == 0:
                 for r, ds, fs in os.walk('/mnt/q2persist'):
                     for fn in fs:
                         if fn == 'wlan_mac.bin':
@@ -6687,7 +6690,7 @@ btpower 0; sleep 1   # soft=0: unblocked = chip powered (BT_EN + regulators)
 # Meta keeps it in persist/bluetooth/.bt_nv.bin (tag 1, 6 bytes, already in the NVM's byte order).  Setting it later
 # with btmgmt needed a power off/on, after which the controller stopped answering.
 PD=$(readlink -f /dev/disk/by-partlabel/persist 2>/dev/null)
-if [ -b "$PD" ] && mkdir -p /run/q2persist && mount -o ro "$PD" /run/q2persist 2>/dev/null; then
+if [ -b "$PD" ] && mkdir -p /run/q2persist && mount -o ro,loop "$PD" /run/q2persist 2>/dev/null; then   # read-only loop: q2-partlock refuses direct mounts
   if [ -f /run/q2persist/bluetooth/.bt_nv.bin ]; then
     python3 - /run/q2persist/bluetooth/.bt_nv.bin $FW/htnv*.bin <<'PYEOF' 2>&1 | while read -r l; do L "address: $l"; done
 import os, struct, sys
