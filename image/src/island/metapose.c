@@ -329,6 +329,13 @@ static void ctl_update_v5(int mem, int pid, double tn, const double off[3])
 		} else if (tn - c5ask_t > 5) { ask_hands(); c5ask_t = tn; }
 	}
 	int hf = angframe < 0 ? 1 : angframe;
+	// /var/lib/q2/meta_ctl_vel: scale for Meta's controller velocity (prediction here and in SteamVR), default 1
+	static double vs = 1, vs_t = -100;
+	if (tn - vs_t > 2) {
+		vs_t = tn; vs = 1;
+		int fd = openat("/var/lib/q2/meta_ctl_vel", 0, 0);
+		if (fd >= 0) { char b[32]; long n = rd(fd, b, sizeof b - 1); cls(fd); if (n > 0) { b[n] = 0; const char *p = b; vs = pnum(&p); } }
+	}
 	for (int i = 0; i < c5n; i++) {
 		int hand = c5hand[i]; if (hand < 0 || !c5read(mem, c5a[i])) continue;
 		double t = I64(c5r + 0x60) * 1e-9, age = tn - t; if (age < -0.05 || age > 0.3) continue;   // stale = not tracked
@@ -336,7 +343,7 @@ static void ctl_update_v5(int mem, int pid, double tn, const double off[3])
 		double q[4] = { F(c5r + 0x1c), F(c5r + 0x10), F(c5r + 0x14), F(c5r + 0x18) };
 		double w[3] = { F(c5r + 0x2c), F(c5r + 0x30), F(c5r + 0x34) }, ww[3];
 		if (hf) qrot(q, w, ww); else { ww[0] = w[0]; ww[1] = w[1]; ww[2] = w[2]; }   // world frame for the driver
-		double vx = F(c5r + 0x38), vy = F(c5r + 0x3c), vz = F(c5r + 0x40);
+		double vx = F(c5r + 0x38) * vs, vy = F(c5r + 0x3c) * vs, vz = F(c5r + 0x40) * vs;
 		double hx = ww[0] * dt * 0.5, hy = ww[1] * dt * 0.5, hz = ww[2] * dt * 0.5;
 		double nw = q[0] - hx * q[1] - hy * q[2] - hz * q[3], nx = q[1] + hx * q[0] + hy * q[3] - hz * q[2];
 		double ny = q[2] - hx * q[3] + hy * q[0] + hz * q[1], nz = q[3] + hx * q[2] - hy * q[1] + hz * q[0];
