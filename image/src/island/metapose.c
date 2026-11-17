@@ -329,10 +329,10 @@ static void ctl_update_v5(int mem, int pid, double tn, const double off[3])
 		} else if (tn - c5ask_t > 5) { ask_hands(); c5ask_t = tn; }
 	}
 	int hf = angframe < 0 ? 1 : angframe;
-	// /var/lib/q2/meta_ctl_vel: scale for Meta's controller velocity (prediction here and in SteamVR), default 1
-	static double vs = 1, vs_t = -100;
+	// /var/lib/q2/meta_ctl_vel: scale for Meta's controller velocity (prediction here and in SteamVR), default 0.5 (1 = bounce, 0 = trails)
+	static double vs = 0.5, vs_t = -100;
 	if (tn - vs_t > 2) {
-		vs_t = tn; vs = 1;
+		vs_t = tn; vs = 0.5;
 		int fd = openat("/var/lib/q2/meta_ctl_vel", 0, 0);
 		if (fd >= 0) { char b[32]; long n = rd(fd, b, sizeof b - 1); cls(fd); if (n > 0) { b[n] = 0; const char *p = b; vs = pnum(&p); } }
 	}
