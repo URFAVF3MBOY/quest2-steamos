@@ -521,6 +521,23 @@ __attribute__((used)) int q2main(int argc, char **argv)
 				qrot(q4, a3, o); aax = o[0]; aay = o[1]; aaz = o[2];
 			}
 			double lax = F(bp + 0x50), lay = F(bp + 0x54), laz = F(bp + 0x58);       // linear accel (world)
+			// desk-421: on newer builds the head position is a point near the neck pivot (nods and turns put it within
+			// ~3 cm of the pivot), while SteamVR takes the pose as the point between the eyes.  Nodding then moved the
+			// virtual eyes far less than the real ones (sickness looking up/down, yaw nearly fine).  Move it out to the
+			// eyes in the head frame (default 4.8 cm up, 8.5 cm forward; /var/lib/q2/meta_eye_offset "x y z" in m),
+			// with the velocity that point really has (v + w x r).
+			if (privhead) {
+				static double eo[3] = { 0, 0.048, -0.085 }; static double eo_t = -100;
+				if (tn - eo_t > 5) {
+					eo_t = tn;
+					int fd = openat("/var/lib/q2/meta_eye_offset", 0, 0);
+					if (fd >= 0) { char b[96]; long n = rd(fd, b, sizeof b - 1); cls(fd); if (n > 0) { b[n] = 0; const char *p = b; eo[0] = pnum(&p); eo[1] = pnum(&p); eo[2] = pnum(&p); } }
+				}
+				double q4[4] = { qw, qx, qy, qz }, r[3];
+				qrot(q4, eo, r);
+				px += r[0]; py += r[1]; pz += r[2];
+				vx += wy * r[2] - wz * r[1]; vy += wz * r[0] - wx * r[2]; vz += wx * r[1] - wy * r[0];
+			}
 			// predict to now: q' = exp(w*dt/2) * q (world-frame angular velocity), p' = p + v*dt
 			double hx = wx * dt * 0.5, hy = wy * dt * 0.5, hz = wz * dt * 0.5, hw = 1;
 			double nw = hw * qw - hx * qx - hy * qy - hz * qz, nx = hw * qx + hx * qw + hy * qz - hz * qy;
