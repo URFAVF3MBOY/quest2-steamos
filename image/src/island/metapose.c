@@ -310,7 +310,7 @@ static void ctl_update_v5(int mem, int pid, double tn, const double off[3])
 	if (need || (c5n && tn - checked_t > 20)) {
 		double hp[2][3]; int hok[2];
 		if (!asked) { ask_hands(); asked = 1; c5ask_t = tn; }
-		else if (read_hands(hp, hok)) {
+		else if (read_hands(hp, hok) && (hok[0] || hok[1])) {
 			asked = 0; checked_t = tn;
 			for (int i = 0; i < c5n; i++) {
 				if (!c5read(mem, c5a[i])) continue;
