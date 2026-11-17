@@ -302,24 +302,31 @@ static void ctl_update_v5(int mem, int pid, double tn, const double off[3])
 			L("controller records (newer build): "); for (int i = 0; i < nn; i++) { Lx(c5a[i]); L(" "); } if (!nn) L("none"); L("\n"); flushlog(1);
 		}
 	}
-	// hands: each record's position against Meta's own "Right"/"Left" positions (the nearest within 15 cm)
+	// hands: each record's position against Meta's own "Right"/"Left" positions, from a FRESH answer only (asking
+	// deletes the previous one), a clear match only (within 6 cm and 5 cm nearer than the other hand), and checked
+	// again every 20 s so a wrong hand cannot stay
+	static int asked; static double checked_t = -100;
 	int need = 0; for (int i = 0; i < c5n; i++) if (c5hand[i] < 0) need = 1;
-	if (need) {
+	if (need || (c5n && tn - checked_t > 20)) {
 		double hp[2][3]; int hok[2];
-		if (read_hands(hp, hok)) {
+		if (!asked) { ask_hands(); asked = 1; c5ask_t = tn; }
+		else if (read_hands(hp, hok)) {
+			asked = 0; checked_t = tn;
 			for (int i = 0; i < c5n; i++) {
-				if (c5hand[i] >= 0 || !c5read(mem, c5a[i])) continue;
-				double best = 0.15; int bh = -1;
+				if (!c5read(mem, c5a[i])) continue;
+				double d[2] = { 9, 9 };
 				for (int h = 0; h < 2; h++) if (hok[h]) {
-					double dx = F(c5r + 0x20) - hp[h][0], dy = F(c5r + 0x24) - hp[h][1], dz = F(c5r + 0x28) - hp[h][2], d = __builtin_sqrt(dx * dx + dy * dy + dz * dz);
-					int taken = 0; for (int k = 0; k < c5n; k++) if (k != i && c5hand[k] == h) taken = 1;
-					if (d < best && !taken) { best = d; bh = h; }
+					double dx = F(c5r + 0x20) - hp[h][0], dy = F(c5r + 0x24) - hp[h][1], dz = F(c5r + 0x28) - hp[h][2];
+					d[h] = __builtin_sqrt(dx * dx + dy * dy + dz * dz);
 				}
-				if (bh >= 0) { c5hand[i] = bh; L("controller record "); Lx(c5a[i]); L(bh ? " is the RIGHT hand" : " is the LEFT hand"); L(" (Meta's position, "); Ln(best * 100, 1); L(" cm off)\n"); flushlog(1); }
+				int bh = d[1] < d[0];
+				if (d[bh] > 0.06 || d[1 - bh] < d[bh] + 0.05 || c5hand[i] == bh) continue;
+				for (int k = 0; k < c5n; k++) if (k != i && c5hand[k] == bh) c5hand[k] = -1;
+				L("controller record "); Lx(c5a[i]); L(c5hand[i] < 0 ? " is the " : " corrected to the "); L(bh ? "RIGHT hand" : "LEFT hand");
+				L(" (Meta's position, "); Ln(d[bh] * 100, 1); L(" cm off, other hand "); Ln(d[1 - bh] * 100, 1); L(" cm)\n"); flushlog(1);
+				c5hand[i] = bh;
 			}
-			need = 0; for (int i = 0; i < c5n; i++) if (c5hand[i] < 0) need = 1;
-		}
-		if (need && tn - c5ask_t > 5) { c5ask_t = tn; ask_hands(); }   // a fresh answer from q2island
+		} else if (tn - c5ask_t > 5) { ask_hands(); c5ask_t = tn; }
 	}
 	int hf = angframe < 0 ? 1 : angframe;
 	for (int i = 0; i < c5n; i++) {
