@@ -78,6 +78,81 @@ static int valid_rec(const unsigned char *r)
 }
 static unsigned char buf[1 << 20], buf2[0xa0];
 
+// ---- newer Quest OS builds (seen on Quest OS 52175280031200150, desk-420) -------------------------------------
+// The head state is the same HeadTrackingStateV5 record, but it lives in the tracker's private memory (no named shared
+// area), and its angular values are in the HEAD frame: +0x2c angular velocity and +0x44 angular acceleration match the
+// head's own rotation 1.00 per axis, while +0x38 velocity and +0x50 linear acceleration stay in the world frame (15 s of
+// head turns, nods and tilts, compared with the rotation between successive orientations).  Each controller has a
+// record of its own (page-aligned: u32 seqA, u32 seqB, u32 valid 1, u32 flags 0x8f, +0x10 orientation, +0x20 position,
+// +0x2c angular velocity, +0x38 velocity, +0x60 i64 time ns) that does not say which hand it is; Meta's own
+// "dumpsys tracking" does (ControllerTrackerHost "Right --"/"Left --" with the same position), and q2island answers
+// with it when asked (/run/q2metactl.need -> /run/q2metactl.hands: "Right x y z" / "Left x y z").
+static unsigned char sbuf[1 << 20];      // scans only: buf holds the head state being used
+static int privhead;                    // the head was found in private memory (newer build)
+static int angframe = -1;               // 0 world, 1 head (decided from the first movement), -1 not yet
+static int anon_rw(const char *perm, const char *nm, const char *e) { return perm[0] == 'r' && perm[1] == 'w' && perm[3] == 'p' && (nm == e || *nm == '['); }
+static double monons(void) { return now() * 1e9; }
+// every record in the tracker's private rw memory that passes ok(); step 8 (head) or 0x1000 (controllers)
+static int scan_private(int pid, int mem, int (*ok)(const unsigned char *, double), long step, unsigned long *out, int max)
+{
+	char path[64] = "/proc/"; int k = 6; char t[12]; int j = 0; int v = pid; do { t[j++] = '0' + v % 10; v /= 10; } while (v); while (j) path[k++] = t[--j];
+	const char *m = "/maps"; while (*m) path[k++] = *m++; path[k] = 0;
+	int fd = openat(path, 0, 0); if (fd < 0) return 0;
+	long n = 0, r; while ((r = rd(fd, maps + n, sizeof maps - 1 - n)) > 0) n += r; cls(fd); maps[n] = 0;
+	int cnt = 0; double tn = monons();
+	for (const char *p = maps; *p && cnt < max; ) {
+		unsigned long a = hex(&p); p++; unsigned long b = hex(&p);
+		const char *perm = p + 1, *e = p; while (*e && *e != '\n') e++;
+		const char *nm = e; while (nm > perm && nm[-1] != ' ') nm--;
+		if (anon_rw(perm, nm, e) && b - a <= (256ul << 20))
+			for (unsigned long c = a; c < b && cnt < max; c += sizeof buf) {
+				long want = b - c > sizeof sbuf ? (long)sizeof sbuf : (long)(b - c), got = pread(mem, sbuf, want, c);
+				if (got < 0xa0) break;
+				for (long o = 0; o + 0xa0 <= got && cnt < max; o += step) if (ok(sbuf + o, tn)) { out[cnt++] = c + o; if (step == 8) o += 0x98; }
+			}
+		p = *e ? e + 1 : e;
+	}
+	return cnt;
+}
+static int head_ok(const unsigned char *r, double tn) { if (!valid_rec(r)) return 0; double d = I64(r + 0x60) - tn; return d > -5e9 && d < 5e9; }
+static int ctl5_ok(const unsigned char *r, double tn)
+{
+	u32 a = U32(r), b = U32(r + 4);
+	if (a != b || a == 0 || a == 0xffffffffu || U32(r + 8) != 1 || U32(r + 12) != 0x8f || !unitq(r + 0x10)) return 0;
+	for (int i = 0x20; i < 0x5c; i += 4) { float v = F(r + i); if (v != v || v > 1e4f || v < -1e4f) return 0; }
+	double d = I64(r + 0x60) - tn; return d > -2e9 && d < 2e9;
+}
+// quaternion (w, x, y, z) rotation of a vector: v' = q v q^-1
+static void qrot(const double q[4], const double v[3], double o[3])
+{
+	double w = q[0], x = q[1], y = q[2], z = q[3];
+	double tx = 2 * (y * v[2] - z * v[1]), ty = 2 * (z * v[0] - x * v[2]), tz = 2 * (x * v[1] - y * v[0]);
+	o[0] = v[0] + w * tx + (y * tz - z * ty); o[1] = v[1] + w * ty + (z * tx - x * tz); o[2] = v[2] + w * tz + (x * ty - y * tx);
+}
+static double pnum(const char **p)
+{
+	while (**p == ' ' || **p == '\t') (*p)++;
+	double s = 1, v = 0, f = 0.1; if (**p == '-') { s = -1; (*p)++; }
+	while (**p >= '0' && **p <= '9') v = v * 10 + *(*p)++ - '0';
+	if (**p == '.') { (*p)++; while (**p >= '0' && **p <= '9') { v += (*(*p)++ - '0') * f; f *= 0.1; } }
+	return s * v;
+}
+// Meta's hands: hp[h] = position, hok[h] = present (0 left, 1 right); returns the file's age check result (1 = read)
+static int read_hands(double hp[2][3], int hok[2])
+{
+	hok[0] = hok[1] = 0;
+	int fd = openat("/run/q2metactl.hands", 0, 0); if (fd < 0) return 0;
+	char b[256]; long n = rd(fd, b, sizeof b - 1); cls(fd); if (n <= 0) return 0; b[n] = 0;
+	for (const char *p = b; *p; ) {
+		int h = p[0] == 'L' ? 0 : p[0] == 'R' ? 1 : -1;
+		while (*p && *p != ' ') p++;
+		if (h >= 0) { hp[h][0] = pnum(&p); hp[h][1] = pnum(&p); hp[h][2] = pnum(&p); hok[h] = 1; }
+		while (*p && *p != '\n') p++; if (*p) p++;
+	}
+	return 1;
+}
+static void ask_hands(void) { int fd = openat("/run/q2metactl.need", 01 | 0100 | 01000, 0644); if (fd >= 0) cls(fd); sc(35, -100, (long)"/run/q2metactl.hands", 0, 0, 0, 0); }
+
 // ---- desk-251h: Meta's controller poses --------------------------------------------------------------------------
 // Found in this headset's own memory (desk-251g snapshots, controller moving, compared with Meta's dumpsys): the
 // tracker's "TrackingServiceController" shared memory (16 KB) holds, per tracked controller,
@@ -170,10 +245,82 @@ static int read_latest(int mem, long off, double headt)
 	}
 	return 0;
 }
+// desk-420: newer builds - each controller's record found on its own, its hand from Meta's dumpsys position
+static unsigned long c5a[4]; static int c5n, c5hand[4]; static double c5scan_t = -100, c5ask_t = -100;
+static unsigned char c5r[0x68];
+static int c5read(int mem, unsigned long a)
+{
+	for (int t = 0; t < 4; t++) {
+		unsigned char h2[8];
+		if (pread(mem, c5r, sizeof c5r, a) != sizeof c5r || pread(mem, h2, 8, a) != 8) return 0;
+		if (U32(h2) == U32(c5r) && U32(h2 + 4) == U32(c5r + 4) && ctl5_ok(c5r, monons())) return 1;
+	}
+	return 0;
+}
+static void ctl_update_v5(int mem, int pid, double tn, const double off[3])
+{
+	if (tn - c5scan_t > (c5n < 2 ? 2.0 : 10.0)) {
+		c5scan_t = tn;
+		unsigned long na[4]; int nn = scan_private(pid, mem, ctl5_ok, 0x1000, na, 4), same = nn == c5n;
+		for (int i = 0; same && i < nn; i++) same = na[i] == c5a[i];
+		if (!same) {
+			c5n = nn; for (int i = 0; i < nn; i++) { c5a[i] = na[i]; c5hand[i] = -1; }
+			L("controller records (newer build): "); for (int i = 0; i < nn; i++) { Lx(na[i]); L(" "); } if (!nn) L("none"); L("\n"); flushlog(1);
+		}
+	}
+	// hands: each record's position against Meta's own "Right"/"Left" positions (the nearest within 15 cm)
+	int need = 0; for (int i = 0; i < c5n; i++) if (c5hand[i] < 0) need = 1;
+	if (need) {
+		double hp[2][3]; int hok[2];
+		if (read_hands(hp, hok)) {
+			for (int i = 0; i < c5n; i++) {
+				if (c5hand[i] >= 0 || !c5read(mem, c5a[i])) continue;
+				double best = 0.15; int bh = -1;
+				for (int h = 0; h < 2; h++) if (hok[h]) {
+					double dx = F(c5r + 0x20) - hp[h][0], dy = F(c5r + 0x24) - hp[h][1], dz = F(c5r + 0x28) - hp[h][2], d = __builtin_sqrt(dx * dx + dy * dy + dz * dz);
+					int taken = 0; for (int k = 0; k < c5n; k++) if (k != i && c5hand[k] == h) taken = 1;
+					if (d < best && !taken) { best = d; bh = h; }
+				}
+				if (bh >= 0) { c5hand[i] = bh; L("controller record "); Lx(c5a[i]); L(bh ? " is the RIGHT hand" : " is the LEFT hand"); L(" (Meta's position, "); Ln(best * 100, 1); L(" cm off)\n"); flushlog(1); }
+			}
+			need = 0; for (int i = 0; i < c5n; i++) if (c5hand[i] < 0) need = 1;
+		}
+		if (need && tn - c5ask_t > 5) { c5ask_t = tn; ask_hands(); }   // a fresh answer from q2island
+	}
+	int hf = angframe < 0 ? 1 : angframe;
+	for (int i = 0; i < c5n; i++) {
+		int hand = c5hand[i]; if (hand < 0 || !c5read(mem, c5a[i])) continue;
+		double t = I64(c5r + 0x60) * 1e-9, age = tn - t; if (age < -0.05 || age > 0.3) continue;   // stale = not tracked
+		double dt = age < 0 ? 0 : age > 0.05 ? 0.05 : age;
+		double q[4] = { F(c5r + 0x1c), F(c5r + 0x10), F(c5r + 0x14), F(c5r + 0x18) };
+		double w[3] = { F(c5r + 0x2c), F(c5r + 0x30), F(c5r + 0x34) }, ww[3];
+		if (hf) qrot(q, w, ww); else { ww[0] = w[0]; ww[1] = w[1]; ww[2] = w[2]; }   // world frame for the driver
+		double vx = F(c5r + 0x38), vy = F(c5r + 0x3c), vz = F(c5r + 0x40);
+		double hx = ww[0] * dt * 0.5, hy = ww[1] * dt * 0.5, hz = ww[2] * dt * 0.5;
+		double nw = q[0] - hx * q[1] - hy * q[2] - hz * q[3], nx = q[1] + hx * q[0] + hy * q[3] - hz * q[2];
+		double ny = q[2] - hx * q[3] + hy * q[0] + hz * q[1], nz = q[3] + hx * q[2] - hy * q[1] + hz * q[0];
+		double nn = __builtin_sqrt(nw * nw + nx * nx + ny * ny + nz * nz);
+		struct cout *c = &CO[hand];
+		c->q[0] = nw / nn; c->q[1] = nx / nn; c->q[2] = ny / nn; c->q[3] = nz / nn;
+		c->p[0] = F(c5r + 0x20) + vx * dt + off[0]; c->p[1] = F(c5r + 0x24) + vy * dt + off[1]; c->p[2] = F(c5r + 0x28) + vz * dt + off[2];
+		c->v[0] = vx; c->v[1] = vy; c->v[2] = vz; c->w[0] = ww[0]; c->w[1] = ww[1]; c->w[2] = ww[2];
+		c->age = age * 1000; c->flags = c5r[0xc]; c->ok = 1;
+	}
+	static double st_t; static int lastmask = -1;
+	if (tn - st_t > 2) {
+		st_t = tn; int mask = 0; for (int i = 0; i < c5n; i++) if (c5hand[i] >= 0) mask |= 1 << c5hand[i];
+		if (mask != lastmask) {
+			lastmask = mask;
+			int fd = openat("/run/q2metactl.state", 01 | 0100 | 01000, 0644);
+			if (fd >= 0) { char b[32] = "left=0 right=0\n"; b[5] = '0' + (mask & 1); b[13] = '0' + ((mask >> 1) & 1); wr(fd, b, 15); cls(fd); }
+		}
+	}
+}
 static void ctl_update(int mem, int pid, double tn, i64 headts, const double hq[4], const double hp[3], const double off[3])
 {
 	(void)hq; (void)hp;
 	CO[0].ok = CO[1].ok = 0;
+	if (privhead) { ctl_update_v5(mem, pid, tn, off); return; }
 	double headt = headts * 1e-9;
 	if (tn - cids_t > 5) { cids_t = tn; read_ids(); int sf = openat("/var/lib/q2/meta_ctl_swap", 0, 0); cswapfile = sf >= 0; if (sf >= 0) cls(sf); }
 	(void)cswap_t;
@@ -221,13 +368,19 @@ static void ctl_update(int mem, int pid, double tn, i64 headts, const double hq[
 }
 static void ctl_log(double tn)
 {
-	if (!cnr) { L("  controllers: memory not found yet\n"); return; }
+	if (privhead) {
+		L("  controllers (newer build): "); Ln((double)c5n, 0); L(" record(s)");
+		for (int i = 0; i < c5n; i++) { L(" "); Lx(c5a[i]); L(c5hand[i] == 0 ? "=left" : c5hand[i] == 1 ? "=right" : "=?"); }
+		L(angframe < 0 ? "; angular frame: deciding" : angframe ? "; angular values in the head frame" : "; angular values in the world frame"); L("\n");
+	} else if (!cnr) { L("  controllers: memory not found yet\n"); return; }
+	if (privhead) goto hands;
 	L("  controllers: "); Ln((double)ninfo, 0); L(" known in Meta's memory, "); Ln((double)nlat, 0); L(" live record(s)"); if (cswapfile) L(", SWAPPED by meta_ctl_swap"); L("\n");
 	for (int i = 0; i < nlat; i++) {
 		L("    record +"); Lx(latoff[i]); L(lathand[i] == 0 ? " (left)" : lathand[i] == 1 ? " (right)" : " (?)");
 		L(": new states/5s "); Ln((double)nupd[i], 0); nupd[i] = 0;
 		L(", age "); Ln(lastt[i] > 0 ? (tn - lastt[i]) * 1000 : -1, 1); L(" ms\n");
 	}
+hands:
 	for (int h = 0; h < 2; h++) {
 		L(h ? "    right: " : "    left: ");
 		if (CO[h].ok) { L("tracked, age "); Ln(CO[h].age, 1); L(" ms, p=("); Ln(CO[h].p[0], 3); L(" "); Ln(CO[h].p[1], 3); L(" "); Ln(CO[h].p[2], 3); L(") q=("); Ln(CO[h].q[0], 3); L(" "); Ln(CO[h].q[1], 3); L(" "); Ln(CO[h].q[2], 3); L(" "); Ln(CO[h].q[3], 3); L(")"); }
@@ -258,8 +411,10 @@ __attribute__((used)) int q2main(int argc, char **argv)
 			int fb = 0;
 			if (find_regions(pid, "TrackingServiceHeadTracker") <= 0) {
 				if (now() - t0 > 600) { L("head tracker memory not found in 10 min - giving up\n"); break; }
-				// fallback after 40 s: any small shared-memory area of the tracker that holds valid head states
-				if (now() - t0 < 40 || find_regions(pid, "/dev/ashmem") <= 0) { msleep(500000000); continue; }
+				// fallback after 8 s: a small shared-memory area of the tracker that holds valid head states, else (newer
+				// builds, desk-420) the tracker's private memory
+				if (now() - t0 < 8) { msleep(500000000); continue; }
+				if (find_regions(pid, "/dev/ashmem") <= 0) nr = 0;
 				fb = 1;
 			}
 			mem = openat(mp, 0, 0); if (mem < 0) { L("cannot open tracker memory\n"); break; }
@@ -270,8 +425,13 @@ __attribute__((used)) int q2main(int argc, char **argv)
 					for (long o = 0; o + 0xa0 <= got && !ok; o += 8) ok = valid_rec(buf + o);
 					if (ok) { ra[k] = ra[i]; rl[k] = rl[i]; k++; }
 				}
-				nr = k; L("(name not found - using shared memory that holds head states) ");
-				if (!nr) { cls(mem); mem = -1; t0 = now() - 30; msleep(1000000000); continue; }
+				nr = k;
+				if (nr) L("(name not found - using shared memory that holds head states) ");
+				else {
+					unsigned long h;
+					if (scan_private(pid, mem, head_ok, 8, &h, 1) == 1) { ra[0] = h & ~0xffful; rl[0] = 0x2000; nr = 1; privhead = 1; L("(head state in the tracker's private memory - newer build) "); }
+				}
+				if (!nr) { cls(mem); mem = -1; msleep(1000000000); continue; }
 			}
 			L("head tracker memory: "); for (int i = 0; i < nr; i++) { Lx(ra[i]); L(" ("); Ln((double)rl[i], 0); L(" bytes) "); } L("\n"); flushlog(1);
 		}
@@ -292,9 +452,33 @@ __attribute__((used)) int q2main(int argc, char **argv)
 			double tsec = bts * 1e-9, tn = now(), dt = tn - tsec; if (dt < 0) dt = 0; if (dt > 0.05) dt = 0.05;
 			double qx = F(bp + 0x10), qy = F(bp + 0x14), qz = F(bp + 0x18), qw = F(bp + 0x1c);
 			double px = F(bp + 0x20), py = F(bp + 0x24), pz = F(bp + 0x28);
-			double wx = F(bp + 0x2c), wy = F(bp + 0x30), wz = F(bp + 0x34);           // world frame
+			double wx = F(bp + 0x2c), wy = F(bp + 0x30), wz = F(bp + 0x34);           // world frame (head frame on newer builds)
 			double vx = F(bp + 0x38), vy = F(bp + 0x3c), vz = F(bp + 0x40);
 			double aax = F(bp + 0x44), aay = F(bp + 0x48), aaz = F(bp + 0x4c);       // desk-390: Meta's angular accel (world)
+			// desk-420: which frame the angular values are in, from the first movement: the field against the rotation
+			// between successive orientations, measured in the world frame (q1 q0^-1) and in the head frame (q0^-1 q1)
+			{
+				static double pq[4], pts, sw, sh; static long fn; static int havep;
+				if (angframe < 0 && havep && bts != (i64)pts) {
+					double d = (bts - pts) * 1e-9, f2 = wx * wx + wy * wy + wz * wz;
+					if (d > 0 && d < 0.05 && f2 > 0.09) {
+						double a0 = pq[0], a1 = -pq[1], a2 = -pq[2], a3 = -pq[3];   // q0^-1
+						double W0 = qw * a0 - qx * a1 - qy * a2 - qz * a3, W1 = qw * a1 + qx * a0 + qy * a3 - qz * a2;
+						double W2 = qw * a2 - qx * a3 + qy * a0 + qz * a1, W3 = qw * a3 + qx * a2 - qy * a1 + qz * a0;
+						double H0 = a0 * qw - a1 * qx - a2 * qy - a3 * qz, H1 = a0 * qx + a1 * qw + a2 * qz - a3 * qy;
+						double H2 = a0 * qy - a1 * qz + a2 * qw + a3 * qx, H3 = a0 * qz + a1 * qy - a2 * qx + a3 * qw;
+						double sgw = W0 < 0 ? -1 : 1, sgh = H0 < 0 ? -1 : 1;
+						sw += (wx * W1 + wy * W2 + wz * W3) * sgw; sh += (wx * H1 + wy * H2 + wz * H3) * sgh;
+						if (++fn >= 200) { angframe = sh > sw; L(angframe ? "angular values are in the HEAD frame (newer build)\n" : "angular values are in the world frame\n"); flushlog(1); }
+					}
+				}
+				pq[0] = qw; pq[1] = qx; pq[2] = qy; pq[3] = qz; pts = (double)bts; havep = 1;
+			}
+			if (angframe < 0 ? privhead : angframe) {   // head frame -> world, so the rest stays as it was
+				double q4[4] = { qw, qx, qy, qz }, w3[3] = { wx, wy, wz }, a3[3] = { aax, aay, aaz }, o[3];
+				qrot(q4, w3, o); wx = o[0]; wy = o[1]; wz = o[2];
+				qrot(q4, a3, o); aax = o[0]; aay = o[1]; aaz = o[2];
+			}
 			double lax = F(bp + 0x50), lay = F(bp + 0x54), laz = F(bp + 0x58);       // linear accel (world)
 			// predict to now: q' = exp(w*dt/2) * q (world-frame angular velocity), p' = p + v*dt
 			double hx = wx * dt * 0.5, hy = wy * dt * 0.5, hz = wz * dt * 0.5, hw = 1;
