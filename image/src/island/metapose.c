@@ -257,15 +257,49 @@ static int c5read(int mem, unsigned long a)
 	}
 	return 0;
 }
+// The search for controller records goes through the tracker's private memory a slice (256 KiB) per loop pass: one
+// pass over everything took ~100 ms, and the head loop (1 kHz) stood still that long - the view jumped every 2 s.
+#define CS_MAXREG 512
+static unsigned long csa[CS_MAXREG], csb[CS_MAXREG], cspos, csf[4]; static int csn, csi, csnf, cson;
+static int cs_regions(int pid)
+{
+	char path[64] = "/proc/"; int k = 6; char t[12]; int j = 0; int v = pid; do { t[j++] = '0' + v % 10; v /= 10; } while (v); while (j) path[k++] = t[--j];
+	const char *m = "/maps"; while (*m) path[k++] = *m++; path[k] = 0;
+	int fd = openat(path, 0, 0); if (fd < 0) return 0;
+	long n = 0, r; while ((r = rd(fd, maps + n, sizeof maps - 1 - n)) > 0) n += r; cls(fd); maps[n] = 0;
+	csn = 0;
+	for (const char *p = maps; *p && csn < CS_MAXREG; ) {
+		unsigned long a = hex(&p); p++; unsigned long b = hex(&p);
+		const char *perm = p + 1, *e = p; while (*e && *e != '\n') e++;
+		const char *nm = e; while (nm > perm && nm[-1] != ' ') nm--;
+		if (anon_rw(perm, nm, e) && b - a <= (256ul << 20)) { csa[csn] = a; csb[csn] = b; csn++; }
+		p = *e ? e + 1 : e;
+	}
+	return csn;
+}
+// one slice; 1 when a full pass has finished (csf/csnf hold what it found)
+static int cs_step(int mem)
+{
+	if (csi >= csn) return 1;
+	unsigned long c = csa[csi] + cspos, want = csb[csi] - c; if (want > (256u << 10)) want = 256u << 10;
+	long got = pread(mem, sbuf, want, c); double tn = monons();
+	for (long o = 0; o + 0x68 <= got && csnf < 4; o += 0x1000) if (ctl5_ok(sbuf + o, tn)) csf[csnf++] = c + o;
+	cspos += want;
+	if (got < (long)want || csa[csi] + cspos >= csb[csi]) { csi++; cspos = 0; }
+	return csi >= csn;
+}
 static void ctl_update_v5(int mem, int pid, double tn, const double off[3])
 {
-	if (tn - c5scan_t > (c5n < 2 ? 2.0 : 10.0)) {
-		c5scan_t = tn;
-		unsigned long na[4]; int nn = scan_private(pid, mem, ctl5_ok, 0x1000, na, 4), same = nn == c5n;
-		for (int i = 0; same && i < nn; i++) same = na[i] == c5a[i];
+	if (!cson && tn - c5scan_t > (c5n < 2 ? 3.0 : 15.0)) { cs_regions(pid); csi = 0; cspos = 0; csnf = 0; cson = 1; }
+	if (cson && cs_step(mem)) {
+		cson = 0; c5scan_t = tn;
+		int nn = csnf, same = nn == c5n;
+		for (int i = 0; same && i < nn; i++) same = csf[i] == c5a[i];
 		if (!same) {
-			c5n = nn; for (int i = 0; i < nn; i++) { c5a[i] = na[i]; c5hand[i] = -1; }
-			L("controller records (newer build): "); for (int i = 0; i < nn; i++) { Lx(na[i]); L(" "); } if (!nn) L("none"); L("\n"); flushlog(1);
+			// a record that stays keeps its hand; new ones are looked up
+			int oh[4]; for (int i = 0; i < nn; i++) { oh[i] = -1; for (int k = 0; k < c5n; k++) if (c5a[k] == csf[i]) oh[i] = c5hand[k]; }
+			c5n = nn; for (int i = 0; i < nn; i++) { c5a[i] = csf[i]; c5hand[i] = oh[i]; }
+			L("controller records (newer build): "); for (int i = 0; i < nn; i++) { Lx(c5a[i]); L(" "); } if (!nn) L("none"); L("\n"); flushlog(1);
 		}
 	}
 	// hands: each record's position against Meta's own "Right"/"Left" positions (the nearest within 15 cm)
