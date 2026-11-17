@@ -524,10 +524,11 @@ __attribute__((used)) int q2main(int argc, char **argv)
 			// desk-421: on newer builds the head position is a point near the neck pivot (nods and turns put it within
 			// ~3 cm of the pivot), while SteamVR takes the pose as the point between the eyes.  Nodding then moved the
 			// virtual eyes far less than the real ones (sickness looking up/down, yaw nearly fine).  Move it out to the
-			// eyes in the head frame (default 4.8 cm up, 8.5 cm forward; /var/lib/q2/meta_eye_offset "x y z" in m),
+			// eyes in the head frame (default 7 cm up, none forward: a forward part brings the controllers visibly closer;
+			// /var/lib/q2/meta_eye_offset "x y z" in m),
 			// with the velocity that point really has (v + w x r).
 			if (privhead) {
-				static double eo[3] = { 0, 0.048, -0.085 }; static double eo_t = -100;
+				static double eo[3] = { 0, 0.07, 0 }; static double eo_t = -100;
 				if (tn - eo_t > 5) {
 					eo_t = tn;
 					int fd = openat("/var/lib/q2/meta_eye_offset", 0, 0);
