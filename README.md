@@ -102,4 +102,4 @@ SteamOS, SteamVR, Steam and Meta's tracking software belong to Valve and Meta. *
 
 ## Licenses
 
-The project's own code (scripts, tools, the SteamVR driver, the Vulkan layer, the boot script) is in this repository, and each third-party part keeps its own license. Kernel patches and `kernel/q2msm` are GPL-2.0 like the kernel.
+The project's own code (scripts, tools, the SteamVR driver, the Vulkan layer, the boot script) is MIT-licensed (`LICENSE`), and each third-party part keeps its own license. Kernel patches and `kernel/q2msm` are GPL-2.0 like the kernel.
