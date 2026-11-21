@@ -3,349 +3,351 @@
 
 / {
 	hollywood-dtbo-sink {
-		CPU4 {
+		quest2,refs = <&dtbo_CPU4 &dtbo_CPU5 &dtbo_CPU6 &dtbo_CPU7 &dtbo_L10A &dtbo_L10C &dtbo_L11C &dtbo_L15A &dtbo_L17A &dtbo_L5A &dtbo_L6A &dtbo_L7C &dtbo_L8C &dtbo_L9A &dtbo_L9C &dtbo_S4A &dtbo_S5A &dtbo_S6A &dtbo_S8C &dtbo_afe &dtbo_afe_loopback_tx &dtbo_afe_pcm_rx &dtbo_afe_pcm_tx &dtbo_afe_proxy_rx &dtbo_afe_proxy_tx &dtbo_audio_apr &dtbo_bt_en_sleep &dtbo_cam_a5 &dtbo_cam_bps &dtbo_cam_cci0 &dtbo_cam_cci1 &dtbo_cam_ipe0 &dtbo_cam_jpeg_dma &dtbo_cam_jpeg_enc &dtbo_cam_sensor_mclk0_active &dtbo_cam_sensor_mclk0_suspend &dtbo_cam_sensor_mclk1_active &dtbo_cam_sensor_mclk1_suspend &dtbo_cam_sensor_mclk2_active &dtbo_cam_sensor_mclk2_suspend &dtbo_cam_sensor_mclk3_active &dtbo_cam_sensor_mclk3_suspend &dtbo_cam_sensor_mclk4_active &dtbo_cam_sensor_mclk4_suspend &dtbo_cam_sensor_mclk5_active &dtbo_cam_sensor_mclk5_suspend &dtbo_clock_camcc &dtbo_clock_rpmh &dtbo_compr &dtbo_compress &dtbo_cpu_cpu_llcc_bw &dtbo_cpu_llcc_ddr_bw &dtbo_dai_mi2s0 &dtbo_dai_mi2s1 &dtbo_dai_mi2s2 &dtbo_dai_mi2s3 &dtbo_dai_mi2s4 &dtbo_dai_mi2s5 &dtbo_dai_pri_tdm_rx_0 &dtbo_dai_pri_tdm_tx_0 &dtbo_dai_quat_tdm_rx_0 &dtbo_dai_quat_tdm_tx_0 &dtbo_dai_quin_tdm_rx_0 &dtbo_dai_quin_tdm_tx_0 &dtbo_dai_sec_tdm_rx_0 &dtbo_dai_sec_tdm_tx_0 &dtbo_dai_sen_tdm_rx_0 &dtbo_dai_sen_tdm_tx_0 &dtbo_dai_tert_tdm_rx_0 &dtbo_dai_tert_tdm_tx_0 &dtbo_eud &dtbo_extcon_storage_cd &dtbo_fsa4480 &dtbo_hostless &dtbo_incall_music_2_rx &dtbo_incall_music_rx &dtbo_incall_record_rx &dtbo_incall_record_tx &dtbo_intc &dtbo_kgsl_msm_iommu &dtbo_kgsl_smmu &dtbo_loopback &dtbo_lpass_audio_hw_vote &dtbo_lpass_core_hw_vote &dtbo_lsm &dtbo_mdss_dp_pll &dtbo_mdss_dsi0 &dtbo_mdss_dsi0_pll &dtbo_mdss_dsi1 &dtbo_mdss_dsi1_pll &dtbo_mdss_dsi_phy0 &dtbo_mdss_dsi_phy1 &dtbo_mdss_mdp &dtbo_msm_cvp &dtbo_npu_llcc_ddr_bw &dtbo_npu_npu_llcc_bw &dtbo_npudsp_npu_ddr_bw &dtbo_pcm0 &dtbo_pcm1 &dtbo_pcm2 &dtbo_pil_camera_mem &dtbo_pm8150_l14 &dtbo_pm8150_l2 &dtbo_pm8150_s4 &dtbo_pm8150a_l1 &dtbo_pm8150a_l10 &dtbo_pm8150a_l11 &dtbo_pm8150a_l4 &dtbo_pm8150a_l5 &dtbo_pri_mi2s_sck_active &dtbo_pri_mi2s_sck_sleep &dtbo_pri_mi2s_sd0_active &dtbo_pri_mi2s_sd0_sleep &dtbo_pri_mi2s_sd1_active &dtbo_pri_mi2s_sd1_sleep &dtbo_pri_mi2s_ws_active &dtbo_pri_mi2s_ws_sleep &dtbo_proxy_rx &dtbo_proxy_tx &dtbo_q6core &dtbo_qcom_seecom &dtbo_qfprom &dtbo_qupv3_se12_2uart &dtbo_qupv3_se13_i2c &dtbo_qupv3_se15_i2c &dtbo_qupv3_se17_4uart &dtbo_qupv3_se19_spi &dtbo_qupv3_se1_i2c &dtbo_qupv3_se2_spi &dtbo_qupv3_se4_i2c &dtbo_qupv3_se6_4uart &dtbo_qupv3_se6_i2c &dtbo_qupv3_se8_i2c &dtbo_removed_mem &dtbo_reserved_memory &dtbo_routing &dtbo_sb_7_rx &dtbo_sb_7_tx &dtbo_sde_dp &dtbo_sde_dp_usbplug_cc_active &dtbo_sde_dp_usbplug_cc_suspend &dtbo_sde_rscc &dtbo_sde_te1_active &dtbo_sde_te1_suspend &dtbo_sde_te_active &dtbo_sde_te_suspend &dtbo_sdhc_2 &dtbo_slim_aud &dtbo_soc &dtbo_spmi_bus &dtbo_storage_cd &dtbo_stub_codec &dtbo_tdm_quin_rx &dtbo_tdm_quin_tx &dtbo_thermal_zones &dtbo_titan_top_gdsc &dtbo_tlmm &dtbo_tsens0 &dtbo_tsens1 &dtbo_ufs_phy_gdsc &dtbo_ufshc_card &dtbo_ufshc_mem &dtbo_ufsphy_mem &dtbo_usb0 &dtbo_usb2_phy0 &dtbo_usb_audio_rx &dtbo_usb_audio_tx &dtbo_usb_qmp_dp_phy &dtbo_vendor &dtbo_voice &dtbo_voip &dtbo_wlan>;
+
+		dtbo_CPU4: CPU4 {
 		};
-		CPU5 {
+		dtbo_CPU5: CPU5 {
 		};
-		CPU6 {
+		dtbo_CPU6: CPU6 {
 		};
-		CPU7 {
+		dtbo_CPU7: CPU7 {
 		};
-		L10A {
+		dtbo_L10A: L10A {
 		};
-		L10C {
+		dtbo_L10C: L10C {
 		};
-		L11C {
+		dtbo_L11C: L11C {
 		};
-		L15A {
+		dtbo_L15A: L15A {
 		};
-		L17A {
+		dtbo_L17A: L17A {
 		};
-		L5A {
+		dtbo_L5A: L5A {
 		};
-		L6A {
+		dtbo_L6A: L6A {
 		};
-		L7C {
+		dtbo_L7C: L7C {
 		};
-		L8C {
+		dtbo_L8C: L8C {
 		};
-		L9A {
+		dtbo_L9A: L9A {
 		};
-		L9C {
+		dtbo_L9C: L9C {
 		};
-		S4A {
+		dtbo_S4A: S4A {
 		};
-		S5A {
+		dtbo_S5A: S5A {
 		};
-		S6A {
+		dtbo_S6A: S6A {
 		};
-		S8C {
+		dtbo_S8C: S8C {
 		};
-		afe {
+		dtbo_afe: afe {
 		};
-		afe_loopback_tx {
+		dtbo_afe_loopback_tx: afe_loopback_tx {
 		};
-		afe_pcm_rx {
+		dtbo_afe_pcm_rx: afe_pcm_rx {
 		};
-		afe_pcm_tx {
+		dtbo_afe_pcm_tx: afe_pcm_tx {
 		};
-		afe_proxy_rx {
+		dtbo_afe_proxy_rx: afe_proxy_rx {
 		};
-		afe_proxy_tx {
+		dtbo_afe_proxy_tx: afe_proxy_tx {
 		};
-		audio_apr {
+		dtbo_audio_apr: audio_apr {
 		};
-		bt_en_sleep {
+		dtbo_bt_en_sleep: bt_en_sleep {
 		};
-		cam_a5 {
+		dtbo_cam_a5: cam_a5 {
 		};
-		cam_bps {
+		dtbo_cam_bps: cam_bps {
 		};
-		cam_cci0 {
+		dtbo_cam_cci0: cam_cci0 {
 		};
-		cam_cci1 {
+		dtbo_cam_cci1: cam_cci1 {
 		};
-		cam_ipe0 {
+		dtbo_cam_ipe0: cam_ipe0 {
 		};
-		cam_jpeg_dma {
+		dtbo_cam_jpeg_dma: cam_jpeg_dma {
 		};
-		cam_jpeg_enc {
+		dtbo_cam_jpeg_enc: cam_jpeg_enc {
 		};
-		cam_sensor_mclk0_active {
+		dtbo_cam_sensor_mclk0_active: cam_sensor_mclk0_active {
 		};
-		cam_sensor_mclk0_suspend {
+		dtbo_cam_sensor_mclk0_suspend: cam_sensor_mclk0_suspend {
 		};
-		cam_sensor_mclk1_active {
+		dtbo_cam_sensor_mclk1_active: cam_sensor_mclk1_active {
 		};
-		cam_sensor_mclk1_suspend {
+		dtbo_cam_sensor_mclk1_suspend: cam_sensor_mclk1_suspend {
 		};
-		cam_sensor_mclk2_active {
+		dtbo_cam_sensor_mclk2_active: cam_sensor_mclk2_active {
 		};
-		cam_sensor_mclk2_suspend {
+		dtbo_cam_sensor_mclk2_suspend: cam_sensor_mclk2_suspend {
 		};
-		cam_sensor_mclk3_active {
+		dtbo_cam_sensor_mclk3_active: cam_sensor_mclk3_active {
 		};
-		cam_sensor_mclk3_suspend {
+		dtbo_cam_sensor_mclk3_suspend: cam_sensor_mclk3_suspend {
 		};
-		cam_sensor_mclk4_active {
+		dtbo_cam_sensor_mclk4_active: cam_sensor_mclk4_active {
 		};
-		cam_sensor_mclk4_suspend {
+		dtbo_cam_sensor_mclk4_suspend: cam_sensor_mclk4_suspend {
 		};
-		cam_sensor_mclk5_active {
+		dtbo_cam_sensor_mclk5_active: cam_sensor_mclk5_active {
 		};
-		cam_sensor_mclk5_suspend {
+		dtbo_cam_sensor_mclk5_suspend: cam_sensor_mclk5_suspend {
 		};
-		clock_camcc {
+		dtbo_clock_camcc: clock_camcc {
 		};
-		clock_rpmh {
+		dtbo_clock_rpmh: clock_rpmh {
 		};
-		compr {
+		dtbo_compr: compr {
 		};
-		compress {
+		dtbo_compress: compress {
 		};
-		cpu_cpu_llcc_bw {
+		dtbo_cpu_cpu_llcc_bw: cpu_cpu_llcc_bw {
 		};
-		cpu_llcc_ddr_bw {
+		dtbo_cpu_llcc_ddr_bw: cpu_llcc_ddr_bw {
 		};
-		dai_mi2s0 {
+		dtbo_dai_mi2s0: dai_mi2s0 {
 		};
-		dai_mi2s1 {
+		dtbo_dai_mi2s1: dai_mi2s1 {
 		};
-		dai_mi2s2 {
+		dtbo_dai_mi2s2: dai_mi2s2 {
 		};
-		dai_mi2s3 {
+		dtbo_dai_mi2s3: dai_mi2s3 {
 		};
-		dai_mi2s4 {
+		dtbo_dai_mi2s4: dai_mi2s4 {
 		};
-		dai_mi2s5 {
+		dtbo_dai_mi2s5: dai_mi2s5 {
 		};
-		dai_pri_tdm_rx_0 {
+		dtbo_dai_pri_tdm_rx_0: dai_pri_tdm_rx_0 {
 		};
-		dai_pri_tdm_tx_0 {
+		dtbo_dai_pri_tdm_tx_0: dai_pri_tdm_tx_0 {
 		};
-		dai_quat_tdm_rx_0 {
+		dtbo_dai_quat_tdm_rx_0: dai_quat_tdm_rx_0 {
 		};
-		dai_quat_tdm_tx_0 {
+		dtbo_dai_quat_tdm_tx_0: dai_quat_tdm_tx_0 {
 		};
-		dai_quin_tdm_rx_0 {
+		dtbo_dai_quin_tdm_rx_0: dai_quin_tdm_rx_0 {
 		};
-		dai_quin_tdm_tx_0 {
+		dtbo_dai_quin_tdm_tx_0: dai_quin_tdm_tx_0 {
 		};
-		dai_sec_tdm_rx_0 {
+		dtbo_dai_sec_tdm_rx_0: dai_sec_tdm_rx_0 {
 		};
-		dai_sec_tdm_tx_0 {
+		dtbo_dai_sec_tdm_tx_0: dai_sec_tdm_tx_0 {
 		};
-		dai_sen_tdm_rx_0 {
+		dtbo_dai_sen_tdm_rx_0: dai_sen_tdm_rx_0 {
 		};
-		dai_sen_tdm_tx_0 {
+		dtbo_dai_sen_tdm_tx_0: dai_sen_tdm_tx_0 {
 		};
-		dai_tert_tdm_rx_0 {
+		dtbo_dai_tert_tdm_rx_0: dai_tert_tdm_rx_0 {
 		};
-		dai_tert_tdm_tx_0 {
+		dtbo_dai_tert_tdm_tx_0: dai_tert_tdm_tx_0 {
 		};
-		eud {
+		dtbo_eud: eud {
 		};
-		extcon_storage_cd {
+		dtbo_extcon_storage_cd: extcon_storage_cd {
 		};
-		fsa4480 {
+		dtbo_fsa4480: fsa4480 {
 		};
-		hostless {
+		dtbo_hostless: hostless {
 		};
-		incall_music_2_rx {
+		dtbo_incall_music_2_rx: incall_music_2_rx {
 		};
-		incall_music_rx {
+		dtbo_incall_music_rx: incall_music_rx {
 		};
-		incall_record_rx {
+		dtbo_incall_record_rx: incall_record_rx {
 		};
-		incall_record_tx {
+		dtbo_incall_record_tx: incall_record_tx {
 		};
-		intc {
+		dtbo_intc: intc {
 		};
-		kgsl_msm_iommu {
+		dtbo_kgsl_msm_iommu: kgsl_msm_iommu {
 		};
-		kgsl_smmu {
+		dtbo_kgsl_smmu: kgsl_smmu {
 		};
-		loopback {
+		dtbo_loopback: loopback {
 		};
-		lpass_audio_hw_vote {
+		dtbo_lpass_audio_hw_vote: lpass_audio_hw_vote {
 		};
-		lpass_core_hw_vote {
+		dtbo_lpass_core_hw_vote: lpass_core_hw_vote {
 		};
-		lsm {
+		dtbo_lsm: lsm {
 		};
-		mdss_dp_pll {
+		dtbo_mdss_dp_pll: mdss_dp_pll {
 		};
-		mdss_dsi0 {
+		dtbo_mdss_dsi0: mdss_dsi0 {
 		};
-		mdss_dsi0_pll {
+		dtbo_mdss_dsi0_pll: mdss_dsi0_pll {
 		};
-		mdss_dsi1 {
+		dtbo_mdss_dsi1: mdss_dsi1 {
 		};
-		mdss_dsi1_pll {
+		dtbo_mdss_dsi1_pll: mdss_dsi1_pll {
 		};
-		mdss_dsi_phy0 {
+		dtbo_mdss_dsi_phy0: mdss_dsi_phy0 {
 		};
-		mdss_dsi_phy1 {
+		dtbo_mdss_dsi_phy1: mdss_dsi_phy1 {
 		};
-		mdss_mdp {
+		dtbo_mdss_mdp: mdss_mdp {
 		};
-		msm_cvp {
+		dtbo_msm_cvp: msm_cvp {
 		};
-		npu_llcc_ddr_bw {
+		dtbo_npu_llcc_ddr_bw: npu_llcc_ddr_bw {
 		};
-		npu_npu_llcc_bw {
+		dtbo_npu_npu_llcc_bw: npu_npu_llcc_bw {
 		};
-		npudsp_npu_ddr_bw {
+		dtbo_npudsp_npu_ddr_bw: npudsp_npu_ddr_bw {
 		};
-		pcm0 {
+		dtbo_pcm0: pcm0 {
 		};
-		pcm1 {
+		dtbo_pcm1: pcm1 {
 		};
-		pcm2 {
+		dtbo_pcm2: pcm2 {
 		};
-		pil_camera_mem {
+		dtbo_pil_camera_mem: pil_camera_mem {
 		};
-		pm8150_l14 {
+		dtbo_pm8150_l14: pm8150_l14 {
 		};
-		pm8150_l2 {
+		dtbo_pm8150_l2: pm8150_l2 {
 		};
-		pm8150_s4 {
+		dtbo_pm8150_s4: pm8150_s4 {
 		};
-		pm8150a_l1 {
+		dtbo_pm8150a_l1: pm8150a_l1 {
 		};
-		pm8150a_l10 {
+		dtbo_pm8150a_l10: pm8150a_l10 {
 		};
-		pm8150a_l11 {
+		dtbo_pm8150a_l11: pm8150a_l11 {
 		};
-		pm8150a_l4 {
+		dtbo_pm8150a_l4: pm8150a_l4 {
 		};
-		pm8150a_l5 {
+		dtbo_pm8150a_l5: pm8150a_l5 {
 		};
-		pri_mi2s_sck_active {
+		dtbo_pri_mi2s_sck_active: pri_mi2s_sck_active {
 		};
-		pri_mi2s_sck_sleep {
+		dtbo_pri_mi2s_sck_sleep: pri_mi2s_sck_sleep {
 		};
-		pri_mi2s_sd0_active {
+		dtbo_pri_mi2s_sd0_active: pri_mi2s_sd0_active {
 		};
-		pri_mi2s_sd0_sleep {
+		dtbo_pri_mi2s_sd0_sleep: pri_mi2s_sd0_sleep {
 		};
-		pri_mi2s_sd1_active {
+		dtbo_pri_mi2s_sd1_active: pri_mi2s_sd1_active {
 		};
-		pri_mi2s_sd1_sleep {
+		dtbo_pri_mi2s_sd1_sleep: pri_mi2s_sd1_sleep {
 		};
-		pri_mi2s_ws_active {
+		dtbo_pri_mi2s_ws_active: pri_mi2s_ws_active {
 		};
-		pri_mi2s_ws_sleep {
+		dtbo_pri_mi2s_ws_sleep: pri_mi2s_ws_sleep {
 		};
-		proxy_rx {
+		dtbo_proxy_rx: proxy_rx {
 		};
-		proxy_tx {
+		dtbo_proxy_tx: proxy_tx {
 		};
-		q6core {
+		dtbo_q6core: q6core {
 		};
-		qcom_seecom {
+		dtbo_qcom_seecom: qcom_seecom {
 		};
-		qfprom {
+		dtbo_qfprom: qfprom {
 		};
-		qupv3_se12_2uart {
+		dtbo_qupv3_se12_2uart: qupv3_se12_2uart {
 		};
-		qupv3_se13_i2c {
+		dtbo_qupv3_se13_i2c: qupv3_se13_i2c {
 		};
-		qupv3_se15_i2c {
+		dtbo_qupv3_se15_i2c: qupv3_se15_i2c {
 		};
-		qupv3_se17_4uart {
+		dtbo_qupv3_se17_4uart: qupv3_se17_4uart {
 		};
-		qupv3_se19_spi {
+		dtbo_qupv3_se19_spi: qupv3_se19_spi {
 		};
-		qupv3_se1_i2c {
+		dtbo_qupv3_se1_i2c: qupv3_se1_i2c {
 		};
-		qupv3_se2_spi {
+		dtbo_qupv3_se2_spi: qupv3_se2_spi {
 		};
-		qupv3_se4_i2c {
+		dtbo_qupv3_se4_i2c: qupv3_se4_i2c {
 		};
-		qupv3_se6_4uart {
+		dtbo_qupv3_se6_4uart: qupv3_se6_4uart {
 		};
-		qupv3_se6_i2c {
+		dtbo_qupv3_se6_i2c: qupv3_se6_i2c {
 		};
-		qupv3_se8_i2c {
+		dtbo_qupv3_se8_i2c: qupv3_se8_i2c {
 		};
-		removed_mem {
+		dtbo_removed_mem: removed_mem {
 		};
-		reserved_memory {
+		dtbo_reserved_memory: reserved_memory {
 		};
-		routing {
+		dtbo_routing: routing {
 		};
-		sb_7_rx {
+		dtbo_sb_7_rx: sb_7_rx {
 		};
-		sb_7_tx {
+		dtbo_sb_7_tx: sb_7_tx {
 		};
-		sde_dp {
+		dtbo_sde_dp: sde_dp {
 		};
-		sde_dp_usbplug_cc_active {
+		dtbo_sde_dp_usbplug_cc_active: sde_dp_usbplug_cc_active {
 		};
-		sde_dp_usbplug_cc_suspend {
+		dtbo_sde_dp_usbplug_cc_suspend: sde_dp_usbplug_cc_suspend {
 		};
-		sde_rscc {
+		dtbo_sde_rscc: sde_rscc {
 		};
-		sde_te1_active {
+		dtbo_sde_te1_active: sde_te1_active {
 		};
-		sde_te1_suspend {
+		dtbo_sde_te1_suspend: sde_te1_suspend {
 		};
-		sde_te_active {
+		dtbo_sde_te_active: sde_te_active {
 		};
-		sde_te_suspend {
+		dtbo_sde_te_suspend: sde_te_suspend {
 		};
-		sdhc_2 {
+		dtbo_sdhc_2: sdhc_2 {
 		};
-		slim_aud {
+		dtbo_slim_aud: slim_aud {
 		};
-		soc {
+		dtbo_soc: soc {
 		};
-		spmi_bus {
+		dtbo_spmi_bus: spmi_bus {
 		};
-		storage_cd {
+		dtbo_storage_cd: storage_cd {
 		};
-		stub_codec {
+		dtbo_stub_codec: stub_codec {
 		};
-		tdm_quin_rx {
+		dtbo_tdm_quin_rx: tdm_quin_rx {
 		};
-		tdm_quin_tx {
+		dtbo_tdm_quin_tx: tdm_quin_tx {
 		};
-		thermal_zones {
+		dtbo_thermal_zones: thermal_zones {
 		};
-		titan_top_gdsc {
+		dtbo_titan_top_gdsc: titan_top_gdsc {
 		};
-		tlmm {
+		dtbo_tlmm: tlmm {
 		};
-		tsens0 {
+		dtbo_tsens0: tsens0 {
 		};
-		tsens1 {
+		dtbo_tsens1: tsens1 {
 		};
-		ufs_phy_gdsc {
+		dtbo_ufs_phy_gdsc: ufs_phy_gdsc {
 		};
-		ufshc_card {
+		dtbo_ufshc_card: ufshc_card {
 		};
-		ufshc_mem {
+		dtbo_ufshc_mem: ufshc_mem {
 		};
-		ufsphy_mem {
+		dtbo_ufsphy_mem: ufsphy_mem {
 		};
-		usb0 {
+		dtbo_usb0: usb0 {
 		};
-		usb2_phy0 {
+		dtbo_usb2_phy0: usb2_phy0 {
 		};
-		usb_audio_rx {
+		dtbo_usb_audio_rx: usb_audio_rx {
 		};
-		usb_audio_tx {
+		dtbo_usb_audio_tx: usb_audio_tx {
 		};
-		usb_qmp_dp_phy {
+		dtbo_usb_qmp_dp_phy: usb_qmp_dp_phy {
 		};
-		vendor {
+		dtbo_vendor: vendor {
 		};
-		voice {
+		dtbo_voice: voice {
 		};
-		voip {
+		dtbo_voip: voip {
 		};
-		wlan {
+		dtbo_wlan: wlan {
 		};
 	};
 
