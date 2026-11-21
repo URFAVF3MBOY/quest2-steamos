@@ -1,0 +1,8 @@
+
+config DRM_PANEL_OCULUS_HOLLYWOOD_JDI
+	tristate "Meta Quest 2 JDI LCD"
+	depends on OF && DRM && DRM_PANEL && DRM_MIPI_DSI
+	select DRM_DISPLAY_DSC_HELPER
+	select DRM_DISPLAY_HELPER
+	help
+	  The Meta Quest 2's JDI LCD on two bonded DSI links with DSC.

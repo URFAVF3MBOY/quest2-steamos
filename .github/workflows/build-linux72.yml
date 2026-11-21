@@ -57,6 +57,10 @@ jobs:
           cp kernel/linux72/$DTB.dts kernel/linux72/$DTB-dtbo-sink.dtsi linux/$Q/
           grep -q "$DTB.dtb" linux/$Q/Makefile || echo "dtb-\$(CONFIG_ARCH_QCOM) += $DTB.dtb" >> linux/$Q/Makefile
           cp kernel/linux72/hollywood.config linux/arch/arm64/configs/hollywood.config
+          P=linux/drivers/gpu/drm/panel
+          cp kernel/linux72/panel-oculus-hollywood-jdi.c $P/
+          grep -q OCULUS_HOLLYWOOD_JDI $P/Kconfig || cat kernel/linux72/Kconfig.panel >> $P/Kconfig
+          grep -q oculus-hollywood-jdi $P/Makefile || echo 'obj-$(CONFIG_DRM_PANEL_OCULUS_HOLLYWOOD_JDI) += panel-oculus-hollywood-jdi.o' >> $P/Makefile
           grep -q '"pico4,compatible"' linux/drivers/of/fdt.c
           sed -i 's/"pico4,compatible"/"quest2,compatible"/; s/"pico4,model"/"quest2,model"/' linux/drivers/of/fdt.c
           grep -q '"quest2,compatible"' linux/drivers/of/fdt.c
@@ -106,6 +110,8 @@ jobs:
           cp bb/bin/busybox.static rd/bin/busybox
           file rd/bin/busybox
           install -m 755 kernel/linux72/stage1/init rd/init
+          aarch64-linux-gnu-gcc -static -O2 -o rd/bin/q2reboot kernel/linux72/stage1/q2reboot.c
+          aarch64-linux-gnu-strip rd/bin/q2reboot
           sed -i 's/\r$//' rd/init
           (cd rd && find . | cpio -o -H newc --quiet | gzip -9) > stage1.cpio.gz
 
