@@ -60,6 +60,9 @@ jobs:
           grep -q '"pico4,compatible"' linux/drivers/of/fdt.c
           sed -i 's/"pico4,compatible"/"quest2,compatible"/; s/"pico4,model"/"quest2,model"/' linux/drivers/of/fdt.c
           grep -q '"quest2,compatible"' linux/drivers/of/fdt.c
+          F=linux/drivers/gpu/drm/drm_fb_helper.c
+          sed -i 's/^	drm_fb_helper_restore_fbdev_mode_unlocked(dev->fb_helper);$/	drm_fb_helper_restore_fbdev_mode_unlocked(dev->fb_helper, false);/' $F
+          ! grep -q 'drm_fb_helper_restore_fbdev_mode_unlocked(dev->fb_helper);' $F
 
       - name: Configure
         run: |
