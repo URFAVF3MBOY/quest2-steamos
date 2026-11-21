@@ -32,6 +32,16 @@
 		#address-cells = <2>;
 		#size-cells = <2>;
 		ranges;
+
+		/* The bootloader's splash, still scanned out: the kernel console until the display driver runs. */
+		framebuffer@9c000000 {
+			compatible = "simple-framebuffer";
+			reg = <0x0 0x9c000000 0x0 0x1b78000>;
+			width = <1920>;
+			height = <3664>;
+			stride = <7680>;
+			format = "a8r8g8b8";
+		};
 	};
 
 	gpio-keys {
@@ -134,6 +144,11 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 	};
+};
+
+/* Left alone in stage 1, so the splash keeps running. */
+&dispcc {
+	status = "disabled";
 };
 
 &pm8150_gpios {
