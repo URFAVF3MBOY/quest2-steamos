@@ -210,10 +210,18 @@
 };
 
 &ufs_mem_phy {
+	/* UFS 2.1 storage: Quest OS's PHY settings for gear 3 (upstream's are for UFS 3.x) */
+	compatible = "oculus,hollywood-qmp-ufs-phy";
 	status = "okay";
 
 	vdda-phy-supply = <&vreg_l5a_0p88>;
 	vdda-pll-supply = <&vreg_l9a_1p2>;
+};
+
+/* The PHYs' shared reference voltage stays on, as the bootloader left it. */
+&refgen {
+	regulator-always-on;
+	regulator-boot-on;
 };
 
 &usb_1 {
