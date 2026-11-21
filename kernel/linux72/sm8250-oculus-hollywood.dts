@@ -306,3 +306,47 @@
 	vdds-supply = <&vreg_l5a_0p88>;
 	status = "okay";
 };
+
+/* Adreno 650, at most 587 MHz. Memory bandwidth per speed from Quest OS's GPU bus table (ddr7 levels 11/9/7/3). */
+&gpu {
+	interconnects = <&gem_noc MASTER_GRAPHICS_3D 0 &mc_virt SLAVE_EBI_CH0 0>;
+	interconnect-names = "gfx-mem";
+	status = "okay";
+};
+
+&gmu {
+	status = "okay";
+};
+
+&gpu_opp_table {
+	/delete-node/ opp-670000000;
+
+	opp-587000000 {
+		opp-peak-kBps = <8171875>;
+	};
+
+	opp-525000000 {
+		opp-peak-kBps = <6074218>;
+	};
+
+	opp-490000000 {
+		opp-peak-kBps = <6074218>;
+	};
+
+	opp-441600000 {
+		opp-peak-kBps = <6074218>;
+	};
+
+	opp-400000000 {
+		opp-peak-kBps = <3972656>;
+	};
+
+	opp-305000000 {
+		opp-peak-kBps = <1761718>;
+	};
+};
+
+/* This headset's signed zap shader, from its modem partition. */
+&gpu_zap_shader {
+	firmware-name = "qcom/sm8250/hollywood/a650_zap.mdt";
+};
