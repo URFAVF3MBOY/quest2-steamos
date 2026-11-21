@@ -109,6 +109,9 @@
 			regulator-min-microvolt = <880000>;
 			regulator-max-microvolt = <880000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			/* shared by the UFS and DSI PHYs: a DSI probe error must not switch storage off */
+			regulator-always-on;
+			regulator-boot-on;
 		};
 
 		vreg_l6a_1p2: ldo6 {
@@ -123,6 +126,9 @@
 			regulator-min-microvolt = <1200000>;
 			regulator-max-microvolt = <1200000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			/* shared by the UFS and DSI PHYs: a DSI probe error must not switch storage off */
+			regulator-always-on;
+			regulator-boot-on;
 		};
 
 		vreg_l12a_1p8: ldo12 {

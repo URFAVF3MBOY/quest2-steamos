@@ -117,7 +117,7 @@ jobs:
 
       - name: Boot image
         run: |
-          python3 kernel/linux72/mkboot.py out/arch/arm64/boot/Image stage1.cpio.gz             out/arch/arm64/boot/dts/qcom/$DTB.dtb             "rdinit=/init clk_ignore_unused pd_ignore_unused regulator_ignore_unused panic=0 loglevel=7 printk.devkmsg=on console=tty0 fbcon=font:TER16x32 fbcon=rotate:1"             boot_linux72_stage1.img
+          python3 kernel/linux72/mkboot.py out/arch/arm64/boot/Image stage1.cpio.gz             out/arch/arm64/boot/dts/qcom/$DTB.dtb             "rdinit=/init clk_ignore_unused pd_ignore_unused regulator_ignore_unused panic=0 loglevel=7 printk.devkmsg=on console=tty0 fbcon=font:TER16x32 fbcon=rotate:3 drm_client_lib.active=fbdev"             boot_linux72_stage1.img
           mkdir -p result
           gzip -9 -k out/arch/arm64/boot/Image
           cp boot_linux72_stage1.img out/arch/arm64/boot/Image.gz out/arch/arm64/boot/dts/qcom/$DTB.dtb result/
