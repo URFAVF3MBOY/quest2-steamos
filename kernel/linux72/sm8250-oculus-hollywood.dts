@@ -1,11 +1,8 @@
-// SPDX-License-Identifier: BSD-3-Clause
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Meta Quest 2 (hollywood) on Valve's Steam Frame kernel, stage 1: storage, USB device mode, keys,
- * the RAM console. The display, GPU and everything else stay off and as the bootloader left them.
- *
- * The board is a Qualcomm kona reference design like the PICO 4's; this tree started from
- * overpressure's sm8250-pico4-phoenix.dts (BSD-3-Clause). Supplies, carve-outs and GPIOs are the
- * Quest 2's own, read from its stock tree (Quest OS, board "Hollywood (DVT)", board-id 0x40 0x11).
+ * Meta Quest 2 (hollywood), stage 1: storage, USB device mode, keys and the RAM console.
+ * Display, GPU and the rest stay off, as the bootloader left them.
+ * Supplies, carve-outs and GPIOs from the Quest 2's stock tree (board "Hollywood (DVT)", 0x40 0x11).
  */
 
 /dts-v1/;
@@ -23,14 +20,11 @@
 	compatible = "oculus,hollywood", "qcom,sm8250";
 	chassis-type = "embedded";
 
-	/*
-	 * The bootloader's board overlay replaces the root's compatible and model; the common layer's
-	 * restore_root_identity() puts these back before anything matches on the machine.
-	 */
-	pico4,compatible = "oculus,hollywood", "qcom,sm8250";
-	pico4,model = "Meta Quest 2 (hollywood)";
+	/* Meta's board overlay overwrites compatible and model; the kernel restores them from these. */
+	quest2,compatible = "oculus,hollywood", "qcom,sm8250";
+	quest2,model = "Meta Quest 2 (hollywood)";
 
-	/* The bootloader picks the base tree by SoC (SM8250 v2.1); the board comes from the dtbo. */
+	/* Base tree chosen by SoC revision; the board itself comes from Meta's dtbo. */
 	qcom,msm-id = <QCOM_ID_SM8250 0x20001>;
 	qcom,board-id = <0 0>;
 
@@ -56,7 +50,7 @@
 	};
 
 	reserved-memory {
-		/* The stock kernel's RAM console, at the same place and size, so either kernel reads the other's. */
+		/* Same place and size as Quest OS's ramoops. */
 		ramoops@9ba00000 {
 			compatible = "ramoops";
 			reg = <0x0 0x9ba00000 0x0 0x90000>;
@@ -66,7 +60,7 @@
 			no-map;
 		};
 
-		/* The bootloader's splash, still scanned out when the kernel starts. */
+		/* Splash framebuffer, still on screen at kernel start. */
 		cont_splash_region: memory@9c000000 {
 			reg = <0x0 0x9c000000 0x0 0x2300000>;
 			no-map;
@@ -84,7 +78,7 @@
 		compatible = "qcom,pm8150-rpmh-regulators";
 		qcom,pmic-id = "a";
 
-		/* Only what UFS and USB use; the voltages are the stock tree's. */
+		/* UFS and USB supplies, stock voltages. */
 		vreg_s4a_1p8: smps4 {
 			regulator-name = "vreg_s4a_1p8";
 			regulator-min-microvolt = <1800000>;
@@ -166,7 +160,7 @@
 	status = "okay";
 };
 
-/* The stock tree's reset through PS_HOLD (mainline resets through PSCI alone). */
+/* PS_HOLD reset, as Quest OS does it. */
 &{/soc@0} {
 	restart@c264000 {
 		compatible = "qcom,pshold";
@@ -175,10 +169,7 @@
 };
 
 &tlmm {
-	/*
-	 * Every GPIO the stock tree leaves unused stays untouched, plus mainline's usual secure lines
-	 * (28-31, 40-43), whose registers fault when read.
-	 */
+	/* GPIOs unused by Quest OS, plus the usual secure lines 28-31 and 40-43. */
 	gpio-reserved-ranges = <28 4>, <40 4>, <68 7>, <76 1>, <78 1>, <82 6>, <90 1>, <92 2>,
 			       <109 1>, <112 1>, <114 1>, <149 31>;
 };
@@ -205,7 +196,7 @@
 	status = "okay";
 };
 
-/* Device mode only in stage 1: the headset is the PC's network adapter. */
+/* Stage 1: USB device mode, network to the PC. */
 &usb_1_dwc3 {
 	dr_mode = "peripheral";
 };

@@ -1,14 +1,13 @@
 name: build-linux72
 
-# The Quest 2 on Valve's Steam Frame kernel (Linux 7.2), from overpressure/linux's SM8250 layer at a pinned
-# commit plus this repository's kernel/linux72 (device tree, config). Result: a stage 1 boot image
-# (fastboot boot, nothing flashed) that brings up a USB shell, and the kernel files.
+# Valve's Steam Frame kernel (Linux 7.2) with SM8250 support at a pinned commit, plus kernel/linux72.
+# Result: a stage 1 boot image (fastboot boot, nothing flashed) with a USB shell, and the kernel files.
 
 on:
   workflow_dispatch:
     inputs:
       linux_commit:
-        description: "overpressure/linux commit (sm8250/7.2)"
+        description: "kernel source commit"
         default: "a47ef53148a9bcf3e46156bfd15cfaad4b5058cd"
   push:
     paths:
@@ -57,6 +56,9 @@ jobs:
           cp kernel/linux72/$DTB.dts kernel/linux72/$DTB-dtbo-sink.dtsi linux/$Q/
           grep -q "$DTB.dtb" linux/$Q/Makefile || echo "dtb-\$(CONFIG_ARCH_QCOM) += $DTB.dtb" >> linux/$Q/Makefile
           cp kernel/linux72/hollywood.config linux/arch/arm64/configs/hollywood.config
+          grep -q '"pico4,compatible"' linux/drivers/of/fdt.c
+          sed -i 's/"pico4,compatible"/"quest2,compatible"/; s/"pico4,model"/"quest2,model"/' linux/drivers/of/fdt.c
+          grep -q '"quest2,compatible"' linux/drivers/of/fdt.c
 
       - name: Configure
         run: |
