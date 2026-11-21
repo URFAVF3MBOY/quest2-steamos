@@ -195,6 +195,9 @@
 	/* UFS 2.1 storage, gear 3 at most (as Quest OS runs it): the PHY gets its gear-3 tables. */
 	limit-hs-gear = <3>;
 
+	/* The storage chip's reset line (the SoC's UFS_RESET pin), pulsed before the link starts. */
+	reset-gpios = <&tlmm 180 GPIO_ACTIVE_LOW>;
+
 	vcc-supply = <&vreg_l17a_2p5>;
 	vcc-max-microamp = <800000>;
 	vccq-supply = <&vreg_l6a_1p2>;
