@@ -30,7 +30,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bc bison flex libssl-dev \
-            libelf-dev dwarves cpio ccache python3 device-tree-compiler mkbootimg kmod
+            libelf-dev dwarves cpio ccache python3 device-tree-compiler kmod
 
       - name: Kernel tree
         run: |
@@ -42,7 +42,8 @@ jobs:
           git log -1 --format='%H %s'
 
       - name: Compiler cache
-        uses: actions/cache@v4
+        id: ccache
+        uses: actions/cache/restore@v4
         with:
           path: .ccache
           key: ccache-linux72-${{ env.LINUX_COMMIT }}-${{ github.run_id }}
@@ -84,6 +85,13 @@ jobs:
           ccache -s | grep -iE "hits|misses|size" || true
           ls -l ../out/arch/arm64/boot/Image.gz ../out/arch/arm64/boot/dts/qcom/$DTB.dtb
 
+      - name: Save compiler cache
+        if: ${{ always() && steps.ccache.outcome == 'success' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-linux72-${{ env.LINUX_COMMIT }}-${{ github.run_id }}
+
       - name: Stage 1 ramdisk
         run: |
           set -e
@@ -100,12 +108,7 @@ jobs:
 
       - name: Boot image
         run: |
-          mkbootimg --header_version 2 --kernel out/arch/arm64/boot/Image.gz --ramdisk stage1.cpio.gz \
-            --dtb out/arch/arm64/boot/dts/qcom/$DTB.dtb --pagesize 4096 --base 0 --kernel_offset 0x8000 \
-            --ramdisk_offset 0x1000000 --tags_offset 0x100 --dtb_offset 0x1f00000 \
-            --os_version 12.0.0 --os_patch_level 2023-08 \
-            --cmdline "rdinit=/init clk_ignore_unused pd_ignore_unused regulator_ignore_unused panic=5 loglevel=7 printk.devkmsg=on" \
-            -o boot_linux72_stage1.img
+          python3 kernel/linux72/mkboot.py out/arch/arm64/boot/Image.gz stage1.cpio.gz             out/arch/arm64/boot/dts/qcom/$DTB.dtb             "rdinit=/init clk_ignore_unused pd_ignore_unused regulator_ignore_unused panic=5 loglevel=7 printk.devkmsg=on"             boot_linux72_stage1.img
           mkdir -p result
           cp boot_linux72_stage1.img out/arch/arm64/boot/Image.gz out/arch/arm64/boot/dts/qcom/$DTB.dtb result/
           cp out/.config result/config
