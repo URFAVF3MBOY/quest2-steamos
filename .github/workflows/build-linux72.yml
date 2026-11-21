@@ -1,0 +1,115 @@
+name: build-linux72
+
+# The Quest 2 on Valve's Steam Frame kernel (Linux 7.2), from overpressure/linux's SM8250 layer at a pinned
+# commit plus this repository's kernel/linux72 (device tree, config). Result: a stage 1 boot image
+# (fastboot boot, nothing flashed) that brings up a USB shell, and the kernel files.
+
+on:
+  workflow_dispatch:
+    inputs:
+      linux_commit:
+        description: "overpressure/linux commit (sm8250/7.2)"
+        default: "a47ef53148a9bcf3e46156bfd15cfaad4b5058cd"
+  push:
+    paths:
+      - "kernel/linux72/**"
+      - ".github/workflows/build-linux72.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      LINUX_COMMIT: ${{ inputs.linux_commit || 'a47ef53148a9bcf3e46156bfd15cfaad4b5058cd' }}
+      DTB: sm8250-oculus-hollywood
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 3G
+      CCACHE_COMPILERCHECK: content
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bc bison flex libssl-dev \
+            libelf-dev dwarves cpio ccache python3 device-tree-compiler mkbootimg kmod
+
+      - name: Kernel tree
+        run: |
+          mkdir linux && cd linux
+          git init -q
+          git remote add origin https://github.com/overpressure/linux.git
+          git fetch -q --depth 1 origin "$LINUX_COMMIT"
+          git checkout -q FETCH_HEAD
+          git log -1 --format='%H %s'
+
+      - name: Compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-linux72-${{ env.LINUX_COMMIT }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-linux72-${{ env.LINUX_COMMIT }}-
+            ccache-linux72-
+
+      - name: Quest 2 layer
+        run: |
+          Q=arch/arm64/boot/dts/qcom
+          cp kernel/linux72/$DTB.dts kernel/linux72/$DTB-dtbo-sink.dtsi linux/$Q/
+          grep -q "$DTB.dtb" linux/$Q/Makefile || echo "dtb-\$(CONFIG_ARCH_QCOM) += $DTB.dtb" >> linux/$Q/Makefile
+          cp kernel/linux72/hollywood.config linux/arch/arm64/configs/hollywood.config
+
+      - name: Configure
+        run: |
+          cd linux
+          M="make O=../out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-"
+          mkdir -p ../out
+          cp arch/arm64/configs/gabe_defconfig ../out/.config
+          scripts/kconfig/merge_config.sh -m -O ../out ../out/.config arch/arm64/configs/hollywood.config >/dev/null
+          $M olddefconfig >/dev/null
+          bad=0
+          while IFS= read -r line; do
+            case $line in
+            CONFIG_*=*) grep -qxF "$line" ../out/.config || { echo "not applied: $line"; bad=1; } ;;
+            esac
+          done < arch/arm64/configs/hollywood.config
+          exit $bad
+
+      - name: Build
+        run: |
+          cd linux
+          make O=../out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache aarch64-linux-gnu-gcc" \
+            -j"$(nproc)" JOBS=1 Image.gz "qcom/$DTB.dtb"
+          ccache -s | grep -iE "hits|misses|size" || true
+          ls -l ../out/arch/arm64/boot/Image.gz ../out/arch/arm64/boot/dts/qcom/$DTB.dtb
+
+      - name: Stage 1 ramdisk
+        run: |
+          set -e
+          A=https://dl-cdn.alpinelinux.org/alpine/v3.20/main/aarch64
+          f=$(curl -fsSL $A/ | grep -o 'busybox-static-[0-9][^"]*\.apk' | head -n 1)
+          curl -fsSL -o bb.apk "$A/$f"
+          mkdir bb && tar -xzf bb.apk -C bb 2>/dev/null || true
+          mkdir -p rd/bin
+          cp bb/bin/busybox.static rd/bin/busybox
+          file rd/bin/busybox
+          install -m 755 kernel/linux72/stage1/init rd/init
+          sed -i 's/\r$//' rd/init
+          (cd rd && find . | cpio -o -H newc --quiet | gzip -9) > stage1.cpio.gz
+
+      - name: Boot image
+        run: |
+          mkbootimg --header_version 2 --kernel out/arch/arm64/boot/Image.gz --ramdisk stage1.cpio.gz \
+            --dtb out/arch/arm64/boot/dts/qcom/$DTB.dtb --pagesize 4096 --base 0 --kernel_offset 0x8000 \
+            --ramdisk_offset 0x1000000 --tags_offset 0x100 --dtb_offset 0x1f00000 \
+            --os_version 12.0.0 --os_patch_level 2023-08 \
+            --cmdline "rdinit=/init clk_ignore_unused pd_ignore_unused regulator_ignore_unused panic=5 loglevel=7 printk.devkmsg=on" \
+            -o boot_linux72_stage1.img
+          mkdir -p result
+          cp boot_linux72_stage1.img out/arch/arm64/boot/Image.gz out/arch/arm64/boot/dts/qcom/$DTB.dtb result/
+          cp out/.config result/config
+          sha256sum result/* | tee result/SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux72-stage1
+          path: result/

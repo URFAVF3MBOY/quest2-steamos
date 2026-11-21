@@ -1,0 +1,48 @@
+#!/bin/busybox sh
+# Stage 1 on the 7.2 kernel: a shell over USB (NCM network, telnet on 10.42.0.2:23, and an ACM
+# serial console), the kernel log in /run/dmesg.txt and the previous boot's RAM console in pstore.
+# Nothing is mounted from the headset's storage.
+/bin/busybox --install -s /bin
+export PATH=/bin
+mkdir -p /proc /sys /dev /run /tmp /sys/kernel/config
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mkdir -p /dev/pts && mount -t devpts devpts /dev/pts
+mount -t tmpfs tmpfs /run
+mount -t configfs configfs /sys/kernel/config
+mount -t pstore pstore /sys/fs/pstore 2>/dev/null
+
+log() { echo "stage1: $*" > /dev/kmsg; }
+log "up, kernel $(uname -r)"
+
+UDC=""
+n=0
+while [ $n -lt 100 ] && [ -z "$UDC" ]; do UDC=$(ls /sys/class/udc 2>/dev/null | head -n 1); [ -n "$UDC" ] || { sleep 0.2; n=$((n + 1)); }; done
+G=/sys/kernel/config/usb_gadget/q2
+if [ -n "$UDC" ]; then
+  mkdir -p $G && cd $G
+  echo 0x1d6b > idVendor; echo 0x0104 > idProduct
+  mkdir -p strings/0x409; echo "Quest 2 stage 1" > strings/0x409/product; echo hollywood > strings/0x409/serialnumber
+  mkdir -p configs/c.1 functions/ncm.usb0 functions/acm.usb0
+  ln -s functions/ncm.usb0 configs/c.1/ 2>/dev/null
+  ln -s functions/acm.usb0 configs/c.1/ 2>/dev/null
+  echo "$UDC" > UDC
+  cd /
+  log "USB gadget on $UDC"
+else
+  log "no USB device controller"
+fi
+
+n=0
+while [ $n -lt 50 ] && ! ip link show usb0 >/dev/null 2>&1; do sleep 0.2; n=$((n + 1)); done
+ip addr add 10.42.0.2/24 dev usb0 2>/dev/null
+ip link set usb0 up 2>/dev/null
+telnetd -l /bin/sh -b 10.42.0.2
+mkdir -p /etc /var/lib/misc && : > /var/lib/misc/udhcpd.leases
+printf 'start 10.42.0.1\nend 10.42.0.1\ninterface usb0\noption subnet 255.255.255.0\nmax_leases 1\n' > /etc/udhcpd.conf
+udhcpd /etc/udhcpd.conf
+( while true; do dmesg > /run/dmesg.txt; sleep 2; done ) &
+( while true; do [ -e /dev/ttyGS0 ] && setsid sh -c 'exec sh </dev/ttyGS0 >/dev/ttyGS0 2>&1'; sleep 1; done ) &
+log "telnet on 10.42.0.2"
+exec sh -c 'while true; do sleep 3600; done'
