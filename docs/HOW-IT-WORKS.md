@@ -98,7 +98,7 @@ Every game goes through `q2launchwrap`. It removes the port's layer settings fro
 ## Buttons, sound, power
 
 - `q2buttons`: the volume keys change PipeWire's volume, holding both for 2 seconds starts the log export, and the power key behaves like Valve's `deckard-powerbuttond` (short press and long press to Steam). systemd-logind no longer acts on the power key, and suspend is refused.
-- There is no sound card yet. The kernel registers no ALSA device.
+- Sound: the speakers run through the Kona sound modules (`q2audio.tar.gz`), with the audio DSP's firmware read from the headset's own partitions.
 
 ## Android apps (Lepton)
 

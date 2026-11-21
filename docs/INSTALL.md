@@ -85,7 +85,7 @@ From now on every restart comes back to SteamOS from internal storage.
 - **First start:** SteamVR starts first, then Steam opens straight into its VR interface. This takes a minute or two after boot.
 - **Wi-Fi:** set it up in Steam's settings. Saved networks are kept.
 - **Controllers:** they work like in any SteamVR setup. The menu button opens Steam's dashboard.
-- **Volume buttons:** change the volume, but there is no sound yet. **Hold both for 2 seconds** to collect the logs (see below).
+- **Volume buttons:** change the volume. **Hold both for 2 seconds** to collect the logs (see below).
 - **Power button:** a short press dims Steam, because it tries to sleep, which is turned off. Holding it for about 10 seconds forces a restart.
 - **Desktop:** the "+" button in Steam's VR interface opens a KDE Plasma desktop inside VR.
 - **Windows games:** install and start them from Steam as usual. See [PROTON.md](PROTON.md).

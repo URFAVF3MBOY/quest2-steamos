@@ -6,7 +6,7 @@ Tested: **OneShot** (AppID 420530) runs.
 
 ## Known limits
 
-- **No sound.** Games that insist on opening a sound device can fail. OneShot shows "Error creating OpenAL context" when the audio system isn't ready yet. It worked once the system had been up for a few minutes.
+- **Sound right after boot.** A game started before the audio system is ready can fail to open its sound device. OneShot showed "Error creating OpenAL context" then; it worked once the system had been up for a few minutes.
 - **The first start of a game is slow.** Proton sets up a new prefix, and FEX translates the game's code for the first time.
 - **Proton logging is on** for every game (see below). It costs a little speed. Set `PROTON_LOG=0 %command%` in a game's launch options to turn it off.
 
