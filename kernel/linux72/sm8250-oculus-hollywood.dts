@@ -192,6 +192,9 @@
 &ufs_mem_hc {
 	status = "okay";
 
+	/* UFS 2.1 storage, gear 3 at most (as Quest OS runs it): the PHY gets its gear-3 tables. */
+	limit-hs-gear = <3>;
+
 	vcc-supply = <&vreg_l17a_2p5>;
 	vcc-max-microamp = <800000>;
 	vccq-supply = <&vreg_l6a_1p2>;
