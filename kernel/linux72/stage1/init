@@ -45,4 +45,14 @@ udhcpd /etc/udhcpd.conf
 ( while true; do dmesg > /run/dmesg.txt; sleep 2; done ) &
 ( while true; do [ -e /dev/ttyGS0 ] && setsid sh -c 'exec sh </dev/ttyGS0 >/dev/ttyGS0 2>&1'; sleep 1; done ) &
 log "telnet on 10.42.0.2"
+
+part() { for p in /sys/class/block/*; do grep -q "^PARTNAME=$1\$" $p/uevent 2>/dev/null && { echo /dev/${p##*/}; return; }; done; }
+n=0
+while [ $n -lt 50 ] && [ -z "$(part userdata)" ]; do sleep 0.2; n=$((n + 1)); done
+mkdir -p /mnt/modem /mnt/root /lib/firmware/qcom/sm8250/hollywood
+M=$(part modem_a)
+[ -n "$M" ] && mount -t vfat -o ro "$M" /mnt/modem && cp /mnt/modem/image/a650_zap.* /lib/firmware/qcom/sm8250/hollywood/
+U=$(part userdata)
+[ -n "$U" ] && mount -t btrfs -o ro "$U" /mnt/root && cp /mnt/root/usr/lib/firmware/qcom/a650_sqe.fw* /mnt/root/usr/lib/firmware/qcom/a650_gmu.bin* /lib/firmware/qcom/ 2>/dev/null
+log "GPU firmware: $(ls /lib/firmware/qcom /lib/firmware/qcom/sm8250/hollywood | tr '\n' ' ')"
 exec sh -c 'while true; do sleep 3600; done'
