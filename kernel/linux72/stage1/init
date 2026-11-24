@@ -55,4 +55,36 @@ M=$(part modem_a)
 U=$(part userdata)
 [ -n "$U" ] && mount -t btrfs -o ro,rescue=nologreplay "$U" /mnt/root && cp /mnt/root/usr/share/q2fw/a650_sqe.fw /mnt/root/usr/share/q2fw/a650_gmu.bin /lib/firmware/qcom/ 2>/dev/null
 log "GPU firmware: $(ls /lib/firmware/qcom /lib/firmware/qcom/sm8250/hollywood | tr '\n' ' ')"
+
+# Stage 2: SteamOS from userdata (read-only) under a RAM overlay; nothing is written to the headset's storage.
+# Units made for the 4.19 kernel (q2-*) and SteamOS' own USB gadget stay off; root gets a shell on the USB serial port.
+stage2() {
+  mountpoint -q /mnt/root || return 1
+  mkdir -p /mnt/ov /mnt/new
+  mount -t tmpfs -o size=2g,mode=755 tmpfs /mnt/ov || return 1
+  mkdir -p /mnt/ov/upper /mnt/ov/work
+  mount -t overlay overlay -o lowerdir=/mnt/root,upperdir=/mnt/ov/upper,workdir=/mnt/ov/work /mnt/new || return 1
+  N=/mnt/new
+  mkdir -p $N/usr/lib/firmware/qcom/sm8250/hollywood
+  cp /lib/firmware/qcom/a650_* $N/usr/lib/firmware/qcom/
+  cp /lib/firmware/qcom/sm8250/hollywood/* $N/usr/lib/firmware/qcom/sm8250/hollywood/
+  S=$N/etc/systemd/system
+  for u in $(cd $S && ls -d q2-*.service) usb-gadget.service adbd.service adbd-pre.service adbd-post.service \
+           usb-ncm-gadget@usb0.service; do
+    rm -f $S/$u; ln -s /dev/null $S/$u
+  done
+  mkdir -p $S/serial-getty@ttyGS0.service.d $S/getty.target.wants
+  printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin root --noclear --keep-baud 115200 - ${TERM}\n' \
+    > $S/serial-getty@ttyGS0.service.d/autologin.conf
+  ln -sf /usr/lib/systemd/system/serial-getty@.service $S/getty.target.wants/serial-getty@ttyGS0.service
+  umount /mnt/modem 2>/dev/null
+  log "stage 2: switching to SteamOS on $U (RAM overlay)"
+  kill -9 -1
+  for d in dev proc sys; do mount --move /$d $N/$d; done
+  exec switch_root $N /usr/lib/systemd/systemd
+}
+
+mkfifo /run/stage2
+grep -qw q2_stage2=1 /proc/cmdline || { log "echo > /run/stage2 starts SteamOS"; read x < /run/stage2; }
+stage2 || log "stage 2 failed"
 exec sh -c 'while true; do sleep 3600; done'
