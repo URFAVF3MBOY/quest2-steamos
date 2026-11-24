@@ -372,7 +372,7 @@ ashmem_vmfile_get_unmapped_area(struct file *file, unsigned long addr,
 				unsigned long len, unsigned long pgoff,
 				unsigned long flags)
 {
-	return current->mm->get_unmapped_area(file, addr, len, pgoff, flags);
+	return mm_get_unmapped_area(file, addr, len, pgoff, flags);
 }
 
 static int ashmem_mmap(struct file *file, struct vm_area_struct *vma)
@@ -412,7 +412,7 @@ static int ashmem_mmap(struct file *file, struct vm_area_struct *vma)
 			name = asma->name;
 
 		/* ... and allocate the backing shmem file */
-		vmfile = shmem_file_setup(name, asma->size, vma->vm_flags);
+		vmfile = shmem_file_setup(name, asma->size, vma->flags);
 		if (IS_ERR(vmfile)) {
 			ret = PTR_ERR(vmfile);
 			goto out;

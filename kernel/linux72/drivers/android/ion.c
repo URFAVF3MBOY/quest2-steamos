@@ -10,6 +10,7 @@
 
 #include <linux/dma-buf.h>
 #include <linux/dma-mapping.h>
+#include <linux/dma-resv.h>
 #include <linux/highmem.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
@@ -83,59 +84,90 @@ struct q2ion_buffer {
 	unsigned long nr_pages;
 	struct sg_table sgt;
 	struct mutex lock;
+	struct list_head attachments;
 	void *vaddr;
 	int vmap_count;
 };
 
+struct q2ion_attachment {
+	struct device *dev;
+	struct sg_table sgt;
+	struct list_head node;
+	bool mapped;
+};
+
+static int q2ion_attach(struct dma_buf *d, struct dma_buf_attachment *a)
+{
+	struct q2ion_buffer *b = d->priv;
+	struct q2ion_attachment *qa = kzalloc(sizeof(*qa), GFP_KERNEL);
+	int ret;
+
+	if (!qa)
+		return -ENOMEM;
+	ret = sg_alloc_table_from_pages(&qa->sgt, b->pages, b->nr_pages, 0, b->size, GFP_KERNEL);
+	if (ret) {
+		kfree(qa);
+		return ret;
+	}
+	qa->dev = a->dev;
+	a->priv = qa;
+	mutex_lock(&b->lock);
+	list_add(&qa->node, &b->attachments);
+	mutex_unlock(&b->lock);
+	return 0;
+}
+
+static void q2ion_detach(struct dma_buf *d, struct dma_buf_attachment *a)
+{
+	struct q2ion_buffer *b = d->priv;
+	struct q2ion_attachment *qa = a->priv;
+
+	mutex_lock(&b->lock);
+	list_del(&qa->node);
+	mutex_unlock(&b->lock);
+	sg_free_table(&qa->sgt);
+	kfree(qa);
+}
+
 static struct sg_table *q2ion_map(struct dma_buf_attachment *a, enum dma_data_direction dir)
 {
 	struct q2ion_buffer *b = a->dmabuf->priv;
-	struct sg_table *t = kzalloc(sizeof(*t), GFP_KERNEL);
+	struct q2ion_attachment *qa = a->priv;
 	int ret;
 
-	if (!t)
-		return ERR_PTR(-ENOMEM);
-	ret = sg_alloc_table_from_pages(t, b->pages, b->nr_pages, 0, b->size, GFP_KERNEL);
+	ret = dma_map_sgtable(a->dev, &qa->sgt, dir, b->cached ? 0 : DMA_ATTR_SKIP_CPU_SYNC);
 	if (ret)
-		goto err_free;
-	ret = dma_map_sgtable(a->dev, t, dir, b->cached ? 0 : DMA_ATTR_SKIP_CPU_SYNC);
-	if (ret)
-		goto err_table;
-	return t;
-
-err_table:
-	sg_free_table(t);
-err_free:
-	kfree(t);
-	return ERR_PTR(ret);
+		return ERR_PTR(ret);
+	qa->mapped = true;
+	return &qa->sgt;
 }
 
 static void q2ion_unmap(struct dma_buf_attachment *a, struct sg_table *t, enum dma_data_direction dir)
 {
 	struct q2ion_buffer *b = a->dmabuf->priv;
+	struct q2ion_attachment *qa = a->priv;
 
+	qa->mapped = false;
 	dma_unmap_sgtable(a->dev, t, dir, b->cached ? 0 : DMA_ATTR_SKIP_CPU_SYNC);
-	sg_free_table(t);
-	kfree(t);
 }
 
 static int q2ion_cpu_access(struct dma_buf *d, enum dma_data_direction dir, bool begin)
 {
 	struct q2ion_buffer *b = d->priv;
-	struct dma_buf_attachment *a;
+	struct q2ion_attachment *qa;
 
 	if (!b->cached)
 		return 0;
-	dma_resv_lock(d->resv, NULL);
-	list_for_each_entry(a, &d->attachments, node) {
-		if (!a->sgt)
+	mutex_lock(&b->lock);
+	list_for_each_entry(qa, &b->attachments, node) {
+		if (!qa->mapped)
 			continue;
 		if (begin)
-			dma_sync_sgtable_for_cpu(a->dev, a->sgt, dir);
+			dma_sync_sgtable_for_cpu(qa->dev, &qa->sgt, dir);
 		else
-			dma_sync_sgtable_for_device(a->dev, a->sgt, dir);
+			dma_sync_sgtable_for_device(qa->dev, &qa->sgt, dir);
 	}
-	dma_resv_unlock(d->resv);
+	mutex_unlock(&b->lock);
 	return 0;
 }
 
@@ -205,6 +237,8 @@ static void q2ion_release(struct dma_buf *d)
 }
 
 static const struct dma_buf_ops q2ion_ops = {
+	.attach = q2ion_attach,
+	.detach = q2ion_detach,
 	.map_dma_buf = q2ion_map,
 	.unmap_dma_buf = q2ion_unmap,
 	.begin_cpu_access = q2ion_begin_cpu,
@@ -234,6 +268,7 @@ static int q2ion_alloc(struct ion_allocation_data *req)
 	b->nr_pages = b->size >> PAGE_SHIFT;
 	b->cached = req->flags & ION_FLAG_CACHED;
 	mutex_init(&b->lock);
+	INIT_LIST_HEAD(&b->attachments);
 	b->pages = kvmalloc_array(b->nr_pages, sizeof(*b->pages), GFP_KERNEL);
 	if (!b->pages)
 		goto err_buf;
