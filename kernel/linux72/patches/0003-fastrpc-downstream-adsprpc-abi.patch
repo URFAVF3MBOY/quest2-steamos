@@ -1,5 +1,5 @@
 diff --git a/drivers/misc/fastrpc.c b/drivers/misc/fastrpc.c
-index 8c67a08..fc07d67 100644
+index 8c67a08..db07641 100644
 --- a/drivers/misc/fastrpc.c
 +++ b/drivers/misc/fastrpc.c
 @@ -281,6 +281,7 @@ struct fastrpc_channel_ctx {
@@ -149,7 +149,7 @@ index 8c67a08..fc07d67 100644
  		break;
  	case FASTRPC_IOCTL_MEM_MAP:
  		err = fastrpc_req_mem_map(fl, argp);
-@@ -2371,6 +2391,315 @@ static long fastrpc_device_ioctl(struct file *file, unsigned int cmd,
+@@ -2371,6 +2391,329 @@ static long fastrpc_device_ioctl(struct file *file, unsigned int cmd,
  	return err;
  }
  
@@ -261,6 +261,10 @@ index 8c67a08..fc07d67 100644
 +#define ADSPRPC_INIT_ATTACH_SENSORS	3
 +#define ADSPRPC_CONTROL_KALLOC		3
 +
++static unsigned int adsprpc_trace;
++module_param(adsprpc_trace, uint, 0644);
++MODULE_PARM_DESC(adsprpc_trace, "log every downstream invoke (handle, scalars, arguments, result)");
++
 +static int adsprpc_invoke(struct fastrpc_user *fl, char __user *argp, unsigned int cmd)
 +{
 +	struct adsprpc_invoke_crc inv = {};
@@ -302,7 +306,17 @@ index 8c67a08..fc07d67 100644
 +			}
 +		}
 +	}
++	if (adsprpc_trace) {
++		dev_info(&fl->cctx->rpdev->dev, "adsprpc: %s: invoke handle 0x%x sc 0x%x (%u args, cmd nr %u)\n",
++			 current->comm, inv.inv.handle, inv.inv.sc, n, _IOC_NR(cmd));
++		for (i = 0; i < n; i++)
++			dev_info(&fl->cctx->rpdev->dev, "adsprpc:   arg %u: ptr 0x%llx len %llu fd %d\n",
++				 i, args[i].ptr, args[i].length, args[i].fd);
++	}
 +	err = fastrpc_internal_invoke(fl, false, inv.inv.handle, inv.inv.sc, args);
++	if (adsprpc_trace)
++		dev_info(&fl->cctx->rpdev->dev, "adsprpc: %s: invoke handle 0x%x sc 0x%x -> %d\n",
++			 current->comm, inv.inv.handle, inv.inv.sc, err);
 +	if (cmd == ADSPRPC_IOCTL_INVOKE_CRC && inv.crc && n) {
 +		/* No CRCs are computed here: report zeros, as a DSP without CRC checking does. */
 +		u32 *zero = kcalloc(n, sizeof(u32), GFP_KERNEL);
@@ -465,7 +479,7 @@ index 8c67a08..fc07d67 100644
  static const struct file_operations fastrpc_fops = {
  	.open = fastrpc_device_open,
  	.release = fastrpc_device_release,
-@@ -2495,6 +2824,38 @@ static int fastrpc_device_register(struct device *dev, struct fastrpc_channel_ct
+@@ -2495,6 +2838,38 @@ static int fastrpc_device_register(struct device *dev, struct fastrpc_channel_ct
  	return err;
  }
  
@@ -504,7 +518,7 @@ index 8c67a08..fc07d67 100644
  static int fastrpc_get_domain_id(const char *domain)
  {
  	if (!strncmp(domain, "adsp", 4))
-@@ -2611,6 +2972,13 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
+@@ -2611,6 +2986,13 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
  		err = fastrpc_device_register(rdev, data, false, domain);
  		if (err)
  			goto err_deregister_fdev;
@@ -518,7 +532,7 @@ index 8c67a08..fc07d67 100644
  		break;
  	default:
  		err = -EINVAL;
-@@ -2677,6 +3045,7 @@ static void fastrpc_rpmsg_remove(struct rpmsg_device *rpdev)
+@@ -2677,6 +3059,7 @@ static void fastrpc_rpmsg_remove(struct rpmsg_device *rpdev)
  
  	if (cctx->secure_fdevice)
  		misc_deregister(&cctx->secure_fdevice->miscdev);
