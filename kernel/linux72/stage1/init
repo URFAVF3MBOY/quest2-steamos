@@ -86,6 +86,12 @@ stage2() {
   # The compositor's own output (asserts, crashes) into /tmp/vrcompositor-stderr.txt.
   L=$N/opt/steamvr/bin/linuxarm64/vrcompositor-launcher.sh
   [ -e $L ] && sed -i 's|^exec "$ROOT/vrcompositor-launcher" "$@"$|exec "$ROOT/vrcompositor-launcher" "$@" >>/tmp/vrcompositor-stderr.txt 2>\&1|' $L
+  # The Frame's tracking driver: vrcompositor loads its passthrough library, which stops it on anything but a Frame
+  # ("Expecting only to run on either SM8650 or SM8250 but got platform Meta Quest 2").
+  [ -d $N/opt/steamvr/drivers/cv ] && mv $N/opt/steamvr/drivers/cv $N/opt/steamvr-drivers-cv-off
+  # gamescope's WSI layer stays out of SteamVR: it wrapped the compositor's direct-mode swapchain and failed every present.
+  mkdir -p $N/etc/systemd/user/steamvr.service.d
+  printf '[Service]\nEnvironment=DISABLE_GAMESCOPE_WSI=1\n' > $N/etc/systemd/user/steamvr.service.d/50-q2.conf
   umount /mnt/modem 2>/dev/null
   log "stage 2: switching to SteamOS on $U (RAM overlay)"
   kill -9 -1
