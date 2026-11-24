@@ -551,6 +551,12 @@
 					};
 				};
 			};
+			/* The secure bank: no stream ids, only the handle the ISP manager looks up (secure mode unused) */
+			msm_cam_smmu_secure {
+				compatible = "qcom,msm-cam-smmu-cb";
+				label = "cam-secure";
+				qcom,secure-cb;
+			};
 		};
 		qcom,cam-cdm-intf {
 			compatible = "qcom,cam-cdm-intf";
