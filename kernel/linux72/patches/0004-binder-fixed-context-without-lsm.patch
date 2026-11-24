@@ -1,0 +1,22 @@
+diff --git a/drivers/android/binder.c b/drivers/android/binder.c
+index 8f2ef1b..b2b8fa2 100644
+--- a/drivers/android/binder.c
++++ b/drivers/android/binder.c
+@@ -3367,6 +3367,17 @@ static void binder_transaction(struct binder_proc *proc,
+ 
+ 		security_cred_getsecid(proc->cred, &secid);
+ 		ret = security_secid_to_secctx(secid, &lsmctx);
++		if (ret == -EOPNOTSUPP) {
++			/*
++			 * No security module gives contexts on this kernel: Android userspace that asks for the
++			 * sender's context (servicemanager) gets a fixed one instead of a failed transaction.
++			 */
++			static char binder_fixed_ctx[] = "u:r:su:s0";
++
++			lsmctx.context = binder_fixed_ctx;
++			lsmctx.len = sizeof(binder_fixed_ctx);
++			ret = 0;
++		}
+ 		if (ret < 0) {
+ 			binder_txn_error("%d:%d failed to get security context\n",
+ 				thread->pid, proc->pid);
