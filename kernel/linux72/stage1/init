@@ -97,6 +97,20 @@ stage2() {
   mkdir -p $N/etc/systemd/user/steamvr.service.d
   printf '[Service]\nEnvironment=DISABLE_GAMESCOPE_WSI=1\nEnvironment=Q2_FRAMES_AHEAD=1\nEnvironment=Q2_VSYNC_LEAD_US=5000\n' \
     > $N/etc/systemd/user/steamvr.service.d/50-q2.conf
+  # Steam's VR session (gamescope-session.target), not the desktop mode the 4.19 system last chose. OpenGL on the GPU is
+  # zink on Turnip (the Frame's Mesa has no other GL driver); the web helper composites through ANGLE on Vulkan.
+  printf '[Autologin]\nSession=gamescope-wayland.desktop\n' > $N/etc/sddm.conf.d/zz-steamos-autologin.conf
+  mkdir -p $N/etc/systemd/user/steam.service.d $N/etc/systemd/user/gamescope-session.service.d
+  printf '[Service]\nEnvironment=MESA_LOADER_DRIVER_OVERRIDE=zink\nEnvironment=STEAM_EXTRA_ARGS=-cef-use-vulkan\nEnvironment=STEAM_LAUNCH_WRAPPER_AFFINITY_LIST=0xf0\nEnvironment=STEAM_DESKTOP_APP_AFFINITY_LIST=0xf0\n' \
+    > $N/etc/systemd/user/steam.service.d/50-q2.conf
+  printf '[Service]\nEnvironment=WLR_LIBINPUT_NO_DEVICES=1\nEnvironment=MESA_LOADER_DRIVER_OVERRIDE=zink\n' \
+    > $N/etc/systemd/user/gamescope-session.service.d/50-q2.conf
+  # The 4.19 system's own Steam pieces: ~/.steam/sdkarm64 as a directory with its launch wrapper (Valve's RUNSTEAM.sh
+  # links it and stopped at "cannot overwrite directory"), and a wrapper script around the web helper.
+  H=$N/home/steamos
+  [ -d $H/.steam/sdkarm64 ] && [ ! -L $H/.steam/sdkarm64 ] && rm -rf $H/.steam/sdkarm64
+  W=$H/.local/share/Steam/steamrtarm64
+  [ -e $W/steamwebhelper.q2real ] && mv -f $W/steamwebhelper.q2real $W/steamwebhelper
   umount /mnt/modem 2>/dev/null
   log "stage 2: switching to SteamOS on $U (RAM overlay)"
   kill -9 -1
