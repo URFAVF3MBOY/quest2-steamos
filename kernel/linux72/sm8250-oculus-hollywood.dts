@@ -468,7 +468,8 @@
 			camnoc-axi-min-ib-bw = <0xb2d05e00>;
 			regulator-names = "camss-vdd";
 			clock-names = "gcc_ahb_clk", "gcc_axi_hf_clk", "gcc_axi_sf_clk", "slow_ahb_clk_src", "cpas_ahb_clk", "cpas_core_ahb_clk", "camnoc_axi_clk_src", "camnoc_axi_clk";
-			clocks = <&gcc GCC_CAMERA_AHB_CLK>, <&gcc GCC_CAMERA_HF_AXI_CLK>, <&gcc GCC_CAMERA_SF_AXI_CLK>, <&camcc CAM_CC_SLOW_AHB_CLK_SRC>, <&camcc CAM_CC_CPAS_AHB_CLK>, <&camcc CAM_CC_CORE_AHB_CLK>, <&camcc CAM_CC_CAMNOC_AXI_CLK_SRC>, <&camcc CAM_CC_CAMNOC_AXI_CLK>;
+			/* gcc_ahb_clk: always on in mainline gcc (not handed out); the board XO stands in */
+			clocks = <&xo_board>, <&gcc GCC_CAMERA_HF_AXI_CLK>, <&gcc GCC_CAMERA_SF_AXI_CLK>, <&camcc CAM_CC_SLOW_AHB_CLK_SRC>, <&camcc CAM_CC_CPAS_AHB_CLK>, <&camcc CAM_CC_CORE_AHB_CLK>, <&camcc CAM_CC_CAMNOC_AXI_CLK_SRC>, <&camcc CAM_CC_CAMNOC_AXI_CLK>;
 			src-clock-name = "camnoc_axi_clk_src";
 			clock-rates = <0x0 0x0 0x0 0x0 0x0 0x0 0x0 0x0 0x0 0x0 0x0 0x124f800 0x0 0x0 0x124f800 0x0 0x0 0x0 0x0 0x4c4b400 0x0 0x0 0x11e1a300 0x0 0x0 0x0 0x0 0x4c4b400 0x0 0x0 0x17d78400 0x0 0x0 0x0 0x0 0x4c4b400 0x0 0x0 0x17d78400 0x0 0x0 0x0 0x0 0x4c4b400 0x0 0x0 0x17d78400 0x0 0x0 0x0 0x0 0x4c4b400 0x0 0x0 0x17d78400 0x0 0x0 0x0 0x0 0x4c4b400 0x0 0x0 0x1c9c3800 0x0>;
 			clock-cntl-level = "suspend", "minsvs", "lowsvs", "svs", "svs_l1", "nominal", "nominal_l1", "turbo";
