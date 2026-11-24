@@ -15,7 +15,7 @@ static ssize_t reset_store(struct device *dev, struct device_attribute *attr,
 	struct syncboss_dev_data *devdata =
 		(struct syncboss_dev_data *)dev_get_drvdata(dev);
 
-	if ((count >= 1) && (strtobool(buf, &should_reset) == 0) &&
+	if ((count >= 1) && (kstrtobool(buf, &should_reset) == 0) &&
 	    should_reset) {
 
 		status = mutex_lock_interruptible(&devdata->state_mutex);
@@ -531,7 +531,7 @@ static ssize_t poll_prio_store(struct device *dev,
 		dev_err(dev, "failed to parse integer out of %s", buf);
 		return -EINVAL;
 	} else if (temp_priority < 1 ||
-		   temp_priority > (MAX_USER_RT_PRIO - 1)) {
+		   temp_priority > (MAX_RT_PRIO - 1)) {
 		dev_err(dev, "invalid real time priority");
 		return -EINVAL;
 	}
