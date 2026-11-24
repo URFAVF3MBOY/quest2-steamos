@@ -66,6 +66,7 @@ diff --git a/drivers/phy/qualcomm/phy-qcom-qmp-ufs.c b/drivers/phy/qualcomm/phy-
 +	QMP_PHY_INIT_CFG(QPHY_V4_PCS_UFS_TX_HSGEAR_CAPABILITY, 0x03),
 +	QMP_PHY_INIT_CFG(QPHY_V4_PCS_UFS_RX_HSGEAR_CAPABILITY, 0x03),
 +	QMP_PHY_INIT_CFG(QPHY_V4_PCS_UFS_MULTI_LANE_CTRL1, 0x02),
++	QMP_PHY_INIT_CFG(QPHY_V4_PCS_UFS_LINECFG_DISABLE, 0x00),
 +};
 +
  static const struct qmp_phy_init_tbl sm8250_ufsphy_hs_g4_tx[] = {

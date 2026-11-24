@@ -57,7 +57,7 @@ jobs:
           cp kernel/linux72/$DTB.dts kernel/linux72/$DTB-dtbo-sink.dtsi linux/$Q/
           grep -q "$DTB.dtb" linux/$Q/Makefile || echo "dtb-\$(CONFIG_ARCH_QCOM) += $DTB.dtb" >> linux/$Q/Makefile
           cp kernel/linux72/hollywood.config linux/arch/arm64/configs/hollywood.config
-          for p in kernel/linux72/patches/*.patch; do git -C linux apply --verbose "$PWD/$p"; done
+          for p in kernel/linux72/patches/*.patch; do git -C linux apply --recount --verbose "$PWD/$p"; done
           P=linux/drivers/gpu/drm/panel
           cp kernel/linux72/panel-oculus-hollywood-jdi.c $P/
           grep -q OCULUS_HOLLYWOOD_JDI $P/Kconfig || cat kernel/linux72/Kconfig.panel >> $P/Kconfig
