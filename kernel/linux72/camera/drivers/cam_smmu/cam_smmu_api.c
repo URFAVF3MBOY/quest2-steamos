@@ -3799,10 +3799,10 @@ static int cam_populate_smmu_context_banks(struct device *dev,
 		CAM_ERR(CAM_SMMU, "Error: failed to setup cb : %s", cb->name);
 		goto cb_init_fail;
 	}
-	if (cb->io_support && cb->domain)
-		iommu_set_fault_handler(cb->domain,
-			cam_smmu_iommu_fault_handler,
-			(void *)cb->name);
+	/*
+	 * The context banks use the DMA API's domain, which takes no driver fault handler on this kernel;
+	 * faults are reported by the SMMU driver (the banks are non-fatal anyway).
+	 */
 
 	if (!dev->dma_parms)
 		dev->dma_parms = devm_kzalloc(dev,
