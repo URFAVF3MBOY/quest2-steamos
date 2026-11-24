@@ -508,18 +508,18 @@ static int cam_cdm_intf_probe(struct platform_device *pdev)
 	return rc;
 }
 
-static int cam_cdm_intf_remove(struct platform_device *pdev)
+static void cam_cdm_intf_remove(struct platform_device *pdev)
 {
 	int i;
 
 	if (!refcount_read(&cdm_mgr.refcount)) {
 		CAM_ERR(CAM_CDM, "CDM intf mgr get refcount failed");
-		return -EBUSY;
+		return;
 	}
 
 	if (cam_virtual_cdm_remove(pdev)) {
 		CAM_ERR(CAM_CDM, "Virtual CDM remove failed");
-		return -EBUSY;
+		return;
 	}
 
 	if (!refcount_dec_and_test(&cdm_mgr.refcount)) {
@@ -543,7 +543,6 @@ static int cam_cdm_intf_remove(struct platform_device *pdev)
 
 end:
 	mutex_unlock(&cam_cdm_mgr_lock);
-	return 0;
 }
 
 static struct platform_driver cam_cdm_intf_driver = {

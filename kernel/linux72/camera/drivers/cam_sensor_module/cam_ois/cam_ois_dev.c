@@ -342,7 +342,7 @@ free_o_ctrl:
 	return rc;
 }
 
-static int cam_ois_platform_driver_remove(struct platform_device *pdev)
+static void cam_ois_platform_driver_remove(struct platform_device *pdev)
 {
 	int                             i;
 	struct cam_ois_ctrl_t          *o_ctrl;
@@ -353,7 +353,7 @@ static int cam_ois_platform_driver_remove(struct platform_device *pdev)
 	o_ctrl = platform_get_drvdata(pdev);
 	if (!o_ctrl) {
 		CAM_ERR(CAM_OIS, "ois device is NULL");
-		return -EINVAL;
+		return;
 	}
 
 	CAM_INFO(CAM_OIS, "platform driver remove invoked");
@@ -376,7 +376,6 @@ static int cam_ois_platform_driver_remove(struct platform_device *pdev)
 	v4l2_set_subdevdata(&o_ctrl->v4l2_dev_str.sd, NULL);
 	kfree(o_ctrl);
 
-	return 0;
 }
 
 static const struct of_device_id cam_ois_dt_match[] = {

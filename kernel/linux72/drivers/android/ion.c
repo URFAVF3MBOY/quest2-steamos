@@ -249,24 +249,24 @@ static const struct dma_buf_ops q2ion_ops = {
 	.release = q2ion_release,
 };
 
-static int q2ion_alloc(struct ion_allocation_data *req)
+/* A buffer as an ION allocation gives it; also the kernel's ion_alloc for the camera drivers. */
+struct dma_buf *ion_alloc(size_t len, unsigned int heap_id_mask, unsigned int flags)
 {
 	DEFINE_DMA_BUF_EXPORT_INFO(info);
 	struct q2ion_buffer *b;
-	struct dma_buf *d;
+	struct dma_buf *d = ERR_PTR(-ENOMEM);
 	unsigned long i = 0;
-	int fd = -ENOMEM;
 
-	if (!req->len || !req->heap_id_mask)
-		return -EINVAL;
-	if (req->flags & (ION_FLAG_SECURE | ION_FLAGS_CP_MASK))
-		return -EOPNOTSUPP;
+	if (!len || !heap_id_mask)
+		return ERR_PTR(-EINVAL);
+	if (flags & (ION_FLAG_SECURE | ION_FLAGS_CP_MASK))
+		return ERR_PTR(-EOPNOTSUPP);
 	b = kzalloc(sizeof(*b), GFP_KERNEL);
 	if (!b)
-		return -ENOMEM;
-	b->size = PAGE_ALIGN(req->len);
+		return ERR_PTR(-ENOMEM);
+	b->size = PAGE_ALIGN(len);
 	b->nr_pages = b->size >> PAGE_SHIFT;
-	b->cached = req->flags & ION_FLAG_CACHED;
+	b->cached = flags & ION_FLAG_CACHED;
 	mutex_init(&b->lock);
 	INIT_LIST_HEAD(&b->attachments);
 	b->pages = kvmalloc_array(b->nr_pages, sizeof(*b->pages), GFP_KERNEL);
@@ -291,17 +291,8 @@ static int q2ion_alloc(struct ion_allocation_data *req)
 	info.flags = O_RDWR;
 	info.priv = b;
 	d = dma_buf_export(&info);
-	if (IS_ERR(d)) {
-		fd = PTR_ERR(d);
-		goto err_pages;
-	}
-	fd = dma_buf_fd(d, O_CLOEXEC);
-	if (fd < 0) {
-		dma_buf_put(d);
-		return fd;
-	}
-	req->fd = fd;
-	return 0;
+	if (!IS_ERR(d))
+		return d;
 
 err_pages:
 	i = min(i, b->nr_pages);
@@ -310,7 +301,34 @@ err_pages:
 	kvfree(b->pages);
 err_buf:
 	kfree(b);
-	return fd;
+	return d;
+}
+EXPORT_SYMBOL_GPL(ion_alloc);
+
+/* The ION flags of a buffer from ion_alloc (the downstream dma_buf_get_flags). */
+int dma_buf_get_flags(struct dma_buf *dmabuf, unsigned long *flags)
+{
+	if (dmabuf->ops != &q2ion_ops)
+		return -EINVAL;
+	*flags = ((struct q2ion_buffer *)dmabuf->priv)->cached ? ION_FLAG_CACHED : 0;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(dma_buf_get_flags);
+
+static int q2ion_alloc(struct ion_allocation_data *req)
+{
+	struct dma_buf *d = ion_alloc(req->len, req->heap_id_mask, req->flags);
+	int fd;
+
+	if (IS_ERR(d))
+		return PTR_ERR(d);
+	fd = dma_buf_fd(d, O_CLOEXEC);
+	if (fd < 0) {
+		dma_buf_put(d);
+		return fd;
+	}
+	req->fd = fd;
+	return 0;
 }
 
 static long q2ion_ioctl(struct file *f, unsigned int cmd, unsigned long arg)

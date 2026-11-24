@@ -168,7 +168,7 @@ static const struct cam_node_fastpath_ops fastpath_ctx_ops = {
 	.stream_mode_cmd = cam_isp_fastpath_stream_mode_cmd,
 };
 
-static int cam_isp_dev_remove(struct platform_device *pdev)
+static void cam_isp_dev_remove(struct platform_device *pdev)
 {
 	int rc = 0;
 	int i;
@@ -206,7 +206,6 @@ static int cam_isp_dev_remove(struct platform_device *pdev)
 
 	memset(&g_isp_dev_fastpath, 0, sizeof(g_isp_dev_fastpath));
 
-	return 0;
 }
 
 static int cam_isp_dev_probe(struct platform_device *pdev)

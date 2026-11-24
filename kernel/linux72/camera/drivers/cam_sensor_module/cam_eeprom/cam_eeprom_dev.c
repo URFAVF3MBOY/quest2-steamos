@@ -512,7 +512,7 @@ free_e_ctrl:
 	return rc;
 }
 
-static int cam_eeprom_platform_driver_remove(struct platform_device *pdev)
+static void cam_eeprom_platform_driver_remove(struct platform_device *pdev)
 {
 	int                        i;
 	struct cam_eeprom_ctrl_t  *e_ctrl;
@@ -521,7 +521,7 @@ static int cam_eeprom_platform_driver_remove(struct platform_device *pdev)
 	e_ctrl = platform_get_drvdata(pdev);
 	if (!e_ctrl) {
 		CAM_ERR(CAM_EEPROM, "eeprom device is NULL");
-		return -EINVAL;
+		return;
 	}
 
 	CAM_INFO(CAM_EEPROM, "Platform driver remove invoked");
@@ -541,7 +541,6 @@ static int cam_eeprom_platform_driver_remove(struct platform_device *pdev)
 	v4l2_set_subdevdata(&e_ctrl->v4l2_dev_str.sd, NULL);
 	kfree(e_ctrl);
 
-	return 0;
 }
 
 static const struct of_device_id cam_eeprom_dt_match[] = {

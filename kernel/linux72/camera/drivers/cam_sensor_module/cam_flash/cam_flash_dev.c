@@ -307,14 +307,14 @@ static long cam_flash_subdev_do_ioctl(struct v4l2_subdev *sd,
 }
 #endif
 
-static int cam_flash_platform_remove(struct platform_device *pdev)
+static void cam_flash_platform_remove(struct platform_device *pdev)
 {
 	struct cam_flash_ctrl *fctrl;
 
 	fctrl = platform_get_drvdata(pdev);
 	if (!fctrl) {
 		CAM_ERR(CAM_FLASH, "Flash device is NULL");
-		return 0;
+		return;
 	}
 
 	CAM_INFO(CAM_FLASH, "Platform remove invoked");
@@ -326,7 +326,6 @@ static int cam_flash_platform_remove(struct platform_device *pdev)
 	v4l2_set_subdevdata(&fctrl->v4l2_dev_str.sd, NULL);
 	kfree(fctrl);
 
-	return 0;
 }
 
 static int32_t cam_flash_i2c_driver_remove(struct i2c_client *client)
