@@ -1,0 +1,495 @@
+diff --git a/drivers/misc/fastrpc.c b/drivers/misc/fastrpc.c
+index 8c67a08..d246274 100644
+--- a/drivers/misc/fastrpc.c
++++ b/drivers/misc/fastrpc.c
+@@ -281,6 +281,7 @@ struct fastrpc_channel_ctx {
+ 	u32 dsp_attributes[FASTRPC_MAX_DSP_ATTRIBUTES];
+ 	struct fastrpc_device *secure_fdevice;
+ 	struct fastrpc_device *fdevice;
++	struct fastrpc_device *adsprpc_fdevice[2];
+ 	struct fastrpc_buf *remote_heap;
+ 	struct list_head invoke_interrupted_mmaps;
+ 	bool secure;
+@@ -334,6 +335,25 @@ static inline u64 fastrpc_sid_offset(struct fastrpc_channel_ctx *cctx,
+ 	return (u64)sctx->sid << cctx->soc_data->sid_pos;
+ }
+ 
++/* A request from userspace (argp), or from inside the driver (kreq, for the downstream ABI below). */
++static int fastrpc_req_in(void *dst, char __user *argp, const void *kreq, size_t n)
++{
++	if (kreq) {
++		memcpy(dst, kreq, n);
++		return 0;
++	}
++	return copy_from_user(dst, argp, n) ? -EFAULT : 0;
++}
++
++static int fastrpc_req_out(char __user *argp, void *kreq, const void *src, size_t n)
++{
++	if (kreq) {
++		memcpy(kreq, src, n);
++		return 0;
++	}
++	return copy_to_user(argp, src, n) ? -EFAULT : 0;
++}
++
+ static void fastrpc_free_map(struct kref *ref)
+ {
+ 	struct fastrpc_map *map;
+@@ -1386,7 +1406,7 @@ static bool is_session_rejected(struct fastrpc_user *fl, bool unsigned_pd_reques
+ }
+ 
+ static int fastrpc_init_create_static_process(struct fastrpc_user *fl,
+-					      char __user *argp)
++					      char __user *argp, void *kreq)
+ {
+ 	struct fastrpc_init_create_static init;
+ 	struct fastrpc_invoke_args *args;
+@@ -1405,7 +1425,7 @@ static int fastrpc_init_create_static_process(struct fastrpc_user *fl,
+ 	if (!args)
+ 		return -ENOMEM;
+ 
+-	if (copy_from_user(&init, argp, sizeof(init))) {
++	if (fastrpc_req_in(&init, argp, kreq, sizeof(init))) {
+ 		err = -EFAULT;
+ 		goto err;
+ 	}
+@@ -1507,7 +1527,7 @@ err:
+ }
+ 
+ static int fastrpc_init_create_process(struct fastrpc_user *fl,
+-					char __user *argp)
++					char __user *argp, void *kreq)
+ {
+ 	struct fastrpc_init_create init;
+ 	struct fastrpc_invoke_args *args;
+@@ -1531,7 +1551,7 @@ static int fastrpc_init_create_process(struct fastrpc_user *fl,
+ 	if (!args)
+ 		return -ENOMEM;
+ 
+-	if (copy_from_user(&init, argp, sizeof(init))) {
++	if (fastrpc_req_in(&init, argp, kreq, sizeof(init))) {
+ 		err = -EFAULT;
+ 		goto err;
+ 	}
+@@ -2040,14 +2060,14 @@ static int fastrpc_req_munmap_fd(struct fastrpc_user *fl, struct fastrpc_req_mun
+ 	return 0;
+ }
+ 
+-static int fastrpc_req_munmap(struct fastrpc_user *fl, char __user *argp)
++static int fastrpc_req_munmap(struct fastrpc_user *fl, char __user *argp, void *kreq)
+ {
+ 	struct fastrpc_buf *buf = NULL, *iter, *b;
+ 	struct fastrpc_req_munmap req;
+ 	struct device *dev = fl->sctx->dev;
+ 	int err;
+ 
+-	if (copy_from_user(&req, argp, sizeof(req)))
++	if (fastrpc_req_in(&req, argp, kreq, sizeof(req)))
+ 		return -EFAULT;
+ 
+ 	spin_lock(&fl->lock);
+@@ -2078,7 +2098,7 @@ static int fastrpc_req_munmap(struct fastrpc_user *fl, char __user *argp)
+ 	return err;
+ }
+ 
+-static int fastrpc_req_mmap(struct fastrpc_user *fl, char __user *argp)
++static int fastrpc_req_mmap(struct fastrpc_user *fl, char __user *argp, void *kreq)
+ {
+ 	struct fastrpc_invoke_args args[3] = { [0 ... 2] = { 0 } };
+ 	struct fastrpc_buf *buf = NULL;
+@@ -2090,7 +2110,7 @@ static int fastrpc_req_mmap(struct fastrpc_user *fl, char __user *argp)
+ 	int err;
+ 	u32 sc;
+ 
+-	if (copy_from_user(&req, argp, sizeof(req)))
++	if (fastrpc_req_in(&req, argp, kreq, sizeof(req)))
+ 		return -EFAULT;
+ 
+ 	if (req.flags != ADSP_MMAP_ADD_PAGES && req.flags != ADSP_MMAP_REMOTE_HEAP_ADDR) {
+@@ -2101,7 +2121,7 @@ static int fastrpc_req_mmap(struct fastrpc_user *fl, char __user *argp)
+ 		err = fastrpc_req_mmap_fd(fl, &req);
+ 		if (err)
+ 			return err;
+-		if (copy_to_user((void __user *)argp, &req, sizeof(req))) {
++		if (fastrpc_req_out(argp, kreq, &req, sizeof(req))) {
+ 			struct fastrpc_req_munmap unmap = { .vaddrout = req.vaddrout, .size = req.size };
+ 
+ 			fastrpc_req_munmap_fd(fl, &unmap);
+@@ -2175,7 +2195,7 @@ static int fastrpc_req_mmap(struct fastrpc_user *fl, char __user *argp)
+ 	list_add_tail(&buf->node, &fl->mmaps);
+ 	spin_unlock(&fl->lock);
+ 
+-	if (copy_to_user((void __user *)argp, &req, sizeof(req))) {
++	if (fastrpc_req_out(argp, kreq, &req, sizeof(req))) {
+ 		err = -EFAULT;
+ 		goto err_assign;
+ 	}
+@@ -2340,19 +2360,19 @@ static long fastrpc_device_ioctl(struct file *file, unsigned int cmd,
+ 		err = fastrpc_init_attach(fl, SENSORS_PD);
+ 		break;
+ 	case FASTRPC_IOCTL_INIT_CREATE_STATIC:
+-		err = fastrpc_init_create_static_process(fl, argp);
++		err = fastrpc_init_create_static_process(fl, argp, NULL);
+ 		break;
+ 	case FASTRPC_IOCTL_INIT_CREATE:
+-		err = fastrpc_init_create_process(fl, argp);
++		err = fastrpc_init_create_process(fl, argp, NULL);
+ 		break;
+ 	case FASTRPC_IOCTL_ALLOC_DMA_BUFF:
+ 		err = fastrpc_dmabuf_alloc(fl, argp);
+ 		break;
+ 	case FASTRPC_IOCTL_MMAP:
+-		err = fastrpc_req_mmap(fl, argp);
++		err = fastrpc_req_mmap(fl, argp, NULL);
+ 		break;
+ 	case FASTRPC_IOCTL_MUNMAP:
+-		err = fastrpc_req_munmap(fl, argp);
++		err = fastrpc_req_munmap(fl, argp, NULL);
+ 		break;
+ 	case FASTRPC_IOCTL_MEM_MAP:
+ 		err = fastrpc_req_mem_map(fl, argp);
+@@ -2371,6 +2391,282 @@ static long fastrpc_device_ioctl(struct file *file, unsigned int cmd,
+ 	return err;
+ }
+ 
++/*
++ * Qualcomm's downstream fastrpc ABI on /dev/adsprpc-smd and /dev/adsprpc-smd-secure, for userspace built
++ * against it (the Quest 2's own Android libraries). The DSP-side protocol is the same; each request is
++ * translated onto this driver's own calls. Only the compute DSP's channel gets these nodes.
++ */
++struct adsprpc_invoke {
++	u32 handle;
++	u32 sc;
++	u64 pra;
++};
++
++struct adsprpc_invoke_crc {
++	struct adsprpc_invoke inv;
++	u64 fds;
++	u64 attrs;
++	u64 crc;
++};
++
++struct adsprpc_init {
++	u32 flags;
++	u64 file;
++	u32 filelen;
++	s32 filefd;
++	u64 mem;
++	u32 memlen;
++	s32 memfd;
++};
++
++struct adsprpc_init_attrs {
++	struct adsprpc_init init;
++	s32 attrs;
++	u32 siglen;
++};
++
++struct adsprpc_mmap {
++	s32 fd;
++	u32 flags;
++	u64 vaddrin;
++	u64 size;
++	u64 vaddrout;
++};
++
++struct adsprpc_munmap {
++	u64 vaddrout;
++	u64 size;
++};
++
++struct adsprpc_munmap_fd {
++	s32 fd;
++	u32 flags;
++	u64 va;
++	s64 len;
++};
++
++struct adsprpc_control {
++	u32 req;
++	u32 arg[2];
++};
++
++struct adsprpc_dsp_caps {
++	u32 domain;
++	u32 attributes[7];
++};
++
++union adsprpc_remote_arg {
++	struct {
++		u64 pv;
++		u64 len;
++	} buf;
++	struct {
++		s32 fd;
++		u32 offset;
++	} dma;
++	u32 h;
++};
++
++#define ADSPRPC_IOCTL_INVOKE		_IOWR('R', 1, struct adsprpc_invoke)
++#define ADSPRPC_IOCTL_MMAP		_IOWR('R', 2, struct adsprpc_mmap)
++#define ADSPRPC_IOCTL_MUNMAP		_IOWR('R', 3, struct adsprpc_munmap)
++#define ADSPRPC_IOCTL_INVOKE_FD		_IOWR('R', 4, struct { struct adsprpc_invoke inv; u64 fds; })
++#define ADSPRPC_IOCTL_SETMODE		_IOWR('R', 5, u32)
++#define ADSPRPC_IOCTL_INIT		_IOWR('R', 6, struct adsprpc_init)
++#define ADSPRPC_IOCTL_INVOKE_ATTRS	_IOWR('R', 7, struct { struct adsprpc_invoke inv; u64 fds; u64 attrs; })
++#define ADSPRPC_IOCTL_GETINFO		_IOWR('R', 8, u32)
++#define ADSPRPC_IOCTL_INIT_ATTRS	_IOWR('R', 10, struct adsprpc_init_attrs)
++#define ADSPRPC_IOCTL_INVOKE_CRC	_IOWR('R', 11, struct adsprpc_invoke_crc)
++#define ADSPRPC_IOCTL_CONTROL		_IOWR('R', 12, struct adsprpc_control)
++#define ADSPRPC_IOCTL_MUNMAP_FD		_IOWR('R', 13, struct adsprpc_munmap_fd)
++#define ADSPRPC_IOCTL_MMAP_64		_IOWR('R', 14, struct adsprpc_mmap)
++#define ADSPRPC_IOCTL_MUNMAP_64		_IOWR('R', 15, struct adsprpc_munmap)
++#define ADSPRPC_IOCTL_GET_DSP_INFO	_IOWR('R', 16, struct adsprpc_dsp_caps)
++
++#define ADSPRPC_INIT_ATTACH		0
++#define ADSPRPC_INIT_CREATE		1
++#define ADSPRPC_INIT_CREATE_STATIC	2
++#define ADSPRPC_INIT_ATTACH_SENSORS	3
++#define ADSPRPC_CONTROL_KALLOC		3
++
++static int adsprpc_invoke(struct fastrpc_user *fl, char __user *argp, unsigned int cmd)
++{
++	struct adsprpc_invoke_crc inv = {};
++	union adsprpc_remote_arg *pra = NULL;
++	struct fastrpc_invoke_args *args = NULL;
++	s32 *fds = NULL;
++	u32 n, nbufs, i;
++	int err;
++
++	if (copy_from_user(&inv, argp, _IOC_SIZE(cmd)))
++		return -EFAULT;
++	n = REMOTE_SCALARS_LENGTH(inv.inv.sc);
++	nbufs = REMOTE_SCALARS_INBUFS(inv.inv.sc) + REMOTE_SCALARS_OUTBUFS(inv.inv.sc);
++	if (n) {
++		pra = kcalloc(n, sizeof(*pra), GFP_KERNEL);
++		args = kcalloc(n, sizeof(*args), GFP_KERNEL);
++		fds = kcalloc(n, sizeof(*fds), GFP_KERNEL);
++		err = -ENOMEM;
++		if (!pra || !args || !fds)
++			goto out;
++		err = -EFAULT;
++		if (copy_from_user(pra, u64_to_user_ptr(inv.inv.pra), n * sizeof(*pra)))
++			goto out;
++		if (cmd != ADSPRPC_IOCTL_INVOKE && inv.fds) {
++			if (copy_from_user(fds, u64_to_user_ptr(inv.fds), n * sizeof(*fds)))
++				goto out;
++		} else {
++			for (i = 0; i < n; i++)
++				fds[i] = -1;
++		}
++		for (i = 0; i < n; i++) {
++			if (i < nbufs) {
++				args[i].ptr = pra[i].buf.pv;
++				args[i].length = pra[i].buf.len;
++				args[i].fd = fds[i] > 0 ? fds[i] : -1;
++			} else {
++				args[i].fd = pra[i].dma.fd;
++				args[i].ptr = pra[i].dma.offset;
++			}
++		}
++	}
++	err = fastrpc_internal_invoke(fl, false, inv.inv.handle, inv.inv.sc, args);
++	if (cmd == ADSPRPC_IOCTL_INVOKE_CRC && inv.crc && n) {
++		/* No CRCs are computed here: report zeros, as a DSP without CRC checking does. */
++		u32 *zero = kcalloc(n, sizeof(u32), GFP_KERNEL);
++
++		if (zero && copy_to_user(u64_to_user_ptr(inv.crc), zero, n * sizeof(u32)))
++			err = err ?: -EFAULT;
++		kfree(zero);
++	}
++out:
++	kfree(fds);
++	kfree(args);
++	kfree(pra);
++	return err;
++}
++
++static int adsprpc_init(struct fastrpc_user *fl, char __user *argp, unsigned int cmd)
++{
++	struct adsprpc_init_attrs ia = {};
++
++	if (copy_from_user(&ia, argp, _IOC_SIZE(cmd)))
++		return -EFAULT;
++	switch (ia.init.flags) {
++	case ADSPRPC_INIT_ATTACH:
++		return fastrpc_init_attach(fl, ROOT_PD);
++	case ADSPRPC_INIT_ATTACH_SENSORS:
++		return fastrpc_init_attach(fl, SENSORS_PD);
++	case ADSPRPC_INIT_CREATE: {
++		struct fastrpc_init_create c = {
++			.filelen = ia.init.filelen,
++			.filefd = ia.init.filefd,
++			.attrs = ia.attrs,
++			.siglen = ia.siglen,
++			.file = ia.init.file,
++		};
++
++		return fastrpc_init_create_process(fl, NULL, &c);
++	}
++	case ADSPRPC_INIT_CREATE_STATIC: {
++		struct fastrpc_init_create_static s = {
++			.namelen = ia.init.filelen,
++			.memlen = ia.init.memlen,
++			.name = ia.init.file,
++		};
++
++		return fastrpc_init_create_static_process(fl, NULL, &s);
++	}
++	}
++	return -ENOTTY;
++}
++
++static long adsprpc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
++{
++	struct fastrpc_user *fl = (struct fastrpc_user *)file->private_data;
++	char __user *argp = (char __user *)arg;
++
++	switch (cmd) {
++	case ADSPRPC_IOCTL_INVOKE:
++	case ADSPRPC_IOCTL_INVOKE_FD:
++	case ADSPRPC_IOCTL_INVOKE_ATTRS:
++	case ADSPRPC_IOCTL_INVOKE_CRC:
++		return adsprpc_invoke(fl, argp, cmd);
++	case ADSPRPC_IOCTL_INIT:
++	case ADSPRPC_IOCTL_INIT_ATTRS:
++		return adsprpc_init(fl, argp, cmd);
++	case ADSPRPC_IOCTL_MMAP:
++	case ADSPRPC_IOCTL_MMAP_64: {
++		struct adsprpc_mmap m;
++		struct fastrpc_req_mmap r;
++		int err;
++
++		if (copy_from_user(&m, argp, sizeof(m)))
++			return -EFAULT;
++		r = (struct fastrpc_req_mmap){ .fd = m.fd, .flags = m.flags, .vaddrin = m.vaddrin, .size = m.size };
++		err = fastrpc_req_mmap(fl, NULL, &r);
++		if (err)
++			return err;
++		m.vaddrout = r.vaddrout;
++		return copy_to_user(argp, &m, sizeof(m)) ? -EFAULT : 0;
++	}
++	case ADSPRPC_IOCTL_MUNMAP:
++	case ADSPRPC_IOCTL_MUNMAP_64: {
++		struct adsprpc_munmap m;
++		struct fastrpc_req_munmap r;
++
++		if (copy_from_user(&m, argp, sizeof(m)))
++			return -EFAULT;
++		r = (struct fastrpc_req_munmap){ .vaddrout = m.vaddrout, .size = m.size };
++		return fastrpc_req_munmap(fl, NULL, &r);
++	}
++	case ADSPRPC_IOCTL_MUNMAP_FD:
++		/* The mapping goes with the buffer's last reference on this driver. */
++		return 0;
++	case ADSPRPC_IOCTL_SETMODE:
++		return 0;
++	case ADSPRPC_IOCTL_GETINFO: {
++		u32 info = 1;	/* the DSP sits behind an SMMU */
++
++		return copy_to_user(argp, &info, sizeof(info)) ? -EFAULT : 0;
++	}
++	case ADSPRPC_IOCTL_CONTROL: {
++		struct adsprpc_control c;
++
++		if (copy_from_user(&c, argp, sizeof(c)))
++			return -EFAULT;
++		if (c.req == ADSPRPC_CONTROL_KALLOC) {
++			c.arg[0] = 1;
++			return copy_to_user(argp, &c, sizeof(c)) ? -EFAULT : 0;
++		}
++		return 0;
++	}
++	case ADSPRPC_IOCTL_GET_DSP_INFO: {
++		struct adsprpc_dsp_caps caps;
++		u32 i;
++
++		if (copy_from_user(&caps, argp, sizeof(caps)))
++			return -EFAULT;
++		for (i = 0; i < ARRAY_SIZE(caps.attributes); i++) {
++			struct fastrpc_ioctl_capability cap = { .attribute_id = i };
++
++			caps.attributes[i] = fastrpc_get_info_from_kernel(&cap, fl) ? 0 : cap.capability;
++		}
++		return copy_to_user(argp, &caps, sizeof(caps)) ? -EFAULT : 0;
++	}
++	}
++	dev_warn_ratelimited(&fl->cctx->rpdev->dev, "adsprpc: %s: unhandled ioctl 0x%x (nr %u, size %u)\n",
++			     current->comm, cmd, _IOC_NR(cmd), _IOC_SIZE(cmd));
++	return -ENOTTY;
++}
++
++static const struct file_operations adsprpc_fops = {
++	.open = fastrpc_device_open,
++	.release = fastrpc_device_release,
++	.unlocked_ioctl = adsprpc_ioctl,
++};
++
++
+ static const struct file_operations fastrpc_fops = {
+ 	.open = fastrpc_device_open,
+ 	.release = fastrpc_device_release,
+@@ -2495,6 +2791,38 @@ static int fastrpc_device_register(struct device *dev, struct fastrpc_channel_ct
+ 	return err;
+ }
+ 
++/* /dev/adsprpc-smd and /dev/adsprpc-smd-secure on this channel (downstream ABI). */
++static int adsprpc_device_register(struct device *dev, struct fastrpc_channel_ctx *cctx)
++{
++	int i, err;
++
++	for (i = 0; i < 2; i++) {
++		struct fastrpc_device *fdev = devm_kzalloc(dev, sizeof(*fdev), GFP_KERNEL);
++
++		if (!fdev)
++			return -ENOMEM;
++		fdev->secure = i;
++		fdev->cctx = cctx;
++		fdev->miscdev.minor = MISC_DYNAMIC_MINOR;
++		fdev->miscdev.fops = &adsprpc_fops;
++		fdev->miscdev.name = i ? "adsprpc-smd-secure" : "adsprpc-smd";
++		err = misc_register(&fdev->miscdev);
++		if (err)
++			return err;
++		cctx->adsprpc_fdevice[i] = fdev;
++	}
++	return 0;
++}
++
++static void adsprpc_device_deregister(struct fastrpc_channel_ctx *cctx)
++{
++	int i;
++
++	for (i = 0; i < 2; i++)
++		if (cctx->adsprpc_fdevice[i])
++			misc_deregister(&cctx->adsprpc_fdevice[i]->miscdev);
++}
++
+ static int fastrpc_get_domain_id(const char *domain)
+ {
+ 	if (!strncmp(domain, "adsp", 4))
+@@ -2611,6 +2939,13 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
+ 		err = fastrpc_device_register(rdev, data, false, domain);
+ 		if (err)
+ 			goto err_deregister_fdev;
++		if (domain_id == CDSP_DOMAIN_ID) {
++			err = adsprpc_device_register(rdev, data);
++			if (err) {
++				adsprpc_device_deregister(data);
++				goto err_deregister_fdev;
++			}
++		}
+ 		break;
+ 	default:
+ 		err = -EINVAL;
+@@ -2677,6 +3012,7 @@ static void fastrpc_rpmsg_remove(struct rpmsg_device *rpdev)
+ 
+ 	if (cctx->secure_fdevice)
+ 		misc_deregister(&cctx->secure_fdevice->miscdev);
++	adsprpc_device_deregister(cctx);
+ 
+ 	list_for_each_entry_safe(buf, b, &cctx->invoke_interrupted_mmaps, node)
+ 		list_del(&buf->node);
