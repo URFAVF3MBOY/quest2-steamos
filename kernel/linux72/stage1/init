@@ -115,6 +115,12 @@ stage2() {
   [ -d $H/.steam/sdkarm64 ] && [ ! -L $H/.steam/sdkarm64 ] && rm -rf $H/.steam/sdkarm64
   W=$H/.local/share/Steam/steamrtarm64
   [ -e $W/steamwebhelper.q2real ] && mv -f $W/steamwebhelper.q2real $W/steamwebhelper
+  # The 4.19 system's PC mode (q2usbpc: the USB-C port becomes a log drive) would take over the USB serial console here,
+  # and the island test starts it by itself: off on this kernel.
+  [ -e $N/usr/bin/q2usbpc ] && printf '#!/bin/sh
+echo "q2usbpc: off on the 7.2 kernel (the USB port carries the serial console)"
+' > $N/usr/bin/q2usbpc
+  mkdir -p $N/var/lib/q2 && : > $N/var/lib/q2/island_nopc
   umount /mnt/modem 2>/dev/null
   log "stage 2: switching to SteamOS on $U (RAM overlay)"
   kill -9 -1
