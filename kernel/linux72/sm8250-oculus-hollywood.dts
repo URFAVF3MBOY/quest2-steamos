@@ -153,6 +153,28 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 	};
+
+	regulators-1 {
+		compatible = "qcom,pm8150l-rpmh-regulators";
+		qcom,pmic-id = "c";
+
+		/* SyncBoss' IMU and magnetometer, always on in Quest OS. */
+		vreg_l7c_3p0: ldo7 {
+			regulator-name = "vreg_l7c_3p0";
+			regulator-min-microvolt = <3000000>;
+			regulator-max-microvolt = <3000000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-always-on;
+		};
+
+		vreg_l8c_1p8: ldo8 {
+			regulator-name = "vreg_l8c_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-always-on;
+		};
+	};
 };
 
 &pm8150_gpios {
@@ -191,6 +213,59 @@
 	/* GPIOs unused by Quest OS, plus the usual secure lines 28-31 and 40-43. */
 	gpio-reserved-ranges = <28 4>, <40 4>, <68 7>, <76 1>, <78 1>, <82 6>, <90 1>, <92 2>,
 			       <109 1>, <112 1>, <114 1>, <149 31>;
+
+	syncboss_reset: syncboss-reset-state {
+		pins = "gpio5";
+		function = "gpio";
+		drive-strength = <6>;
+		output-low;
+	};
+
+	syncboss_wakeup: syncboss-wakeup-state {
+		pins = "gpio4";
+		function = "gpio";
+		bias-pull-down;
+		input-enable;
+	};
+};
+
+/* SyncBoss: Meta's MCU for the IMU, proximity sensor and controller radio (firmware v59), as in Quest OS. */
+&gpi_dma2 {
+	status = "okay";
+};
+
+&qupv3_id_2 {
+	status = "okay";
+};
+
+&spi19 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&qup_spi19_data_clk &qup_spi19_cs>;
+	status = "okay";
+
+	syncboss@0 {
+		compatible = "oculus,syncboss";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+		spi-cpol;
+		spi-cpha;
+		pinctrl-names = "default";
+		pinctrl-0 = <&syncboss_reset &syncboss_wakeup>;
+
+		oculus,syncboss-reset-gpios = <&tlmm 5 GPIO_ACTIVE_HIGH>;
+		oculus,syncboss-wakeup-gpios = <&tlmm 4 GPIO_ACTIVE_HIGH>;
+		oculus,syncboss-timesync-gpios = <&tlmm 66 GPIO_ACTIVE_HIGH>;
+
+		oculus,imu-core-supply = <&vreg_l7c_3p0>;
+		oculus,imu-core-voltage-level = <3000000 3000000>;
+		oculus,mag-core-supply = <&vreg_l8c_1p8>;
+		oculus,mag-core-voltage-level = <1800000 1800000>;
+
+		oculus,syncboss-has-prox;
+		oculus,syncboss-use-fastpath;
+		oculus,syncboss-has-wake-reasons;
+		oculus,syncboss-has-seq-num-ioctl;
+	};
 };
 
 &ufs_mem_hc {

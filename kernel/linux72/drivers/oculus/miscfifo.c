@@ -1,0 +1,495 @@
+#include <linux/device.h>
+#include <linux/fs.h>
+#include <linux/miscfifo.h>
+#include <linux/module.h>
+#include <linux/slab.h>
+#include <linux/version.h>
+
+#define REC_MAX_LENGTH	0xffff
+#define REC_SIZE	2
+#define CLIENT_NAME_SIZE 64
+
+void miscfifo_cancel(struct file *file)
+{
+	struct miscfifo_client *client = file->private_data;
+
+	atomic_set(&client->cancel, 1);
+}
+EXPORT_SYMBOL(miscfifo_cancel);
+
+/**
+ * Set the poison flag on all existing clients without waking waiters.
+ *
+ * Use this when multiple fifos must be poisoned atomically with respect
+ * to RT-priority readers.  Call miscfifo_poison_notify() on each fifo
+ * after all flags have been set.
+ */
+void miscfifo_poison_mark(struct miscfifo *mf)
+{
+	struct miscfifo_client *client;
+
+	down_read(&mf->clients.rw_lock);
+	list_for_each_entry(client, &mf->clients.list, node) {
+		WRITE_ONCE(client->poisoned, true);
+	}
+	up_read(&mf->clients.rw_lock);
+}
+EXPORT_SYMBOL_GPL(miscfifo_poison_mark);
+
+/**
+ * Wake all blocked readers on this miscfifo.
+ *
+ * Pair with miscfifo_poison_mark() after all critical disconnect
+ * work is complete, so that RT-priority readers cannot preempt
+ * the caller in a busy-loop before teardown finishes.
+ */
+void miscfifo_poison_notify(struct miscfifo *mf)
+{
+	wake_up_interruptible_all(&mf->clients.wait);
+}
+EXPORT_SYMBOL_GPL(miscfifo_poison_notify);
+
+static bool read_is_ready(struct miscfifo_client *client, ssize_t *rc)
+{
+	int cancel = atomic_xchg(&client->cancel, 0);
+
+	if (cancel) {
+		*rc = -ECANCELED;
+		return true;
+	}
+
+	if (READ_ONCE(client->poisoned)) {
+		*rc = -ENODEV;
+		return true;
+	}
+
+	*rc = 0;
+	return !kfifo_is_empty(&client->fifo);
+}
+
+ssize_t miscfifo_fop_read(struct file *file,
+	char __user *buf, size_t len, loff_t *off)
+{
+	ssize_t rc;
+	unsigned int copied;
+	struct miscfifo_client *client = file->private_data;
+
+	/*
+	 * Optimistic early check — avoids taking consumer_lock when
+	 * already poisoned.  If poisoning races with this check,
+	 * read_is_ready() catches it after poison_notify() wakes us.
+	 */
+	if (READ_ONCE(client->poisoned))
+		return -ENODEV;
+
+	mutex_lock(&client->consumer_lock);
+	if (kfifo_is_empty(&client->fifo)) {
+		ssize_t rc_ready;
+
+		if (file->f_flags & O_NONBLOCK) {
+			/* Prioritize cancellation over "try again" */
+			if (atomic_xchg(&client->cancel, 0))
+				rc = -ECANCELED;
+			else
+				rc = -EAGAIN;
+
+			goto exit_unlock;
+		}
+
+		mutex_unlock(&client->consumer_lock);
+		rc = wait_event_interruptible(client->mf->clients.wait,
+					      read_is_ready(client, &rc_ready));
+		if (rc)
+			return rc;
+		if (rc_ready)
+			return rc_ready;
+		mutex_lock(&client->consumer_lock);
+	}
+
+	if (kfifo_peek_len(&client->fifo) <= len) {
+		rc = kfifo_to_user(&client->fifo, buf, len, &copied);
+		rc = (rc == 0) ? copied : -EFAULT;
+	} else
+		rc = -ENOBUFS;
+exit_unlock:
+	mutex_unlock(&client->consumer_lock);
+
+	return rc;
+}
+EXPORT_SYMBOL(miscfifo_fop_read);
+
+ssize_t miscfifo_fop_read_many(struct file *file,
+	char __user *buf, size_t len, loff_t *off)
+{
+	ssize_t rc;
+	unsigned int total_copied = 0;
+	struct miscfifo_client *client = file->private_data;
+
+	/* Optimistic early check; read_is_ready() is the real guard. */
+	if (READ_ONCE(client->poisoned))
+		return -ENODEV;
+
+	mutex_lock(&client->consumer_lock);
+	if (kfifo_is_empty(&client->fifo)) {
+		ssize_t rc_ready;
+
+		if (file->f_flags & O_NONBLOCK) {
+			/* Prioritize cancellation over "try again" */
+			if (atomic_xchg(&client->cancel, 0))
+				rc = -ECANCELED;
+			else
+				rc = -EAGAIN;
+
+			goto exit_unlock;
+		}
+
+		mutex_unlock(&client->consumer_lock);
+		rc = wait_event_interruptible(client->mf->clients.wait,
+					      read_is_ready(client, &rc_ready));
+		if (rc)
+			return rc;
+		if (rc_ready)
+			return rc_ready;
+		mutex_lock(&client->consumer_lock);
+	}
+
+	if (kfifo_peek_len(&client->fifo) > len) {
+		rc = -ENOBUFS;
+		goto exit_unlock;
+	}
+
+	while (true) {
+		unsigned int copied;
+
+		/*
+		 * Check whether there is data in the queue, or whether the
+		 * next record might not fit into the user buffer. If either
+		 * condition is true, we will exit the loop and return the
+		 * data we have copied out so far.
+		 *
+		 * Note: kfifo_peek_len might return a garbage value if
+		 * the fifo is empty, hence we need the explicit check whether
+		 * the fifo is empty, so that we don't copy out zero bytes
+		 * in kfifo_to_user.
+		 */
+		if (kfifo_is_empty(&client->fifo) || kfifo_peek_len(&client->fifo) > len)
+			break;
+		rc = kfifo_to_user(&client->fifo, buf, len, &copied);
+		if (rc != 0)
+			break;
+
+		total_copied += copied;
+		buf += copied;
+		len -= copied;
+	}
+	rc = total_copied;
+exit_unlock:
+	mutex_unlock(&client->consumer_lock);
+
+	return rc;
+}
+EXPORT_SYMBOL(miscfifo_fop_read_many);
+
+unsigned int miscfifo_fop_poll(struct file *file,
+	struct poll_table_struct *pt)
+{
+	unsigned int mask = 0;
+	struct miscfifo_client *client = file->private_data;
+
+	if (READ_ONCE(client->poisoned))
+		return POLLERR;
+
+	if (atomic_read(&client->cancel)) {
+		/*
+		 * Process cancellations in read*. Breaking out of poll here allows callers
+		 * to call read*. The same applies below.
+		 */
+		mask |= POLLIN;
+	} else if (kfifo_len(&client->fifo))
+		mask |= POLLIN;
+
+	if (!mask) {
+		poll_wait(file, &client->mf->clients.wait, pt);
+		if (atomic_read(&client->cancel))
+			mask |= POLLIN;
+		else if (kfifo_len(&client->fifo))
+			mask |= POLLIN;
+	}
+
+	return mask;
+}
+EXPORT_SYMBOL(miscfifo_fop_poll);
+
+int miscfifo_fop_release(struct inode *inode, struct file *file)
+{
+	struct miscfifo_client *client = file->private_data;
+	struct miscfifo *mf = client->mf;
+
+	down_write(&mf->clients.rw_lock);
+	list_del(&client->node);
+	up_write(&mf->clients.rw_lock);
+
+	mutex_destroy(&client->context_lock);
+	mutex_destroy(&client->producer_lock);
+	mutex_destroy(&client->consumer_lock);
+
+	kfifo_free(&client->fifo);
+	kfree(client->name);
+	kfree(client);
+
+	return 0;
+}
+EXPORT_SYMBOL(miscfifo_fop_release);
+
+static void get_current_client_name(char *buf, size_t size)
+{
+	struct mm_struct *mm;
+	struct rw_semaphore *rw_sem;
+
+	mm = current->mm;
+	if (!mm)
+		goto error;
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0))
+	rw_sem = &mm->mmap_lock;
+#else
+	rw_sem = &mm->mmap_sem;
+#endif
+
+	down_read(rw_sem);
+	if (!mm->exe_file) {
+		up_read(rw_sem);
+		goto error;
+	}
+	snprintf(buf, size, "%s (%d)", mm->exe_file->f_path.dentry->d_name.name, current->pid);
+	up_read(rw_sem);
+
+	return;
+
+error:
+	snprintf(buf, size, "(unknown)");
+}
+
+int miscfifo_fop_open(struct file *file, struct miscfifo *mf)
+{
+	int rc;
+	struct miscfifo_client *client = kzalloc(sizeof(*client), GFP_KERNEL);
+
+	if (!client) {
+		rc = -ENOMEM;
+		goto exit;
+	}
+
+	/* Let's not assume anything about how atomics are implemented. */
+	atomic_set(&client->cancel, 0);
+
+	client->mf = mf;
+	rc = kfifo_alloc(&client->fifo, mf->config.kfifo_size, GFP_KERNEL);
+	if (rc)
+		goto exit_free_client;
+
+	mutex_init(&client->consumer_lock);
+	mutex_init(&client->producer_lock);
+	mutex_init(&client->context_lock);
+
+	client->name = kmalloc(CLIENT_NAME_SIZE, GFP_KERNEL);
+	if (!client->name) {
+		rc = -ENOMEM;
+		goto exit_free_kfifo;
+	}
+	get_current_client_name(client->name, CLIENT_NAME_SIZE);
+
+	client->file = file;
+	file->private_data = client;
+
+	down_write(&mf->clients.rw_lock);
+	list_add(&client->node, &mf->clients.list);
+	up_write(&mf->clients.rw_lock);
+
+	return 0;
+
+exit_free_kfifo:
+	kfree(&client->fifo);
+exit_free_client:
+	kfree(client);
+exit:
+	return rc;
+}
+EXPORT_SYMBOL(miscfifo_fop_open);
+
+int miscfifo_write_buf(struct miscfifo *mf, const u8 *buf, size_t len, bool *should_wake)
+{
+	struct miscfifo_client *client;
+	int rc = 0;
+	/* space needed in the fifo */
+	size_t needed = len + REC_SIZE;
+
+	if (WARN_ON(len == 0 || len > REC_MAX_LENGTH))
+		return -EINVAL;
+
+	*should_wake = false;
+
+	down_read(&mf->clients.rw_lock);
+	list_for_each_entry(client, &mf->clients.list, node) {
+		bool skip;
+
+		if (READ_ONCE(client->poisoned))
+			continue;
+
+		mutex_lock(&client->context_lock);
+		skip = mf->config.filter_fn &&
+			!mf->config.filter_fn(client->context, NULL, 0, buf, len);
+		mutex_unlock(&client->context_lock);
+
+		if (skip)
+			continue;
+
+		*should_wake = true;
+
+		mutex_lock(&client->producer_lock);
+		if (kfifo_avail(&client->fifo) >= needed) {
+			client->logged_fifo_full = false;
+			kfifo_in(&client->fifo, buf, len);
+		} else {
+			if (!client->logged_fifo_full) {
+				dev_info_ratelimited(mf->dev, "miscfifo %s opened by %s is full",
+						     client->file->f_path.dentry ?
+						     (char *)client->file->f_path.dentry->d_name.name :
+						     "unknown",
+						     client->name);
+				client->logged_fifo_full = true;
+			}
+			rc++;
+		}
+
+		mutex_unlock(&client->producer_lock);
+	}
+	up_read(&mf->clients.rw_lock);
+
+	return rc;
+}
+EXPORT_SYMBOL(miscfifo_write_buf);
+
+int miscfifo_send_buf(struct miscfifo *mf, const u8 *buf, size_t len) {
+	bool should_wake;
+	int rc = miscfifo_write_buf(mf, buf, len, &should_wake);
+
+	if (should_wake)
+		wake_up_interruptible(&mf->clients.wait);
+
+	return rc;
+}
+EXPORT_SYMBOL(miscfifo_send_buf);
+
+void miscfifo_wake_waiters(struct miscfifo *mf)
+{
+	wake_up_interruptible(&mf->clients.wait);
+}
+EXPORT_SYMBOL(miscfifo_wake_waiters);
+
+void miscfifo_wake_waiters_sync(struct miscfifo *mf)
+{
+	wake_up_interruptible_sync(&mf->clients.wait);
+}
+EXPORT_SYMBOL(miscfifo_wake_waiters_sync);
+
+void miscfifo_client_clear(struct miscfifo_client *client)
+{
+	mutex_lock(&client->consumer_lock);
+	mutex_lock(&client->producer_lock);
+
+	kfifo_reset(&client->fifo);
+	client->logged_fifo_full = false;
+	atomic_set(&client->cancel, 0);
+
+	mutex_unlock(&client->producer_lock);
+	mutex_unlock(&client->consumer_lock);
+}
+EXPORT_SYMBOL(miscfifo_client_clear);
+
+void miscfifo_clear(struct miscfifo *mf)
+{
+	struct miscfifo_client *client;
+
+	down_read(&mf->clients.rw_lock);
+	list_for_each_entry(client, &mf->clients.list, node) {
+		miscfifo_client_clear(client);
+	}
+	up_read(&mf->clients.rw_lock);
+}
+EXPORT_SYMBOL(miscfifo_clear);
+
+static int miscfifo_register(struct device *dev, struct miscfifo *mf)
+{
+	if (!try_module_get(THIS_MODULE))
+		return -ENODEV;
+
+	mf->dev = dev;
+	init_rwsem(&mf->clients.rw_lock);
+	INIT_LIST_HEAD(&mf->clients.list);
+	init_waitqueue_head(&mf->clients.wait);
+	return 0;
+}
+
+static void devm_miscfifo_release(struct device *dev, void *res)
+{
+	struct miscfifo *mf = *(struct miscfifo **)res;
+
+	BUG_ON(!list_empty(&mf->clients.list));
+	module_put(THIS_MODULE);
+}
+
+int devm_miscfifo_register(struct device *dev, struct miscfifo *mf)
+{
+	struct miscfifo **mfp;
+	int rc;
+
+	mfp = devres_alloc(devm_miscfifo_release, sizeof(*mfp), GFP_KERNEL);
+	if (!mfp)
+		return -ENOMEM;
+
+	rc = miscfifo_register(dev, mf);
+	if (!rc) {
+		*mfp = mf;
+		devres_add(dev, mfp);
+	} else {
+		devres_free(mfp);
+	}
+
+	return rc;
+}
+EXPORT_SYMBOL(devm_miscfifo_register);
+
+static int devm_miscfifo_match(struct device *dev, void *res, void *data)
+{
+	struct mf *mf = res;
+
+	if (WARN_ON(!mf))
+		return 0;
+
+	return mf == data;
+}
+
+void devm_miscfifo_unregister(struct device *dev, struct miscfifo *mf)
+{
+	WARN_ON(devres_release(dev, devm_miscfifo_release, devm_miscfifo_match, mf));
+}
+EXPORT_SYMBOL(devm_miscfifo_unregister);
+
+void *miscfifo_fop_xchg_context(struct file *file, void *context)
+{
+	struct miscfifo_client *client = file->private_data;
+	void *old = client->context;
+
+	mutex_lock(&client->context_lock);
+	client->context = context;
+	mutex_unlock(&client->context_lock);
+
+	return old;
+}
+EXPORT_SYMBOL(miscfifo_fop_xchg_context);
+
+
+MODULE_AUTHOR("Khalid Zubair <kzubair@oculus.com>");
+MODULE_DESCRIPTION("General purpose chardev fifo implementation");
+MODULE_LICENSE("GPL");
