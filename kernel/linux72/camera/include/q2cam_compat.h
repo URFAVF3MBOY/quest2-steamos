@@ -19,6 +19,9 @@
 #include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
 #include <linux/of.h>
+#include <linux/platform_device.h>
+#include <linux/dma-buf.h>
+#include <linux/iosys-map.h>
 #include <linux/vmalloc.h>
 #include <linux/debugfs.h>
 #include <linux/file.h>

@@ -1882,7 +1882,6 @@ static int cam_smmu_map_buffer_validate(struct dma_buf *buf,
 		iommu_cb_set.cb_info[idx].shared_mapping_size += *len_ptr;
 	} else if (region_id == CAM_SMMU_REGION_IO) {
 		if (!dis_delayed_unmap)
-			attach->dma_map_attrs |= DMA_ATTR_DELAYED_UNMAP;
 
 		table = dma_buf_map_attachment(attach, dma_dir);
 		if (IS_ERR_OR_NULL(table)) {
@@ -1904,7 +1903,7 @@ static int cam_smmu_map_buffer_validate(struct dma_buf *buf,
 
 	CAM_DBG(CAM_SMMU,
 		"iova=%pK, region_id=%d, paddr=%pK, len=%d, dma_map_attrs=%d",
-		iova, region_id, *paddr_ptr, *len_ptr, attach->dma_map_attrs);
+		iova, region_id, *paddr_ptr, *len_ptr, 0);
 
 	if (iommu_cb_set.map_profile_enable) {
 		CAM_GET_TIMESTAMP(ts2);
@@ -2066,7 +2065,7 @@ static int cam_smmu_unmap_buf_and_remove_from_list(
 	CAM_DBG(CAM_SMMU,
 		"region_id=%d, paddr=%pK, len=%d, dma_map_attrs=%d",
 		mapping_info->region_id, mapping_info->paddr, mapping_info->len,
-		mapping_info->attach->dma_map_attrs);
+		0);
 
 	if (iommu_cb_set.map_profile_enable)
 		CAM_GET_TIMESTAMP(ts1);
@@ -2615,7 +2614,6 @@ static int cam_smmu_map_stage2_buffer_and_add_to_list(int idx, int ion_fd,
 		goto err_put;
 	}
 
-	attach->dma_map_attrs |= DMA_ATTR_SKIP_CPU_SYNC;
 
 	table = dma_buf_map_attachment(attach, dma_dir);
 	if (IS_ERR_OR_NULL(table)) {
