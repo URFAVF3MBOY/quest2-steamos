@@ -971,6 +971,11 @@ static int cam_mem_mgr_cleanup_table(void)
 		}
 
 		if (tbl.bufq[i].dma_buf) {
+			/* The kernel mapping is a dma_buf vmap here; releasing a mapped buffer is a BUG */
+			if (tbl.bufq[i].kmdvaddr) {
+				cam_mem_util_unmap_cpu_va(tbl.bufq[i].dma_buf, tbl.bufq[i].kmdvaddr);
+				tbl.bufq[i].kmdvaddr = 0;
+			}
 			dma_buf_put(tbl.bufq[i].dma_buf);
 			tbl.bufq[i].dma_buf = NULL;
 		}

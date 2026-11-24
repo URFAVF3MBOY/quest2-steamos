@@ -1,5 +1,5 @@
 diff --git a/drivers/misc/fastrpc.c b/drivers/misc/fastrpc.c
-index 8c67a08..d246274 100644
+index 8c67a08..fc07d67 100644
 --- a/drivers/misc/fastrpc.c
 +++ b/drivers/misc/fastrpc.c
 @@ -281,6 +281,7 @@ struct fastrpc_channel_ctx {
@@ -149,7 +149,7 @@ index 8c67a08..d246274 100644
  		break;
  	case FASTRPC_IOCTL_MEM_MAP:
  		err = fastrpc_req_mem_map(fl, argp);
-@@ -2371,6 +2391,282 @@ static long fastrpc_device_ioctl(struct file *file, unsigned int cmd,
+@@ -2371,6 +2391,315 @@ static long fastrpc_device_ioctl(struct file *file, unsigned int cmd,
  	return err;
  }
  
@@ -244,6 +244,16 @@ index 8c67a08..d246274 100644
 +#define ADSPRPC_IOCTL_MMAP_64		_IOWR('R', 14, struct adsprpc_mmap)
 +#define ADSPRPC_IOCTL_MUNMAP_64		_IOWR('R', 15, struct adsprpc_munmap)
 +#define ADSPRPC_IOCTL_GET_DSP_INFO	_IOWR('R', 16, struct adsprpc_dsp_caps)
++
++struct adsprpc_invoke2 {
++	u32 req;
++	u64 invparam;
++	u32 size;
++	s32 err;
++};
++
++#define ADSPRPC_IOCTL_INVOKE2		_IOWR('R', 18, struct adsprpc_invoke2)
++#define ADSPRPC_INVOKE2_KERNEL_OPTIMIZATIONS	3
 +
 +#define ADSPRPC_INIT_ATTACH		0
 +#define ADSPRPC_INIT_CREATE		1
@@ -343,7 +353,7 @@ index 8c67a08..d246274 100644
 +	return -ENOTTY;
 +}
 +
-+static long adsprpc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
++static long adsprpc_ioctl_one(struct file *file, unsigned int cmd, unsigned long arg)
 +{
 +	struct fastrpc_user *fl = (struct fastrpc_user *)file->private_data;
 +	char __user *argp = (char __user *)arg;
@@ -387,6 +397,18 @@ index 8c67a08..d246274 100644
 +		return 0;
 +	case ADSPRPC_IOCTL_SETMODE:
 +		return 0;
++	case ADSPRPC_IOCTL_INVOKE2: {
++		struct adsprpc_invoke2 i2;
++		u32 off = 0;
++
++		if (copy_from_user(&i2, argp, sizeof(i2)))
++			return -EFAULT;
++		if (i2.req == ADSPRPC_INVOKE2_KERNEL_OPTIMIZATIONS && i2.size == sizeof(u32))
++			return copy_to_user(u64_to_user_ptr(i2.invparam), &off, sizeof(off)) ? -EFAULT : 0;
++		dev_warn_ratelimited(&fl->cctx->rpdev->dev, "adsprpc: %s: invoke2 request %u (size %u) not supported\n",
++				     current->comm, i2.req, i2.size);
++		return -ENOTTY;
++	}
 +	case ADSPRPC_IOCTL_GETINFO: {
 +		u32 info = 1;	/* the DSP sits behind an SMMU */
 +
@@ -422,6 +444,17 @@ index 8c67a08..d246274 100644
 +	return -ENOTTY;
 +}
 +
++static long adsprpc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
++{
++	struct fastrpc_user *fl = (struct fastrpc_user *)file->private_data;
++	long err = adsprpc_ioctl_one(file, cmd, arg);
++
++	if (err && err != -ENOTTY)
++		dev_warn_ratelimited(&fl->cctx->rpdev->dev, "adsprpc: %s: ioctl nr %u failed: %ld\n",
++				     current->comm, _IOC_NR(cmd), err);
++	return err;
++}
++
 +static const struct file_operations adsprpc_fops = {
 +	.open = fastrpc_device_open,
 +	.release = fastrpc_device_release,
@@ -432,7 +465,7 @@ index 8c67a08..d246274 100644
  static const struct file_operations fastrpc_fops = {
  	.open = fastrpc_device_open,
  	.release = fastrpc_device_release,
-@@ -2495,6 +2791,38 @@ static int fastrpc_device_register(struct device *dev, struct fastrpc_channel_ct
+@@ -2495,6 +2824,38 @@ static int fastrpc_device_register(struct device *dev, struct fastrpc_channel_ct
  	return err;
  }
  
@@ -471,7 +504,7 @@ index 8c67a08..d246274 100644
  static int fastrpc_get_domain_id(const char *domain)
  {
  	if (!strncmp(domain, "adsp", 4))
-@@ -2611,6 +2939,13 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
+@@ -2611,6 +2972,13 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
  		err = fastrpc_device_register(rdev, data, false, domain);
  		if (err)
  			goto err_deregister_fdev;
@@ -485,7 +518,7 @@ index 8c67a08..d246274 100644
  		break;
  	default:
  		err = -EINVAL;
-@@ -2677,6 +3012,7 @@ static void fastrpc_rpmsg_remove(struct rpmsg_device *rpdev)
+@@ -2677,6 +3045,7 @@ static void fastrpc_rpmsg_remove(struct rpmsg_device *rpdev)
  
  	if (cctx->secure_fdevice)
  		misc_deregister(&cctx->secure_fdevice->miscdev);
