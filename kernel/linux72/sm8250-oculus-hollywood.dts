@@ -230,6 +230,13 @@
 };
 
 /* SyncBoss: Meta's MCU for the IMU, proximity sensor and controller radio (firmware v59), as in Quest OS. */
+/* SyncBoss on SPI bus 1 as in Quest OS: Meta's services open /sys/bus/spi/devices/spi1.0/control/te_timestamp. */
+/ {
+	aliases {
+		spi1 = &spi19;
+	};
+};
+
 &gpi_dma2 {
 	status = "okay";
 };
