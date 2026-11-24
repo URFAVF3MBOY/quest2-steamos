@@ -454,6 +454,12 @@
  * CPAS: camera power, clocks and bandwidth.
  */
 &{/soc@0} {
+		/* The request manager: the camera's root device (/dev/video0, media0) the other blocks register under */
+		qcom,cam-req-mgr {
+			compatible = "qcom,cam-req-mgr";
+			status = "okay";
+		};
+
 		qcom,cam-cpas@ac40000 {
 			cell-index = <0x0>;
 			compatible = "qcom,cam-cpas";
