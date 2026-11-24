@@ -62,7 +62,7 @@ log "GPU firmware: $(ls /lib/firmware/qcom /lib/firmware/qcom/sm8250/hollywood |
 stage2() {
   mountpoint -q /mnt/root || return 1
   mkdir -p /mnt/ov /mnt/new
-  mount -t tmpfs -o size=2g,mode=755 tmpfs /mnt/ov || return 1
+  mount -t tmpfs -o size=3g,mode=755 tmpfs /mnt/ov || return 1
   mkdir -p /mnt/ov/upper /mnt/ov/work
   mount -t overlay overlay -o lowerdir=/mnt/root,upperdir=/mnt/ov/upper,workdir=/mnt/ov/work /mnt/new || return 1
   N=/mnt/new
@@ -78,6 +78,14 @@ stage2() {
   printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin root --noclear --keep-baud 115200 - ${TERM}\n' \
     > $S/serial-getty@ttyGS0.service.d/autologin.conf
   ln -sf /usr/lib/systemd/system/serial-getty@.service $S/getty.target.wants/serial-getty@ttyGS0.service
+  # Valve's health checks repair a SteamVR that fails to start by unpacking Steam again (2.5 GB, into the RAM overlay)
+  # and by switching the Frame's A/B boot slot: both answer "fine" here.
+  for f in usr/share/deckard/steam-health-check usr/share/deckard/steamvr-health-check usr/bin/steamos-bootconf; do
+    [ -e $N/$f ] && printf '#!/bin/sh\nexit 0\n' > $N/$f
+  done
+  # The compositor's own output (asserts, crashes) into /tmp/vrcompositor-stderr.txt.
+  L=$N/opt/steamvr/bin/linuxarm64/vrcompositor-launcher.sh
+  [ -e $L ] && sed -i 's|^exec "$ROOT/vrcompositor-launcher" "$@"$|exec "$ROOT/vrcompositor-launcher" "$@" >>/tmp/vrcompositor-stderr.txt 2>\&1|' $L
   umount /mnt/modem 2>/dev/null
   log "stage 2: switching to SteamOS on $U (RAM overlay)"
   kill -9 -1
