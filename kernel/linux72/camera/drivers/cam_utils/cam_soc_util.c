@@ -5,6 +5,8 @@
  */
 
 #include <linux/of.h>
+#include <linux/pm_runtime.h>
+#include <linux/pm_domain.h>
 #include <linux/clk.h>
 #include <linux/slab.h>
 #include <linux/gpio.h>
@@ -1518,6 +1520,36 @@ static int cam_soc_util_request_pinctrl(
 	return 0;
 }
 
+/*
+ * On this kernel the camera GDSCs are power domains of the camera clock controller, not regulators: a supply
+ * whose name is listed in the node's power-domain-names is switched through runtime PM of that domain.
+ */
+static struct device *cam_soc_util_get_power_domain(struct device *dev, const char *name)
+{
+	struct device *pd;
+	int n = of_count_phandle_with_args(dev->of_node, "power-domains", "#power-domain-cells");
+
+	if (of_property_match_string(dev->of_node, "power-domain-names", name) < 0)
+		return NULL;
+	if (n == 1) {
+		/* A single domain is attached to the device itself */
+		pm_runtime_enable(dev);
+		return dev;
+	}
+	pd = dev_pm_domain_attach_by_name(dev, name);
+	return IS_ERR_OR_NULL(pd) ? ERR_PTR(-ENODEV) : pd;
+}
+
+static int cam_soc_util_pd_on(struct device *pd, const char *name)
+{
+	int rc = pm_runtime_resume_and_get(pd);
+
+	if (rc)
+		CAM_ERR(CAM_UTIL, "%s power domain on failed %d", name, rc);
+	return rc;
+}
+
+
 static void cam_soc_util_regulator_disable_default(
 	struct cam_hw_soc_info *soc_info)
 {
@@ -1525,6 +1557,10 @@ static void cam_soc_util_regulator_disable_default(
 	uint32_t num_rgltr = soc_info->num_rgltr;
 
 	for (j = num_rgltr-1; j >= 0; j--) {
+		if (soc_info->rgltr_pd[j]) {
+			pm_runtime_put_sync(soc_info->rgltr_pd[j]);
+			continue;
+		}
 		if (soc_info->rgltr_ctrl_support == true) {
 			cam_soc_util_regulator_disable(soc_info->rgltr[j],
 				soc_info->rgltr_name[j],
@@ -1546,7 +1582,9 @@ static int cam_soc_util_regulator_enable_default(
 	uint32_t num_rgltr = soc_info->num_rgltr;
 
 	for (j = 0; j < num_rgltr; j++) {
-		if (soc_info->rgltr_ctrl_support == true) {
+		if (soc_info->rgltr_pd[j]) {
+			rc = cam_soc_util_pd_on(soc_info->rgltr_pd[j], soc_info->rgltr_name[j]);
+		} else if (soc_info->rgltr_ctrl_support == true) {
 			rc = cam_soc_util_regulator_enable(soc_info->rgltr[j],
 				soc_info->rgltr_name[j],
 				soc_info->rgltr_min_volt[j],
@@ -1569,6 +1607,10 @@ static int cam_soc_util_regulator_enable_default(
 disable_rgltr:
 
 	for (j--; j >= 0; j--) {
+		if (soc_info->rgltr_pd[j]) {
+			pm_runtime_put_sync(soc_info->rgltr_pd[j]);
+			continue;
+		}
 		if (soc_info->rgltr_ctrl_support == true) {
 			cam_soc_util_regulator_disable(soc_info->rgltr[j],
 				soc_info->rgltr_name[j],
@@ -1628,6 +1670,17 @@ int cam_soc_util_request_platform_resource(
 			CAM_ERR(CAM_UTIL, "can't find regulator name");
 			goto put_regulator;
 		}
+
+		soc_info->rgltr_pd[i] = cam_soc_util_get_power_domain(soc_info->dev,
+			soc_info->rgltr_name[i]);
+		if (IS_ERR(soc_info->rgltr_pd[i])) {
+			rc = PTR_ERR(soc_info->rgltr_pd[i]);
+			soc_info->rgltr_pd[i] = NULL;
+			CAM_ERR(CAM_UTIL, "%s power domain not found", soc_info->rgltr_name[i]);
+			goto put_regulator;
+		}
+		if (soc_info->rgltr_pd[i])
+			continue;
 
 		rc = cam_soc_util_get_regulator(soc_info->dev,
 			&soc_info->rgltr[i],

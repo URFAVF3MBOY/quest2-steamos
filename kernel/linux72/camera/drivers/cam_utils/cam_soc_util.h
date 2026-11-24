@@ -198,6 +198,7 @@ struct cam_hw_soc_info {
 	uint32_t                        rgltr_op_mode[CAM_SOC_MAX_REGULATOR];
 	uint32_t                        rgltr_type[CAM_SOC_MAX_REGULATOR];
 	struct regulator               *rgltr[CAM_SOC_MAX_REGULATOR];
+	struct device                  *rgltr_pd[CAM_SOC_MAX_REGULATOR];
 	uint32_t                        rgltr_delay[CAM_SOC_MAX_REGULATOR];
 
 	uint32_t                        use_shared_clk;
