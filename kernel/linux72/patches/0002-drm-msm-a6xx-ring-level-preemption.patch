@@ -1,0 +1,14 @@
+diff --git a/drivers/gpu/drm/msm/adreno/a6xx_preempt.c b/drivers/gpu/drm/msm/adreno/a6xx_preempt.c
+--- a/drivers/gpu/drm/msm/adreno/a6xx_preempt.c
++++ b/drivers/gpu/drm/msm/adreno/a6xx_preempt.c
+@@ -382,8 +382,8 @@ void a6xx_preempt_init(struct msm_gpu *gpu)
+ 			goto fail;
+ 	}
+
+-	/* TODO: make this configurable? */
+-	a6xx_gpu->preempt_level = 1;
++	/* Adreno 650 hangs mid-frame when preempted between draws: switch rings only at submit boundaries before a7xx */
++	a6xx_gpu->preempt_level = adreno_is_a7xx(adreno_gpu) ? 1 : 0;
+ 	a6xx_gpu->uses_gmem = 1;
+ 	a6xx_gpu->skip_save_restore = 1;
+
