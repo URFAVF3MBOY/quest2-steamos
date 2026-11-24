@@ -2840,7 +2840,7 @@ static int syncboss_probe(struct spi_device *spi)
 	irq_set_irq_wake(devdata->ready_irq, /*on*/ 1);
 	status = devm_request_irq(dev, devdata->ready_irq,
 				  isr_data_ready,
-				  IRQF_ONESHOT | IRQF_TRIGGER_RISING,
+				  IRQF_TRIGGER_RISING,
 				  devdata->misc.name, devdata);
 	if (status < 0) {
 		dev_err(dev, "failed to get data ready irq, error %d", status);
@@ -2851,7 +2851,7 @@ static int syncboss_probe(struct spi_device *spi)
 		devdata->timesync_irq = gpiod_to_irq(devdata->gpio_timesync);
 		status = devm_request_irq(&spi->dev, devdata->timesync_irq,
 				timesync_irq_handler,
-				IRQF_ONESHOT | IRQF_TRIGGER_RISING,
+				IRQF_TRIGGER_RISING,
 				devdata->misc.name, devdata);
 		if (status < 0) {
 			dev_err(dev, "failed to get timesync irq, error %d", status);
