@@ -309,6 +309,19 @@ static void syncboss_dec_mcu_client_count_locked(struct syncboss_dev_data *devda
 	}
 }
 
+/* The controller's own (un)prepare_transfer_hardware, taken over while streaming; upstream geni has none. */
+static int syncboss_prepare_hw(struct syncboss_dev_data *devdata)
+{
+	return devdata->spi_prepare_ops.prepare_transfer_hardware ?
+		devdata->spi_prepare_ops.prepare_transfer_hardware(devdata->spi->controller) : 0;
+}
+
+static void syncboss_unprepare_hw(struct syncboss_dev_data *devdata)
+{
+	if (devdata->spi_prepare_ops.unprepare_transfer_hardware)
+		devdata->spi_prepare_ops.unprepare_transfer_hardware(devdata->spi->controller);
+}
+
 /* A GPIO named <prop>-gpios in the device tree, used at raw levels as before; NULL when absent. */
 static struct gpio_desc *syncboss_gpio(struct device *dev, const char *prop)
 {
@@ -1793,7 +1806,7 @@ static int syncboss_spi_transfer_thread(void *ptr)
 
 		if (use_fastpath && ctx.msg_to_send) {
 			if (ctx.prepared_smsg && ctx.smsg != ctx.prepared_smsg) {
-				status = devdata->spi_prepare_ops.unprepare_message(spi->master, &ctx.prepared_smsg->spi_msg);
+				status = devdata->spi_prepare_ops.unprepare_message(spi->controller, &ctx.prepared_smsg->spi_msg);
 				if (status) {
 					dev_err(&spi->dev, "failed to unprepare msg: %d", status);
 					break;
@@ -1802,14 +1815,14 @@ static int syncboss_spi_transfer_thread(void *ptr)
 			}
 
 			if (!ctx.prepared_smsg) {
-				status = devdata->spi_prepare_ops.prepare_message(spi->master, &ctx.smsg->spi_msg);
+				status = devdata->spi_prepare_ops.prepare_message(spi->controller, &ctx.smsg->spi_msg);
 				if (status) {
 					dev_err(&spi->dev, "failed to prepare msg: %d", status);
 					break;
 				}
 				ctx.prepared_smsg = ctx.smsg;
 			}
-			spi->master->cur_msg = &ctx.smsg->spi_msg;
+			spi->controller->cur_msg = &ctx.smsg->spi_msg;
 		}
 
 		status = sleep_if_mcu_not_ready(devdata, &timing, ctx.msg_to_send);
@@ -1886,8 +1899,8 @@ static int syncboss_spi_transfer_thread(void *ptr)
 		if (ctx.msg_to_send) {
 			if (ctx.prepared_smsg) {
 				BUG_ON(ctx.smsg != ctx.prepared_smsg);
-				devdata->spi_prepare_ops.unprepare_message(spi->master, &ctx.prepared_smsg->spi_msg);
-				spi->master->cur_msg = NULL;
+				devdata->spi_prepare_ops.unprepare_message(spi->controller, &ctx.prepared_smsg->spi_msg);
+				spi->controller->cur_msg = NULL;
 				ctx.prepared_smsg = NULL;
 			}
 			kfree(ctx.smsg);
@@ -1896,8 +1909,8 @@ static int syncboss_spi_transfer_thread(void *ptr)
 	}
 
 	if (ctx.prepared_smsg) {
-		devdata->spi_prepare_ops.unprepare_message(spi->master, &ctx.prepared_smsg->spi_msg);
-		spi->master->cur_msg = NULL;
+		devdata->spi_prepare_ops.unprepare_message(spi->controller, &ctx.prepared_smsg->spi_msg);
+		spi->controller->cur_msg = NULL;
 	}
 
 	/*
@@ -2090,29 +2103,29 @@ static int send_dummy_smsg(struct syncboss_dev_data *devdata)
 	spi_message_add_tail(spi_xfer, &dummy_smsg->spi_msg);
 	dummy_smsg->spi_msg.spi = devdata->spi;
 
-	spi_bus_lock(devdata->spi->master);
-	status = devdata->spi_prepare_ops.prepare_transfer_hardware(devdata->spi->master);
+	spi_bus_lock(devdata->spi->controller);
+	status = syncboss_prepare_hw(devdata);
 	if (status)
 		goto error;
 
 	if (devdata->use_fastpath) {
-		status = devdata->spi_prepare_ops.prepare_message(devdata->spi->master, &dummy_smsg->spi_msg);
+		status = devdata->spi_prepare_ops.prepare_message(devdata->spi->controller, &dummy_smsg->spi_msg);
 		if (status)
 			goto error_after_prepare_hw;
 
-		devdata->spi->master->cur_msg = &dummy_smsg->spi_msg;
+		devdata->spi->controller->cur_msg = &dummy_smsg->spi_msg;
 		status = spi_fastpath_transfer(devdata->spi, &dummy_smsg->spi_msg);
 
-		devdata->spi_prepare_ops.unprepare_message(devdata->spi->master, &dummy_smsg->spi_msg);
-		devdata->spi->master->cur_msg = NULL;
+		devdata->spi_prepare_ops.unprepare_message(devdata->spi->controller, &dummy_smsg->spi_msg);
+		devdata->spi->controller->cur_msg = NULL;
 	} else {
 		status = spi_sync_locked(devdata->spi, &dummy_smsg->spi_msg);
 	}
 
 error_after_prepare_hw:
-	devdata->spi_prepare_ops.unprepare_transfer_hardware(devdata->spi->master);
+	syncboss_unprepare_hw(devdata);
 error:
-	spi_bus_unlock(devdata->spi->master);
+	spi_bus_unlock(devdata->spi->controller);
 	kfree(dummy_smsg);
 	return status;
 }
@@ -2122,15 +2135,15 @@ static void override_spi_prepare_ops(struct syncboss_dev_data *devdata)
 	struct spi_device *spi = devdata->spi;
 
 	if (devdata->use_fastpath) {
-		devdata->spi_prepare_ops.prepare_message = spi->master->prepare_message;
-		devdata->spi_prepare_ops.unprepare_message = spi->master->unprepare_message;
-		spi->master->prepare_message = NULL;
-		spi->master->unprepare_message = NULL;
+		devdata->spi_prepare_ops.prepare_message = spi->controller->prepare_message;
+		devdata->spi_prepare_ops.unprepare_message = spi->controller->unprepare_message;
+		spi->controller->prepare_message = NULL;
+		spi->controller->unprepare_message = NULL;
 	}
-	devdata->spi_prepare_ops.prepare_transfer_hardware = spi->master->prepare_transfer_hardware;
-	devdata->spi_prepare_ops.unprepare_transfer_hardware = spi->master->unprepare_transfer_hardware;
-	spi->master->prepare_transfer_hardware = NULL;
-	spi->master->unprepare_transfer_hardware = NULL;
+	devdata->spi_prepare_ops.prepare_transfer_hardware = spi->controller->prepare_transfer_hardware;
+	devdata->spi_prepare_ops.unprepare_transfer_hardware = spi->controller->unprepare_transfer_hardware;
+	spi->controller->prepare_transfer_hardware = NULL;
+	spi->controller->unprepare_transfer_hardware = NULL;
 }
 
 static void restore_spi_prepare_ops(struct syncboss_dev_data *devdata)
@@ -2138,11 +2151,11 @@ static void restore_spi_prepare_ops(struct syncboss_dev_data *devdata)
 	struct spi_device *spi = devdata->spi;
 
 	if (devdata->use_fastpath) {
-		spi->master->prepare_message = devdata->spi_prepare_ops.prepare_message;
-		spi->master->unprepare_message = devdata->spi_prepare_ops.unprepare_message;
+		spi->controller->prepare_message = devdata->spi_prepare_ops.prepare_message;
+		spi->controller->unprepare_message = devdata->spi_prepare_ops.unprepare_message;
 	}
-	spi->master->prepare_transfer_hardware = devdata->spi_prepare_ops.prepare_transfer_hardware;
-	spi->master->unprepare_transfer_hardware = devdata->spi_prepare_ops.unprepare_transfer_hardware;
+	spi->controller->prepare_transfer_hardware = devdata->spi_prepare_ops.prepare_transfer_hardware;
+	spi->controller->unprepare_transfer_hardware = devdata->spi_prepare_ops.unprepare_transfer_hardware;
 }
 
 static int wake_mcu_by_pin_reset(struct syncboss_dev_data *devdata)
@@ -2303,16 +2316,16 @@ static int start_streaming_locked(struct syncboss_dev_data *devdata)
 	 * Hold the SPI bus lock when streaming, so we can use spi_sync_locked() and
 	 * avoid per-transaction lock acquisition.
 	 */
-	spi_bus_lock(devdata->spi->master);
+	spi_bus_lock(devdata->spi->controller);
 
-	status = devdata->spi_prepare_ops.prepare_transfer_hardware(devdata->spi->master);
+	status = syncboss_prepare_hw(devdata);
 	if (status)
 		goto error_after_spi_bus_lock;
 
 	atomic64_set(&devdata->transaction_ctr, 0);
 
 	if (devdata->use_fastpath) {
-		status = devdata->spi_prepare_ops.prepare_message(devdata->spi->master, &devdata->default_smsg->spi_msg);
+		status = devdata->spi_prepare_ops.prepare_message(devdata->spi->controller, &devdata->default_smsg->spi_msg);
 		if (status)
 			goto error_after_prepare_transfer_hardware;
 	}
@@ -2346,11 +2359,11 @@ static int start_streaming_locked(struct syncboss_dev_data *devdata)
 
 error_after_prepare_msg:
 	if (devdata->use_fastpath)
-		devdata->spi_prepare_ops.unprepare_message(devdata->spi->master, &devdata->default_smsg->spi_msg);
+		devdata->spi_prepare_ops.unprepare_message(devdata->spi->controller, &devdata->default_smsg->spi_msg);
 error_after_prepare_transfer_hardware:
-	devdata->spi_prepare_ops.unprepare_transfer_hardware(devdata->spi->master);
+	syncboss_unprepare_hw(devdata);
 error_after_spi_bus_lock:
-	spi_bus_unlock(devdata->spi->master);
+	spi_bus_unlock(devdata->spi->controller);
 	destroy_default_smsg_locked(devdata);
 error_after_spi_ops_update:
 	restore_spi_prepare_ops(devdata);
@@ -2430,11 +2443,11 @@ static void stop_streaming_locked(struct syncboss_dev_data *devdata)
 		signal_powerstate_event(devdata, SYNCBOSS_PROX_EVENT_SYSTEM_DOWN);
 
 	if (devdata->use_fastpath)
-		devdata->spi_prepare_ops.unprepare_message(devdata->spi->master, &devdata->default_smsg->spi_msg);
+		devdata->spi_prepare_ops.unprepare_message(devdata->spi->controller, &devdata->default_smsg->spi_msg);
 
-	devdata->spi_prepare_ops.unprepare_transfer_hardware(devdata->spi->master);
+	syncboss_unprepare_hw(devdata);
 
-	spi_bus_unlock(devdata->spi->master);
+	spi_bus_unlock(devdata->spi->controller);
 
 	/* Discard and free and pending messages that were to be sent */
 	mutex_lock(&devdata->msg_queue_lock);
@@ -2628,7 +2641,11 @@ static int init_syncboss_dev_data(struct syncboss_dev_data *devdata,
 	devdata->prox_config_version = DEFAULT_PROX_CONFIG_VERSION_VALUE;
 	devdata->powerstate_last_evt = INVALID_POWERSTATE_VALUE;
 
-	devdata->use_fastpath = of_property_read_bool(node, "oculus,syncboss-use-fastpath");
+	/*
+	 * The fastpath drove the downstream SPI controller directly; upstream's geni SPI finishes transfers
+	 * asynchronously, so transfers always go through the SPI core here.
+	 */
+	devdata->use_fastpath = false;
 
 	cpumask_setall(&devdata->cpu_affinity);
 	dev_dbg(&devdata->spi->dev, "initial SPI thread cpu affinity: %*pb\n",

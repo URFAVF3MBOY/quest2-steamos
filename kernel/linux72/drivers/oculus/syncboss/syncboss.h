@@ -50,11 +50,11 @@ struct syncboss_msg {
  * part of spi_sync()
  */
 struct spi_prepare_ops {
-	int (*prepare_transfer_hardware)(struct spi_master *ctlr);
-	int (*unprepare_transfer_hardware)(struct spi_master *ctlr);
-	int (*prepare_message)(struct spi_master *ctlr,
+	int (*prepare_transfer_hardware)(struct spi_controller *ctlr);
+	int (*unprepare_transfer_hardware)(struct spi_controller *ctlr);
+	int (*prepare_message)(struct spi_controller *ctlr,
 			       struct spi_message *message);
-	int (*unprepare_message)(struct spi_master *ctlr,
+	int (*unprepare_message)(struct spi_controller *ctlr,
 				 struct spi_message *message);
 };
 
