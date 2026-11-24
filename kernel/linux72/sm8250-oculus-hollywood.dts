@@ -460,6 +460,118 @@
 			status = "okay";
 		};
 
+		/* Camera SMMU context banks (IFE, ICP, CPAS CDM) on the apps SMMU with Quest OS's stream ids, and the CDM */
+		qcom,cam_smmu {
+			compatible = "qcom,msm-cam-smmu";
+			status = "ok";
+			msm_cam_smmu_ife {
+				compatible = "qcom,msm-cam-smmu-cb";
+				iommus = <&apps_smmu 0x800 0x400>, <&apps_smmu 0x801 0x400>, <&apps_smmu 0x840 0x400>, <&apps_smmu 0x841 0x400>, <&apps_smmu 0xc00 0x400>, <&apps_smmu 0xc01 0x400>, <&apps_smmu 0xc40 0x400>, <&apps_smmu 0xc41 0x400>;
+				qcom,iommu-dma-addr-pool = <0x7400000 0xd8c00000>;
+				label = "ife";
+				qcom,iommu-faults = "non-fatal";
+				q2cam_38d: iova-mem-map {
+					iova-mem-region-io {
+						iova-region-name = "io";
+						iova-region-start = <0x7400000>;
+						iova-region-len = <0xd8c00000>;
+						iova-region-id = <0x3>;
+						status = "ok";
+					};
+				};
+			};
+			msm_cam_smmu_icp {
+				compatible = "qcom,msm-cam-smmu-cb";
+				iommus = <&apps_smmu 0x20e2 0x400>, <&apps_smmu 0x24e2 0x400>, <&apps_smmu 0x2000 0x400>, <&apps_smmu 0x2001 0x400>, <&apps_smmu 0x2400 0x400>, <&apps_smmu 0x2401 0x400>, <&apps_smmu 0x2060 0x400>, <&apps_smmu 0x2061 0x400>, <&apps_smmu 0x2460 0x400>, <&apps_smmu 0x2461 0x400>, <&apps_smmu 0x2020 0x400>, <&apps_smmu 0x2021 0x400>, <&apps_smmu 0x2420 0x400>, <&apps_smmu 0x2421 0x400>;
+				label = "icp";
+				qcom,iommu-dma-addr-pool = <0x10c00000 0xee300000>;
+				iova-region-discard = <0xdff00000 0x300000>;
+				qcom,iommu-faults = "non-fatal";
+				q2cam_38f: iova-mem-map {
+					iova-mem-region-firmware {
+						iova-region-name = "firmware";
+						iova-region-start = <0x0>;
+						iova-region-len = <0x500000>;
+						iova-region-id = <0x0>;
+						status = "ok";
+					};
+					iova-mem-region-shared {
+						iova-region-name = "shared";
+						iova-region-start = <0x7400000>;
+						iova-region-len = <0x9600000>;
+						iova-region-id = <0x1>;
+						status = "ok";
+					};
+					iova-mem-region-secondary-heap {
+						iova-region-name = "secheap";
+						iova-region-start = <0x10a00000>;
+						iova-region-len = <0x100000>;
+						iova-region-id = <0x4>;
+						status = "ok";
+					};
+					iova-mem-region-io {
+						iova-region-name = "io";
+						iova-region-start = <0x10c00000>;
+						iova-region-len = <0xee300000>;
+						iova-region-id = <0x3>;
+						iova-region-discard = <0xdff00000 0x300000>;
+						status = "ok";
+					};
+					iova-mem-qdss-region {
+						iova-region-name = "qdss";
+						iova-region-start = <0x10b00000>;
+						iova-region-len = <0x100000>;
+						iova-region-id = <0x5>;
+						qdss-phy-addr = <0x16790000>;
+						status = "ok";
+					};
+				};
+			};
+			msm_cam_smmu_cpas_cdm {
+				compatible = "qcom,msm-cam-smmu-cb";
+				iommus = <&apps_smmu 0x20c0 0x400>, <&apps_smmu 0x24c0 0x400>;
+				label = "cpas-cdm0";
+				qcom,iommu-dma-addr-pool = <0x7400000 0xd8c00000>;
+				qcom,iommu-faults = "non-fatal";
+				q2cam_390: iova-mem-map {
+					iova-mem-region-io {
+						iova-region-name = "io";
+						iova-region-start = <0x7400000>;
+						iova-region-len = <0xd8c00000>;
+						iova-region-id = <0x3>;
+						status = "ok";
+					};
+				};
+			};
+		};
+		qcom,cam-cdm-intf {
+			compatible = "qcom,cam-cdm-intf";
+			cell-index = <0x0>;
+			label = "cam-cdm-intf";
+			num-hw-cdm = <0x3>;
+			cdm-client-names = "vfe", "vife";
+			status = "ok";
+		};
+		qcom,cpas-cdm0@ac4d000 {
+			cell-index = <0x0>;
+			compatible = "qcom,cam170-cpas-cdm0";
+			label = "cpas-cdm";
+			reg = <0x0 0xac4d000 0x0 0x1000>;
+			reg-names = "cpas-cdm";
+			reg-cam-base = <0x4d000>;
+			interrupts = <0x0 0x1cd 0x1>;
+			interrupt-names = "cpas-cdm";
+			regulator-names = "camss";
+			clock-names = "cam_cc_cpas_slow_ahb_clk", "cam_cc_cpas_ahb_clk";
+			clocks = <&camcc CAM_CC_SLOW_AHB_CLK_SRC>, <&camcc CAM_CC_CPAS_AHB_CLK>;
+			clock-rates = <0x0 0x0>;
+			clock-cntl-level = "svs";
+			cdm-client-names = "ife";
+			status = "ok";
+			power-domains = <&camcc TITAN_TOP_GDSC>;
+			power-domain-names = "camss";
+		};
+
 		qcom,cam-cpas@ac40000 {
 			cell-index = <0x0>;
 			compatible = "qcom,cam-cpas";
