@@ -167,6 +167,14 @@
 			regulator-always-on;
 		};
 
+		/* The tracking camera sensors' analog supply (cam_vana), 3.0 V as in Quest OS */
+		vreg_l10c_3p0: ldo10 {
+			regulator-name = "vreg_l10c_3p0";
+			regulator-min-microvolt = <3000000>;
+			regulator-max-microvolt = <3000000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
 		vreg_l8c_1p8: ldo8 {
 			regulator-name = "vreg_l8c_1p8";
 			regulator-min-microvolt = <1800000>;
@@ -570,6 +578,301 @@
 			status = "ok";
 			power-domains = <&camcc TITAN_TOP_GDSC>;
 			power-domain-names = "camss";
+		};
+
+		/* CCI (camera I2C) with the four tracking camera sensors behind it, as Quest OS's tree has them */
+		q2cam_383: qcom,cci@ac4f000 {
+			cell-index = <0x0>;
+			compatible = "qcom,cci";
+			reg = <0x0 0xac4f000 0x0 0x1000>;
+			reg-names = "cci";
+			reg-cam-base = <0x4f000>;
+			interrupt-names = "cci";
+			interrupts = <0x0 0x1cc 0x1>;
+			status = "ok";
+			regulator-names = "gdscr";
+			clocks = <&camcc CAM_CC_CCI_0_CLK_SRC>, <&camcc CAM_CC_CCI_0_CLK>;
+			clock-names = "cci_0_clk_src", "cci_0_clk";
+			src-clock-name = "cci_0_clk_src";
+			clock-cntl-level = "lowsvs";
+			clock-rates = <0x23c3460 0x0>;
+			pinctrl-names = "cam_default", "cam_suspend";
+			pinctrl-0 = <&q2pin_160 &q2pin_161>;
+			pinctrl-1 = <&q2pin_162 &q2pin_163>;
+			gpios = <&tlmm 101 0>, <&tlmm 102 0>, <&tlmm 103 0>, <&tlmm 104 0>;
+			gpio-req-tbl-num = <0x0 0x1 0x2 0x3>;
+			gpio-req-tbl-flags = <0x1 0x1 0x1 0x1>;
+			gpio-req-tbl-label = "CCI_I2C_DATA0", "CCI_I2C_CLK0", "CCI_I2C_DATA1", "CCI_I2C_CLK1";
+			power-domains = <&camcc TITAN_TOP_GDSC>;
+			power-domain-names = "gdscr";
+			q2cam_384: qcom,i2c_standard_mode {
+				hw-thigh = <0xc9>;
+				hw-tlow = <0xae>;
+				hw-tsu-sto = <0xcc>;
+				hw-tsu-sta = <0xe7>;
+				hw-thd-dat = <0x16>;
+				hw-thd-sta = <0xa2>;
+				hw-tbuf = <0xe3>;
+				hw-scl-stretch-en = <0x0>;
+				hw-trdhld = <0x6>;
+				hw-tsp = <0x3>;
+				cci-clk-src = <0x23c3460>;
+				status = "ok";
+			};
+			q2cam_385: qcom,i2c_fast_mode {
+				hw-thigh = <0x26>;
+				hw-tlow = <0x38>;
+				hw-tsu-sto = <0x28>;
+				hw-tsu-sta = <0x28>;
+				hw-thd-dat = <0x16>;
+				hw-thd-sta = <0x23>;
+				hw-tbuf = <0x3e>;
+				hw-scl-stretch-en = <0x0>;
+				hw-trdhld = <0x6>;
+				hw-tsp = <0x3>;
+				cci-clk-src = <0x23c3460>;
+				status = "ok";
+			};
+			q2cam_386: qcom,i2c_custom_mode {
+				hw-thigh = <0x26>;
+				hw-tlow = <0x38>;
+				hw-tsu-sto = <0x28>;
+				hw-tsu-sta = <0x28>;
+				hw-thd-dat = <0x16>;
+				hw-thd-sta = <0x23>;
+				hw-tbuf = <0x3e>;
+				hw-scl-stretch-en = <0x1>;
+				hw-trdhld = <0x6>;
+				hw-tsp = <0x3>;
+				cci-clk-src = <0x23c3460>;
+				status = "ok";
+			};
+			q2cam_387: qcom,i2c_fast_plus_mode {
+				hw-thigh = <0x10>;
+				hw-tlow = <0x16>;
+				hw-tsu-sto = <0x11>;
+				hw-tsu-sta = <0x12>;
+				hw-thd-dat = <0x10>;
+				hw-thd-sta = <0xf>;
+				hw-tbuf = <0x18>;
+				hw-scl-stretch-en = <0x0>;
+				hw-trdhld = <0x3>;
+				hw-tsp = <0x3>;
+				cci-clk-src = <0x23c3460>;
+				status = "ok";
+			};
+			qcom,cam-sensor0 {
+				cell-index = <0x0>;
+				compatible = "qcom,cam-sensor";
+				csiphy-sd-index = <0x2>;
+				sensor-position-roll = <0x5a>;
+				sensor-position-pitch = <0x0>;
+				sensor-position-yaw = <0xb4>;
+				cam_vana-supply = <&vreg_l10c_3p0>;
+				cam_vio-supply = <&vreg_s4a_1p8>;
+				regulator-names = "cam_vana", "cam_vio", "cam_clk";
+				rgltr-cntrl-support;
+				pwm-switch;
+				rgltr-min-voltage = <0x2dc6c0 0x1b7740 0x0>;
+				rgltr-max-voltage = <0x2dc6c0 0x1b7740 0x0>;
+				rgltr-load-current = <0x1d4c0 0x13880 0x0>;
+				gpio-no-mux = <0x0>;
+				pinctrl-names = "cam_default", "cam_suspend";
+				pinctrl-0 = <&q2pin_324>;
+				pinctrl-1 = <&q2pin_325>;
+				gpios = <&tlmm 96 0>;
+				gpio-req-tbl-num = <0x0>;
+				gpio-req-tbl-flags = <0x1>;
+				gpio-req-tbl-label = "CAMIF_MCLK2";
+				sensor-mode = <0x0>;
+				cci-master = <0x0>;
+				status = "ok";
+				clocks = <&camcc CAM_CC_MCLK2_CLK>;
+				clock-names = "cam_clk";
+				clock-cntl-level = "turbo";
+				clock-rates = <0x16e3600>;
+				power-domains = <&camcc TITAN_TOP_GDSC>;
+				power-domain-names = "cam_clk";
+			};
+			qcom,cam-sensor1 {
+				cell-index = <0x1>;
+				compatible = "qcom,cam-sensor";
+				csiphy-sd-index = <0x1>;
+				sensor-position-roll = <0x5a>;
+				sensor-position-pitch = <0x0>;
+				sensor-position-yaw = <0xb4>;
+				cam_vana-supply = <&vreg_l10c_3p0>;
+				cam_vio-supply = <&vreg_s4a_1p8>;
+				regulator-names = "cam_vana", "cam_vio", "cam_clk";
+				rgltr-cntrl-support;
+				pwm-switch;
+				rgltr-min-voltage = <0x2dc6c0 0x1b7740 0x0>;
+				rgltr-max-voltage = <0x2dc6c0 0x1b7740 0x0>;
+				rgltr-load-current = <0x1d4c0 0x13880 0x0>;
+				gpio-no-mux = <0x0>;
+				pinctrl-names = "cam_default", "cam_suspend";
+				pinctrl-0 = <&q2pin_326>;
+				pinctrl-1 = <&q2pin_327>;
+				gpios = <&tlmm 95 0>;
+				gpio-req-tbl-num = <0x0>;
+				gpio-req-tbl-flags = <0x1>;
+				gpio-req-tbl-label = "CAMIF_MCLK1";
+				sensor-mode = <0x0>;
+				cci-master = <0x1>;
+				status = "ok";
+				clocks = <&camcc CAM_CC_MCLK1_CLK>;
+				clock-names = "cam_clk";
+				clock-cntl-level = "turbo";
+				clock-rates = <0x16e3600>;
+				power-domains = <&camcc TITAN_TOP_GDSC>;
+				power-domain-names = "cam_clk";
+			};
+		};
+		q2cam_388: qcom,cci@ac50000 {
+			cell-index = <0x1>;
+			compatible = "qcom,cci";
+			reg = <0x0 0xac50000 0x0 0x1000>;
+			reg-names = "cci";
+			reg-cam-base = <0x50000>;
+			interrupt-names = "cci";
+			interrupts = <0x0 0x10f 0x1>;
+			status = "ok";
+			regulator-names = "gdscr";
+			clocks = <&camcc CAM_CC_CCI_1_CLK_SRC>, <&camcc CAM_CC_CCI_1_CLK>;
+			clock-names = "cci_1_clk_src", "cci_1_clk";
+			src-clock-name = "cci_1_clk_src";
+			clock-cntl-level = "lowsvs";
+			clock-rates = <0x23c3460 0x0>;
+			pinctrl-names = "cam_default", "cam_suspend";
+			pinctrl-0 = <&q2pin_164 &q2pin_165>;
+			pinctrl-1 = <&q2pin_166 &q2pin_167>;
+			gpios = <&tlmm 105 0>, <&tlmm 106 0>, <&tlmm 107 0>, <&tlmm 108 0>;
+			gpio-req-tbl-num = <0x0 0x1 0x2 0x3>;
+			gpio-req-tbl-flags = <0x1 0x1 0x1 0x1>;
+			gpio-req-tbl-label = "CCI_I2C_DATA2", "CCI_I2C_CLK2", "CCI_I2C_DATA3", "CCI_I2C_CLK3";
+			power-domains = <&camcc TITAN_TOP_GDSC>;
+			power-domain-names = "gdscr";
+			q2cam_389: qcom,i2c_standard_mode {
+				hw-thigh = <0xc9>;
+				hw-tlow = <0xae>;
+				hw-tsu-sto = <0xcc>;
+				hw-tsu-sta = <0xe7>;
+				hw-thd-dat = <0x16>;
+				hw-thd-sta = <0xa2>;
+				hw-tbuf = <0xe3>;
+				hw-scl-stretch-en = <0x0>;
+				hw-trdhld = <0x6>;
+				hw-tsp = <0x3>;
+				cci-clk-src = <0x23c3460>;
+				status = "ok";
+			};
+			q2cam_38a: qcom,i2c_fast_mode {
+				hw-thigh = <0x26>;
+				hw-tlow = <0x38>;
+				hw-tsu-sto = <0x28>;
+				hw-tsu-sta = <0x28>;
+				hw-thd-dat = <0x16>;
+				hw-thd-sta = <0x23>;
+				hw-tbuf = <0x3e>;
+				hw-scl-stretch-en = <0x0>;
+				hw-trdhld = <0x6>;
+				hw-tsp = <0x3>;
+				cci-clk-src = <0x23c3460>;
+				status = "ok";
+			};
+			q2cam_38b: qcom,i2c_custom_mode {
+				hw-thigh = <0x26>;
+				hw-tlow = <0x38>;
+				hw-tsu-sto = <0x28>;
+				hw-tsu-sta = <0x28>;
+				hw-thd-dat = <0x16>;
+				hw-thd-sta = <0x23>;
+				hw-tbuf = <0x3e>;
+				hw-scl-stretch-en = <0x1>;
+				hw-trdhld = <0x6>;
+				hw-tsp = <0x3>;
+				cci-clk-src = <0x23c3460>;
+				status = "ok";
+			};
+			q2cam_38c: qcom,i2c_fast_plus_mode {
+				hw-thigh = <0x10>;
+				hw-tlow = <0x16>;
+				hw-tsu-sto = <0x11>;
+				hw-tsu-sta = <0x12>;
+				hw-thd-dat = <0x10>;
+				hw-thd-sta = <0xf>;
+				hw-tbuf = <0x18>;
+				hw-scl-stretch-en = <0x0>;
+				hw-trdhld = <0x3>;
+				hw-tsp = <0x3>;
+				cci-clk-src = <0x23c3460>;
+				status = "ok";
+			};
+			qcom,cam-sensor2 {
+				cell-index = <0x2>;
+				compatible = "qcom,cam-sensor";
+				csiphy-sd-index = <0x0>;
+				sensor-position-roll = <0x10e>;
+				sensor-position-pitch = <0x0>;
+				sensor-position-yaw = <0x0>;
+				cam_vana-supply = <&vreg_l10c_3p0>;
+				cam_vio-supply = <&vreg_s4a_1p8>;
+				regulator-names = "cam_vana", "cam_vio", "cam_clk";
+				rgltr-cntrl-support;
+				pwm-switch;
+				rgltr-min-voltage = <0x2dc6c0 0x1b7740 0x0>;
+				rgltr-max-voltage = <0x2dc6c0 0x1b7740 0x0>;
+				rgltr-load-current = <0x1d4c0 0x13880 0x0>;
+				gpio-no-mux = <0x0>;
+				pinctrl-names = "cam_default", "cam_suspend";
+				pinctrl-0 = <&q2pin_320>;
+				pinctrl-1 = <&q2pin_321>;
+				gpios = <&tlmm 94 0>;
+				gpio-req-tbl-num = <0x0>;
+				gpio-req-tbl-flags = <0x1>;
+				gpio-req-tbl-label = "CAMIF_MCLK0";
+				sensor-mode = <0x0>;
+				cci-master = <0x0>;
+				status = "ok";
+				clocks = <&camcc CAM_CC_MCLK0_CLK>;
+				clock-names = "cam_clk";
+				clock-cntl-level = "turbo";
+				clock-rates = <0x16e3600>;
+				power-domains = <&camcc TITAN_TOP_GDSC>;
+				power-domain-names = "cam_clk";
+			};
+			qcom,cam-sensor3 {
+				cell-index = <0x3>;
+				compatible = "qcom,cam-sensor";
+				csiphy-sd-index = <0x3>;
+				sensor-position-roll = <0x10e>;
+				sensor-position-pitch = <0x0>;
+				sensor-position-yaw = <0x0>;
+				cam_vana-supply = <&vreg_l10c_3p0>;
+				cam_vio-supply = <&vreg_s4a_1p8>;
+				regulator-names = "cam_vana", "cam_vio", "cam_clk";
+				rgltr-cntrl-support;
+				rgltr-min-voltage = <0x2dc6c0 0x1b7740 0x0>;
+				rgltr-max-voltage = <0x2dc6c0 0x1b7740 0x0>;
+				rgltr-load-current = <0x1d4c0 0x13880 0x0>;
+				gpio-no-mux = <0x0>;
+				pinctrl-names = "cam_default", "cam_suspend";
+				pinctrl-0 = <&q2pin_322>;
+				pinctrl-1 = <&q2pin_323>;
+				gpios = <&tlmm 97 0>;
+				gpio-req-tbl-num = <0x0>;
+				gpio-req-tbl-flags = <0x1>;
+				gpio-req-tbl-label = "CAMIF_MCLK3";
+				sensor-mode = <0x0>;
+				cci-master = <0x1>;
+				status = "ok";
+				clocks = <&camcc CAM_CC_MCLK3_CLK>;
+				clock-names = "cam_clk";
+				clock-cntl-level = "turbo";
+				clock-rates = <0x16e3600>;
+				power-domains = <&camcc TITAN_TOP_GDSC>;
+				power-domain-names = "cam_clk";
+			};
 		};
 
 		qcom,cam-cpas@ac40000 {
@@ -984,4 +1287,184 @@
 				};
 			};
 		};
+};
+
+/* Pin states of the camera I2C buses and sensor clocks, from Quest OS's tree */
+&tlmm {
+	q2pin_160: cci0-active-state {
+		mux {
+			pins = "gpio101", "gpio102";
+			function = "cci_i2c";
+		};
+		config {
+			pins = "gpio101", "gpio102";
+			bias-pull-up;
+			drive-strength = <0x2>;
+		};
+	};
+	q2pin_161: cci1-active-state {
+		mux {
+			pins = "gpio103", "gpio104";
+			function = "cci_i2c";
+		};
+		config {
+			pins = "gpio103", "gpio104";
+			bias-pull-up;
+			drive-strength = <0x2>;
+		};
+	};
+	q2pin_162: cci0-suspend-state {
+		mux {
+			pins = "gpio101", "gpio102";
+			function = "cci_i2c";
+		};
+		config {
+			pins = "gpio101", "gpio102";
+			bias-pull-down;
+			drive-strength = <0x2>;
+		};
+	};
+	q2pin_163: cci1-suspend-state {
+		mux {
+			pins = "gpio103", "gpio104";
+			function = "cci_i2c";
+		};
+		config {
+			pins = "gpio103", "gpio104";
+			bias-pull-down;
+			drive-strength = <0x2>;
+		};
+	};
+	q2pin_164: cci2-active-state {
+		mux {
+			pins = "gpio105", "gpio106";
+			function = "cci_i2c";
+		};
+		config {
+			pins = "gpio105", "gpio106";
+			bias-pull-up;
+			drive-strength = <0x2>;
+		};
+	};
+	q2pin_165: cci3-active-state {
+		mux {
+			pins = "gpio107", "gpio108";
+			function = "cci_i2c";
+		};
+		config {
+			pins = "gpio107", "gpio108";
+			bias-pull-up;
+			drive-strength = <0x2>;
+		};
+	};
+	q2pin_166: cci2-suspend-state {
+		mux {
+			pins = "gpio105", "gpio106";
+			function = "cci_i2c";
+		};
+		config {
+			pins = "gpio105", "gpio106";
+			bias-pull-down;
+			drive-strength = <0x2>;
+		};
+	};
+	q2pin_167: cci3-suspend-state {
+		mux {
+			pins = "gpio107", "gpio108";
+			function = "cci_i2c";
+		};
+		config {
+			pins = "gpio107", "gpio108";
+			bias-pull-down;
+			drive-strength = <0x2>;
+		};
+	};
+	q2pin_320: cam-sensor-mclk0-active-state {
+		mux {
+			pins = "gpio94";
+			function = "cam_mclk";
+		};
+		config {
+			pins = "gpio94";
+			bias-disable;
+			drive-strength = <0x8>;
+		};
+	};
+	q2pin_321: cam-sensor-mclk0-suspend-state {
+		mux {
+			pins = "gpio94";
+			function = "cam_mclk";
+		};
+		config {
+			pins = "gpio94";
+			bias-pull-down;
+			drive-strength = <0x8>;
+		};
+	};
+	q2pin_322: cam-sensor-mclk1-active-state {
+		mux {
+			pins = "gpio95";
+			function = "cam_mclk";
+		};
+		config {
+			pins = "gpio95";
+			bias-disable;
+			drive-strength = <0x2>;
+		};
+	};
+	q2pin_323: cam-sensor-mclk1-suspend-state {
+		mux {
+			pins = "gpio95";
+			function = "cam_mclk";
+		};
+		config {
+			pins = "gpio95";
+			bias-pull-down;
+			drive-strength = <0x2>;
+		};
+	};
+	q2pin_324: cam-sensor-mclk2-active-state {
+		mux {
+			pins = "gpio96";
+			function = "cam_mclk";
+		};
+		config {
+			pins = "gpio96";
+			bias-disable;
+			drive-strength = <0x2>;
+		};
+	};
+	q2pin_325: cam-sensor-mclk2-suspend-state {
+		mux {
+			pins = "gpio96";
+			function = "cam_mclk";
+		};
+		config {
+			pins = "gpio96";
+			bias-pull-down;
+			drive-strength = <0x2>;
+		};
+	};
+	q2pin_326: cam-sensor-mclk3-active-state {
+		mux {
+			pins = "gpio97";
+			function = "cam_mclk";
+		};
+		config {
+			pins = "gpio97";
+			bias-disable;
+			drive-strength = <0x2>;
+		};
+	};
+	q2pin_327: cam-sensor-mclk3-suspend-state {
+		mux {
+			pins = "gpio97";
+			function = "cam_mclk";
+		};
+		config {
+			pins = "gpio97";
+			bias-pull-down;
+			drive-strength = <0x2>;
+		};
+	};
 };
