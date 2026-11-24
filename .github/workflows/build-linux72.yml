@@ -30,7 +30,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu bc bison flex libssl-dev \
-            libelf-dev dwarves cpio ccache python3 device-tree-compiler kmod
+            libelf-dev dwarves cpio ccache python3 device-tree-compiler kmod libvulkan-dev
 
       - name: Kernel tree
         run: |
@@ -113,6 +113,11 @@ jobs:
           install -m 755 kernel/linux72/stage1/init rd/init
           aarch64-linux-gnu-gcc -static -O2 -o rd/bin/q2reboot kernel/linux72/stage1/q2reboot.c
           aarch64-linux-gnu-strip rd/bin/q2reboot
+          mkdir -p vkinc rd/usr/share/q2vr && cp -r /usr/include/vulkan vkinc/ && { cp -r /usr/include/vk_video vkinc/ 2>/dev/null || true; }
+          aarch64-linux-gnu-gcc -O2 -D_GNU_SOURCE -std=c11 -Wall -Wextra -Werror -fvisibility=hidden -shared -fPIC -Ivkinc \
+            -o rd/usr/share/q2vr/libVkLayer_Q2_vr_pacing.so kernel/linux72/stage2/q2-vr-pacing.c -lpthread
+          aarch64-linux-gnu-strip rd/usr/share/q2vr/libVkLayer_Q2_vr_pacing.so
+          cp kernel/linux72/stage2/VkLayer_Q2_vr_pacing.json rd/usr/share/q2vr/
           sed -i 's/\r$//' rd/init
           (cd rd && find . | cpio -o -H newc --quiet | gzip -9) > stage1.cpio.gz
 

@@ -90,8 +90,13 @@ stage2() {
   # ("Expecting only to run on either SM8650 or SM8250 but got platform Meta Quest 2").
   [ -d $N/opt/steamvr/drivers/cv ] && mv $N/opt/steamvr/drivers/cv $N/opt/steamvr-drivers-cv-off
   # gamescope's WSI layer stays out of SteamVR: it wrapped the compositor's direct-mode swapchain and failed every present.
+  # The pacing layer keeps the compositor one frame ahead with vblanks 5 ms early and its scanout images compressible
+  # (about 52 flips/s with present waits failing without it, 90 with it).
+  cp /usr/share/q2vr/libVkLayer_Q2_vr_pacing.so $N/usr/lib/
+  cp /usr/share/q2vr/VkLayer_Q2_vr_pacing.json $N/usr/share/vulkan/implicit_layer.d/
   mkdir -p $N/etc/systemd/user/steamvr.service.d
-  printf '[Service]\nEnvironment=DISABLE_GAMESCOPE_WSI=1\n' > $N/etc/systemd/user/steamvr.service.d/50-q2.conf
+  printf '[Service]\nEnvironment=DISABLE_GAMESCOPE_WSI=1\nEnvironment=Q2_FRAMES_AHEAD=1\nEnvironment=Q2_VSYNC_LEAD_US=5000\n' \
+    > $N/etc/systemd/user/steamvr.service.d/50-q2.conf
   umount /mnt/modem 2>/dev/null
   log "stage 2: switching to SteamOS on $U (RAM overlay)"
   kill -9 -1
