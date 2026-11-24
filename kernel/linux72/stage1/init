@@ -53,6 +53,6 @@ mkdir -p /mnt/modem /mnt/root /lib/firmware/qcom/sm8250/hollywood
 M=$(part modem_a)
 [ -n "$M" ] && mount -t vfat -o ro "$M" /mnt/modem && cp /mnt/modem/image/a650_zap.* /lib/firmware/qcom/sm8250/hollywood/
 U=$(part userdata)
-[ -n "$U" ] && mount -t btrfs -o ro "$U" /mnt/root && cp /mnt/root/usr/share/q2fw/a650_sqe.fw /mnt/root/usr/share/q2fw/a650_gmu.bin /lib/firmware/qcom/ 2>/dev/null
+[ -n "$U" ] && mount -t btrfs -o ro,rescue=nologreplay "$U" /mnt/root && cp /mnt/root/usr/share/q2fw/a650_sqe.fw /mnt/root/usr/share/q2fw/a650_gmu.bin /lib/firmware/qcom/ 2>/dev/null
 log "GPU firmware: $(ls /lib/firmware/qcom /lib/firmware/qcom/sm8250/hollywood | tr '\n' ' ')"
 exec sh -c 'while true; do sleep 3600; done'
