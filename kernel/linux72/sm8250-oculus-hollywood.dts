@@ -436,7 +436,7 @@
 };
 
 /* The compute DSP (Meta's tracker runs on it), with this headset's own signed firmware from its modem partition. */
-&remoteproc_cdsp {
+&cdsp {
 	firmware-name = "qcom/sm8250/hollywood/cdsp.mdt";
 	status = "okay";
 };
