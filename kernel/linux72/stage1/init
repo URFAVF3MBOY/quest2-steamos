@@ -57,7 +57,7 @@ U=$(part userdata)
 log "GPU firmware: $(ls /lib/firmware/qcom /lib/firmware/qcom/sm8250/hollywood | tr '\n' ' ')"
 
 # Stage 2: SteamOS from userdata (read-only) under a RAM overlay; nothing is written to the headset's storage.
-# Units made for the 4.19 kernel (q2-*), SteamOS' own USB gadget and its /etc overlay (already merged into /etc; an overlay
+# Units made for the 4.19 kernel (q2-*; q2-headtrack runs: head rotation and controllers through SyncBoss), SteamOS' own USB gadget and its /etc overlay (already merged into /etc; an overlay
 # cannot be the upper dir of another) stay off; root gets a shell on the USB serial port.
 stage2() {
   mountpoint -q /mnt/root || return 1
@@ -70,7 +70,7 @@ stage2() {
   cp /lib/firmware/qcom/a650_* $N/usr/lib/firmware/qcom/
   cp /lib/firmware/qcom/sm8250/hollywood/* $N/usr/lib/firmware/qcom/sm8250/hollywood/
   S=$N/etc/systemd/system
-  for u in $(cd $S && ls -d q2-*.service) usb-gadget.service adbd.service adbd-pre.service adbd-post.service \
+  for u in $(cd $S && ls -d q2-*.service | grep -v -x q2-headtrack.service) usb-gadget.service adbd.service adbd-pre.service adbd-post.service \
            usb-ncm-gadget@usb0.service etc.mount; do
     rm -f $S/$u; ln -s /dev/null $S/$u
   done
