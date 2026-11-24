@@ -19,6 +19,9 @@
 #include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
 #include <linux/of.h>
+#include <linux/vmalloc.h>
+#include <linux/debugfs.h>
+#include <linux/file.h>
 
 /* Downstream Kconfig values */
 #define CONFIG_NUM_ATTACHED_CAMERAS 8
@@ -32,7 +35,24 @@
 #define readl_relaxed_no_log(a)		readl_relaxed(a)
 #define writel_no_log(v, a)		writel(v, a)
 
-/* struct timespec is gone: the drivers' timestamps are timespec64 */
+#define del_timer_sync(t)		timer_delete_sync(t)
+#define del_timer(t)			timer_delete(t)
+#define V4L2_SUBDEV_NAME_SIZE		32
+
+/* debugfs_create_<int> return nothing now; the drivers test the result */
+#define debugfs_create_bool(...)	({ debugfs_create_bool(__VA_ARGS__); 1; })
+#define debugfs_create_u8(...)		({ debugfs_create_u8(__VA_ARGS__); 1; })
+#define debugfs_create_u16(...)		({ debugfs_create_u16(__VA_ARGS__); 1; })
+#define debugfs_create_u32(...)		({ debugfs_create_u32(__VA_ARGS__); 1; })
+#define debugfs_create_u64(...)		({ debugfs_create_u64(__VA_ARGS__); 1; })
+#define debugfs_create_x32(...)		({ debugfs_create_x32(__VA_ARGS__); 1; })
+#define debugfs_create_x64(...)		({ debugfs_create_x64(__VA_ARGS__); 1; })
+#define debugfs_create_ulong(...)	({ debugfs_create_ulong(__VA_ARGS__); 1; })
+
+/* struct timespec and struct timeval are gone: timespec64 and the old timeval layout (tv_sec, tv_usec) */
+#define timeval				__kernel_old_timeval
+#define get_monotonic_boottime64(ts)	ktime_get_boottime_ts64(ts)
+#define getnstimeofday64(ts)		ktime_get_real_ts64(ts)
 #define timespec			timespec64
 #define get_monotonic_boottime(ts)	ktime_get_boottime_ts64(ts)
 #define ktime_get_ts(ts)		ktime_get_ts64(ts)

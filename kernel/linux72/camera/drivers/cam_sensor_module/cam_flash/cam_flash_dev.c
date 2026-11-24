@@ -328,14 +328,14 @@ static void cam_flash_platform_remove(struct platform_device *pdev)
 
 }
 
-static int32_t cam_flash_i2c_driver_remove(struct i2c_client *client)
+static void cam_flash_i2c_driver_remove(struct i2c_client *client)
 {
 	int32_t rc = 0;
 	struct cam_flash_ctrl *fctrl = i2c_get_clientdata(client);
 	/* Handle I2C Devices */
 	if (!fctrl) {
 		CAM_ERR(CAM_FLASH, "Flash device is NULL");
-		return -EINVAL;
+		return;
 	}
 
 	CAM_INFO(CAM_FLASH, "i2c driver remove invoked");
@@ -343,7 +343,6 @@ static int32_t cam_flash_i2c_driver_remove(struct i2c_client *client)
 	kfree(fctrl->i2c_data.per_frame);
 	fctrl->i2c_data.per_frame = NULL;
 	kfree(fctrl);
-	return rc;
 }
 
 static int cam_flash_subdev_open(struct v4l2_subdev *sd,

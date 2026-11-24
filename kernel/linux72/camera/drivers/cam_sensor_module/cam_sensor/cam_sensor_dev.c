@@ -155,8 +155,7 @@ static int cam_sensor_init_subdev_params(struct cam_sensor_ctrl_t *s_ctrl)
 	return rc;
 }
 
-static int32_t cam_sensor_driver_i2c_probe(struct i2c_client *client,
-	const struct i2c_device_id *id)
+static int32_t cam_sensor_driver_i2c_probe(struct i2c_client *client)
 {
 	int32_t rc = 0;
 	int i = 0;
@@ -262,7 +261,7 @@ static void cam_sensor_platform_remove(struct platform_device *pdev)
 
 }
 
-static int cam_sensor_driver_i2c_remove(struct i2c_client *client)
+static void cam_sensor_driver_i2c_remove(struct i2c_client *client)
 {
 	int                        i;
 	struct cam_sensor_ctrl_t  *s_ctrl = i2c_get_clientdata(client);
@@ -270,7 +269,7 @@ static int cam_sensor_driver_i2c_remove(struct i2c_client *client)
 
 	if (!s_ctrl) {
 		CAM_ERR(CAM_SENSOR, "sensor device is NULL");
-		return 0;
+		return;
 	}
 
 	CAM_INFO(CAM_SENSOR, "i2c remove invoked");
@@ -286,7 +285,6 @@ static int cam_sensor_driver_i2c_remove(struct i2c_client *client)
 	v4l2_set_subdevdata(&(s_ctrl->v4l2_dev_str.sd), NULL);
 	kfree(s_ctrl);
 
-	return 0;
 }
 
 static const struct of_device_id cam_sensor_driver_dt_match[] = {

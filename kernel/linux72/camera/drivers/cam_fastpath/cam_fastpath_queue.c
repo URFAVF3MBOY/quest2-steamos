@@ -268,14 +268,14 @@ cam_fp_queue_enqueue_chain(struct file *file,
 	for (i = 0; i < proc_chain->chain.num; i++) {
 		struct fd f = fdget(proc_chain->chain.fd[i]);
 
-		if (!f.file || f.file->f_op != file->f_op) {
+		if (!fd_file(f) || fd_file(f)->f_op != file->f_op) {
 			CAM_ERR(CAM_CORE, "Fd not valid %d",
 				fpq->name, proc_chain->chain.fd[i]);
 			ret = -EINVAL;
 			goto error_free_proc_chain;
 		}
 
-		proc_chain->fpq[i] = to_fpq(f.file);
+		proc_chain->fpq[i] = to_fpq(fd_file(f));
 
 		fdput(f);
 	}

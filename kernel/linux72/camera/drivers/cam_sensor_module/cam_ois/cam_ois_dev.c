@@ -237,7 +237,7 @@ probe_failure:
 	return rc;
 }
 
-static int cam_ois_i2c_driver_remove(struct i2c_client *client)
+static void cam_ois_i2c_driver_remove(struct i2c_client *client)
 {
 	int                             i;
 	struct cam_ois_ctrl_t          *o_ctrl = i2c_get_clientdata(client);
@@ -247,7 +247,7 @@ static int cam_ois_i2c_driver_remove(struct i2c_client *client)
 
 	if (!o_ctrl) {
 		CAM_ERR(CAM_OIS, "ois device is NULL");
-		return -EINVAL;
+		return;
 	}
 
 	CAM_INFO(CAM_OIS, "i2c driver remove invoked");
@@ -269,7 +269,6 @@ static int cam_ois_i2c_driver_remove(struct i2c_client *client)
 	v4l2_set_subdevdata(&o_ctrl->v4l2_dev_str.sd, NULL);
 	kfree(o_ctrl);
 
-	return 0;
 }
 
 static int32_t cam_ois_platform_driver_probe(

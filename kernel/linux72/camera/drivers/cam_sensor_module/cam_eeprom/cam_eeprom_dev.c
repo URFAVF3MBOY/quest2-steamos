@@ -256,7 +256,7 @@ probe_failure:
 	return rc;
 }
 
-static int cam_eeprom_i2c_driver_remove(struct i2c_client *client)
+static void cam_eeprom_i2c_driver_remove(struct i2c_client *client)
 {
 	int                             i;
 	struct v4l2_subdev             *sd = i2c_get_clientdata(client);
@@ -266,20 +266,20 @@ static int cam_eeprom_i2c_driver_remove(struct i2c_client *client)
 
 	if (!sd) {
 		CAM_ERR(CAM_EEPROM, "Subdevice is NULL");
-		return -EINVAL;
+		return;
 	}
 
 	e_ctrl = (struct cam_eeprom_ctrl_t *)v4l2_get_subdevdata(sd);
 	if (!e_ctrl) {
 		CAM_ERR(CAM_EEPROM, "eeprom device is NULL");
-		return -EINVAL;
+		return;
 	}
 
 	soc_private =
 		(struct cam_eeprom_soc_private *)e_ctrl->soc_info.soc_private;
 	if (!soc_private) {
 		CAM_ERR(CAM_EEPROM, "soc_info.soc_private is NULL");
-		return -EINVAL;
+		return;
 	}
 
 	CAM_INFO(CAM_EEPROM, "i2c driver remove invoked");
@@ -296,7 +296,6 @@ static int cam_eeprom_i2c_driver_remove(struct i2c_client *client)
 	v4l2_set_subdevdata(&e_ctrl->v4l2_dev_str.sd, NULL);
 	kfree(e_ctrl);
 
-	return 0;
 }
 
 static int cam_eeprom_spi_setup(struct spi_device *spi)
