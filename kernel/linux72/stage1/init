@@ -51,7 +51,11 @@ n=0
 while [ $n -lt 50 ] && [ -z "$(part userdata)" ]; do sleep 0.2; n=$((n + 1)); done
 mkdir -p /mnt/modem /mnt/root /lib/firmware/qcom/sm8250/hollywood
 M=$(part modem_a)
-[ -n "$M" ] && mount -t vfat -o ro "$M" /mnt/modem && cp /mnt/modem/image/a650_zap.* /lib/firmware/qcom/sm8250/hollywood/
+[ -n "$M" ] && mount -t vfat -o ro "$M" /mnt/modem && cp /mnt/modem/image/a650_zap.* /mnt/modem/image/cdsp.* /lib/firmware/qcom/sm8250/hollywood/
+# The compute DSP could not load its firmware at probe (not in the ramdisk then): start it now.
+for r in /sys/class/remoteproc/remoteproc*; do
+  grep -q cdsp $r/firmware 2>/dev/null && [ "$(cat $r/state)" = offline ] && echo start > $r/state && log "cdsp: $(cat $r/state)"
+done
 U=$(part userdata)
 [ -n "$U" ] && mount -t btrfs -o ro,rescue=nologreplay "$U" /mnt/root && cp /mnt/root/usr/share/q2fw/a650_sqe.fw /mnt/root/usr/share/q2fw/a650_gmu.bin /lib/firmware/qcom/ 2>/dev/null
 log "GPU firmware: $(ls /lib/firmware/qcom /lib/firmware/qcom/sm8250/hollywood | tr '\n' ' ')"

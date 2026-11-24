@@ -64,6 +64,8 @@ jobs:
           grep -q oculus-hollywood-jdi $P/Makefile || echo 'obj-$(CONFIG_DRM_PANEL_OCULUS_HOLLYWOOD_JDI) += panel-oculus-hollywood-jdi.o' >> $P/Makefile
           cp -r kernel/linux72/drivers/oculus linux/drivers/misc/
           grep -q 'oculus/' linux/drivers/misc/Makefile || echo 'obj-y += oculus/' >> linux/drivers/misc/Makefile
+          mkdir -p linux/drivers/misc/q2android && cp -r kernel/linux72/drivers/android/. linux/drivers/misc/q2android/
+          grep -q 'q2android/' linux/drivers/misc/Makefile || echo 'obj-y += q2android/' >> linux/drivers/misc/Makefile
           grep -q '"pico4,compatible"' linux/drivers/of/fdt.c
           sed -i 's/"pico4,compatible"/"quest2,compatible"/; s/"pico4,model"/"quest2,model"/' linux/drivers/of/fdt.c
           grep -q '"quest2,compatible"' linux/drivers/of/fdt.c
