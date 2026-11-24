@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-2.0-only
+obj-y += cam_req_mgr/
+obj-y += cam_utils/
+obj-y += cam_core/
+obj-y += cam_sync/
+obj-y += cam_smmu/
+obj-y += cam_cpas/
+obj-y += cam_cdm/
+obj-y += cam_isp/
+obj-y += cam_sensor_module/
+obj-y += cam_fastpath/
+obj-y += cam_icp/

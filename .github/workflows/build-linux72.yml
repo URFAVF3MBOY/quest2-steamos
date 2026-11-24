@@ -66,6 +66,8 @@ jobs:
           grep -q 'oculus/' linux/drivers/misc/Makefile || echo 'obj-y += oculus/' >> linux/drivers/misc/Makefile
           mkdir -p linux/drivers/misc/q2android && cp -r kernel/linux72/drivers/android/. linux/drivers/misc/q2android/
           grep -q 'q2android/' linux/drivers/misc/Makefile || echo 'obj-y += q2android/' >> linux/drivers/misc/Makefile
+          mkdir -p linux/techpack && cp -r kernel/linux72/camera linux/techpack/camera
+          grep -q 'techpack/camera/' linux/Kbuild || echo 'obj-y += techpack/camera/' >> linux/Kbuild
           grep -q '"pico4,compatible"' linux/drivers/of/fdt.c
           sed -i 's/"pico4,compatible"/"quest2,compatible"/; s/"pico4,model"/"quest2,model"/' linux/drivers/of/fdt.c
           grep -q '"quest2,compatible"' linux/drivers/of/fdt.c
@@ -93,7 +95,7 @@ jobs:
         run: |
           cd linux
           make O=../out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache aarch64-linux-gnu-gcc" \
-            -j"$(nproc)" JOBS=1 Image "qcom/$DTB.dtb"
+            -j"$(nproc)" -k JOBS=1 Image "qcom/$DTB.dtb"
           ccache -s | grep -iE "hits|misses|size" || true
           ls -l ../out/arch/arm64/boot/Image ../out/arch/arm64/boot/dts/qcom/$DTB.dtb
 
