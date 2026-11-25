@@ -1,5 +1,5 @@
 diff --git a/drivers/misc/fastrpc.c b/drivers/misc/fastrpc.c
-index 8c67a08..988b857 100644
+index 8c67a08..a9a20c5 100644
 --- a/drivers/misc/fastrpc.c
 +++ b/drivers/misc/fastrpc.c
 @@ -281,6 +281,7 @@ struct fastrpc_channel_ctx {
@@ -149,7 +149,7 @@ index 8c67a08..988b857 100644
  		break;
  	case FASTRPC_IOCTL_MEM_MAP:
  		err = fastrpc_req_mem_map(fl, argp);
-@@ -2371,6 +2391,357 @@ static long fastrpc_device_ioctl(struct file *file, unsigned int cmd,
+@@ -2371,6 +2391,385 @@ static long fastrpc_device_ioctl(struct file *file, unsigned int cmd,
  	return err;
  }
  
@@ -268,6 +268,27 @@ index 8c67a08..988b857 100644
 +#define ADSPRPC_INIT_ATTACH_SENSORS	3
 +#define ADSPRPC_CONTROL_KALLOC		3
 +
++/* CPU cache maintenance on the dma-bufs passed by fd: clean (to the DSP) or invalidate (from the DSP) */
++static void adsprpc_sync_fd_bufs(struct fastrpc_invoke_args *args, u32 nbufs, bool to_dsp)
++{
++	u32 i;
++
++	for (i = 0; i < nbufs; i++) {
++		struct dma_buf *db;
++
++		if (args[i].fd <= 0 || !args[i].length)
++			continue;
++		db = dma_buf_get(args[i].fd);
++		if (IS_ERR(db))
++			continue;
++		if (to_dsp)
++			dma_buf_end_cpu_access(db, DMA_BIDIRECTIONAL);
++		else
++			dma_buf_begin_cpu_access(db, DMA_BIDIRECTIONAL);
++		dma_buf_put(db);
++	}
++}
++
 +static unsigned int adsprpc_trace;
 +module_param(adsprpc_trace, uint, 0644);
 +MODULE_PARM_DESC(adsprpc_trace, "log every downstream invoke (handle, scalars, arguments, result)");
@@ -320,7 +341,14 @@ index 8c67a08..988b857 100644
 +			dev_info(&fl->cctx->rpdev->dev, "adsprpc:   arg %u: ptr 0x%llx len %llu fd %d\n",
 +				 i, args[i].ptr, args[i].length, args[i].fd);
 +	}
++	/*
++	 * Downstream keeps cached buffers passed by fd coherent with the DSP on every call: clean them before,
++	 * invalidate them after. This driver only syncs when it first maps a buffer.
++	 */
++	adsprpc_sync_fd_bufs(args, nbufs, true);
 +	err = fastrpc_internal_invoke(fl, false, inv.inv.handle, inv.inv.sc, args);
++	if (!err)
++		adsprpc_sync_fd_bufs(args, nbufs, false);
 +	if (adsprpc_trace)
 +		dev_info(&fl->cctx->rpdev->dev, "adsprpc: %s: invoke handle 0x%x sc 0x%x -> %d\n",
 +			 current->comm, inv.inv.handle, inv.inv.sc, err);
@@ -507,7 +535,7 @@ index 8c67a08..988b857 100644
  static const struct file_operations fastrpc_fops = {
  	.open = fastrpc_device_open,
  	.release = fastrpc_device_release,
-@@ -2495,6 +2866,38 @@ static int fastrpc_device_register(struct device *dev, struct fastrpc_channel_ct
+@@ -2495,6 +2894,38 @@ static int fastrpc_device_register(struct device *dev, struct fastrpc_channel_ct
  	return err;
  }
  
@@ -546,7 +574,7 @@ index 8c67a08..988b857 100644
  static int fastrpc_get_domain_id(const char *domain)
  {
  	if (!strncmp(domain, "adsp", 4))
-@@ -2611,6 +3014,13 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
+@@ -2611,6 +3042,13 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
  		err = fastrpc_device_register(rdev, data, false, domain);
  		if (err)
  			goto err_deregister_fdev;
@@ -560,7 +588,7 @@ index 8c67a08..988b857 100644
  		break;
  	default:
  		err = -EINVAL;
-@@ -2677,6 +3087,7 @@ static void fastrpc_rpmsg_remove(struct rpmsg_device *rpdev)
+@@ -2677,6 +3115,7 @@ static void fastrpc_rpmsg_remove(struct rpmsg_device *rpdev)
  
  	if (cctx->secure_fdevice)
  		misc_deregister(&cctx->secure_fdevice->miscdev);
