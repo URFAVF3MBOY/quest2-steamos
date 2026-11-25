@@ -455,42 +455,6 @@
 	firmware-name = "qcom/sm8250/hollywood/cdsp.mdt";
 	status = "okay";
 
-	/* The compute DSP's context banks are IO-coherent in Quest OS (dma-coherent), as Meta's DSP code expects */
-	glink-edge {
-		fastrpc {
-			compute-cb@1 {
-				dma-coherent;
-			};
-
-			compute-cb@2 {
-				dma-coherent;
-			};
-
-			compute-cb@3 {
-				dma-coherent;
-			};
-
-			compute-cb@4 {
-				dma-coherent;
-			};
-
-			compute-cb@5 {
-				dma-coherent;
-			};
-
-			compute-cb@6 {
-				dma-coherent;
-			};
-
-			compute-cb@7 {
-				dma-coherent;
-			};
-
-			compute-cb@8 {
-				dma-coherent;
-			};
-		};
-	};
 };
 
 /*
