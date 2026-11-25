@@ -12,6 +12,8 @@
 #include <linux/dma-mapping.h>
 #include <linux/dma-resv.h>
 #include <linux/highmem.h>
+#include <linux/iommu.h>
+#include <linux/of.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/scatterlist.h>
@@ -98,7 +100,40 @@ struct q2ion_map {
 	struct device *dev;
 	struct sg_table sgt;
 	struct list_head node;
+	bool io_coherent;
 };
+
+/*
+ * A cached buffer on a compute DSP context bank gets an IO-coherent mapping (cacheable, the DSP snoops the CPU
+ * caches), as Meta's fastrpc driver maps cached ION buffers on Quest OS: DSP calls then need no cache maintenance
+ * on it. The bank itself stays non-coherent, as Meta's driver keeps the DSP's process and library memory
+ * (DMA_ATTR_FORCE_NON_COHERENT); with the whole bank coherent the DSP could not load its libraries.
+ */
+static bool q2ion_make_io_coherent(struct device *dev, struct sg_table *sgt, size_t size)
+{
+	struct iommu_domain *dom;
+	dma_addr_t iova;
+	ssize_t mapped;
+
+	if (!dev->of_node || !of_device_is_compatible(dev->of_node, "qcom,fastrpc-compute-cb") ||
+	    sgt->nents != 1)
+		return false;
+	dom = iommu_get_domain_for_dev(dev);
+	if (!dom)
+		return false;
+	iova = sg_dma_address(sgt->sgl);
+	if (iommu_unmap(dom, iova, size) != size)
+		return false;
+	mapped = iommu_map_sg(dom, iova, sgt->sgl, sgt->orig_nents, IOMMU_READ | IOMMU_WRITE | IOMMU_CACHE,
+			      GFP_KERNEL);
+	if (mapped == size)
+		return true;
+	/* Back to the mapping dma_map_sgtable made. */
+	if (mapped > 0)
+		iommu_unmap(dom, iova, mapped);
+	iommu_map_sg(dom, iova, sgt->sgl, sgt->orig_nents, IOMMU_READ | IOMMU_WRITE, GFP_KERNEL);
+	return false;
+}
 
 static struct sg_table *q2ion_map(struct dma_buf_attachment *a, enum dma_data_direction dir)
 {
@@ -121,6 +156,8 @@ static struct sg_table *q2ion_map(struct dma_buf_attachment *a, enum dma_data_di
 	ret = dma_map_sgtable(a->dev, &m->sgt, DMA_BIDIRECTIONAL, b->cached ? 0 : DMA_ATTR_SKIP_CPU_SYNC);
 	if (ret)
 		goto err_table;
+	if (b->cached)
+		m->io_coherent = q2ion_make_io_coherent(a->dev, &m->sgt, b->size);
 	m->dev = get_device(a->dev);
 	list_add(&m->node, &b->maps);
 out:
@@ -326,17 +363,26 @@ EXPORT_SYMBOL_GPL(dma_buf_get_flags);
 
 /*
  * Part of a buffer from ion_alloc (the downstream partial CPU access, used by fastrpc for an argument that is a
- * slice of a larger buffer): -EINVAL for other dma-bufs.
+ * slice of a larger buffer); nothing once the DSP has an IO-coherent mapping of it. -EINVAL for other dma-bufs.
  */
 int q2ion_sync_range(struct dma_buf *d, size_t off, size_t len, bool for_device)
 {
 	struct q2ion_buffer *b;
+	struct q2ion_map *m;
 
 	if (d->ops != &q2ion_ops)
 		return -EINVAL;
 	b = d->priv;
 	if (!b->cached || off >= b->size)
 		return 0;
+	mutex_lock(&b->lock);
+	list_for_each_entry(m, &b->maps, node) {
+		if (m->io_coherent) {
+			mutex_unlock(&b->lock);
+			return 0;
+		}
+	}
+	mutex_unlock(&b->lock);
 	q2ion_sync_pages(b, off, min(len, b->size - off), for_device);
 	return 0;
 }
