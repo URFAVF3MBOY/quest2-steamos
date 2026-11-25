@@ -84,71 +84,60 @@ struct q2ion_buffer {
 	unsigned long nr_pages;
 	struct sg_table sgt;
 	struct mutex lock;
-	struct list_head attachments;
+	struct list_head maps;
 	void *vaddr;
 	int vmap_count;
 };
 
-struct q2ion_attachment {
+/*
+ * A device's mapping of the buffer. It stays until the buffer is freed, as downstream ION's delayed unmap does: fastrpc
+ * attaches, maps, unmaps and detaches a buffer on every DSP call, and mapping a pool of several MB each time (IOMMU
+ * page tables and a cache flush of the whole buffer) cost up to 4 ms per call.
+ */
+struct q2ion_map {
 	struct device *dev;
 	struct sg_table sgt;
 	struct list_head node;
-	bool mapped;
 };
-
-static int q2ion_attach(struct dma_buf *d, struct dma_buf_attachment *a)
-{
-	struct q2ion_buffer *b = d->priv;
-	struct q2ion_attachment *qa = kzalloc(sizeof(*qa), GFP_KERNEL);
-	int ret;
-
-	if (!qa)
-		return -ENOMEM;
-	ret = sg_alloc_table_from_pages(&qa->sgt, b->pages, b->nr_pages, 0, b->size, GFP_KERNEL);
-	if (ret) {
-		kfree(qa);
-		return ret;
-	}
-	qa->dev = a->dev;
-	a->priv = qa;
-	mutex_lock(&b->lock);
-	list_add(&qa->node, &b->attachments);
-	mutex_unlock(&b->lock);
-	return 0;
-}
-
-static void q2ion_detach(struct dma_buf *d, struct dma_buf_attachment *a)
-{
-	struct q2ion_buffer *b = d->priv;
-	struct q2ion_attachment *qa = a->priv;
-
-	mutex_lock(&b->lock);
-	list_del(&qa->node);
-	mutex_unlock(&b->lock);
-	sg_free_table(&qa->sgt);
-	kfree(qa);
-}
 
 static struct sg_table *q2ion_map(struct dma_buf_attachment *a, enum dma_data_direction dir)
 {
 	struct q2ion_buffer *b = a->dmabuf->priv;
-	struct q2ion_attachment *qa = a->priv;
+	struct q2ion_map *m;
 	int ret;
 
-	ret = dma_map_sgtable(a->dev, &qa->sgt, dir, b->cached ? 0 : DMA_ATTR_SKIP_CPU_SYNC);
+	mutex_lock(&b->lock);
+	list_for_each_entry(m, &b->maps, node) {
+		if (m->dev == a->dev)
+			goto out;
+	}
+	ret = -ENOMEM;
+	m = kzalloc(sizeof(*m), GFP_KERNEL);
+	if (!m)
+		goto err;
+	ret = sg_alloc_table_from_pages(&m->sgt, b->pages, b->nr_pages, 0, b->size, GFP_KERNEL);
 	if (ret)
-		return ERR_PTR(ret);
-	qa->mapped = true;
-	return &qa->sgt;
+		goto err_free;
+	ret = dma_map_sgtable(a->dev, &m->sgt, DMA_BIDIRECTIONAL, b->cached ? 0 : DMA_ATTR_SKIP_CPU_SYNC);
+	if (ret)
+		goto err_table;
+	m->dev = get_device(a->dev);
+	list_add(&m->node, &b->maps);
+out:
+	mutex_unlock(&b->lock);
+	return &m->sgt;
+
+err_table:
+	sg_free_table(&m->sgt);
+err_free:
+	kfree(m);
+err:
+	mutex_unlock(&b->lock);
+	return ERR_PTR(ret);
 }
 
 static void q2ion_unmap(struct dma_buf_attachment *a, struct sg_table *t, enum dma_data_direction dir)
 {
-	struct q2ion_buffer *b = a->dmabuf->priv;
-	struct q2ion_attachment *qa = a->priv;
-
-	qa->mapped = false;
-	dma_unmap_sgtable(a->dev, t, dir, b->cached ? 0 : DMA_ATTR_SKIP_CPU_SYNC);
 }
 
 /* Clean (for a device) or invalidate (for the CPU) the cache lines of len bytes at off; the pages are not contiguous. */
@@ -174,14 +163,12 @@ static void q2ion_sync_pages(struct q2ion_buffer *b, size_t off, size_t len, boo
 static int q2ion_cpu_access(struct dma_buf *d, enum dma_data_direction dir, bool begin)
 {
 	struct q2ion_buffer *b = d->priv;
-	struct q2ion_attachment *qa;
-	bool mapped = false;
+	bool mapped;
 
 	if (!b->cached)
 		return 0;
 	mutex_lock(&b->lock);
-	list_for_each_entry(qa, &b->attachments, node)
-		mapped |= qa->mapped;
+	mapped = !list_empty(&b->maps);
 	mutex_unlock(&b->lock);
 	if (mapped && !(begin && dir == DMA_TO_DEVICE))
 		q2ion_sync_pages(b, 0, b->size, !begin);
@@ -245,8 +232,15 @@ static void q2ion_vunmap(struct dma_buf *d, struct iosys_map *map)
 static void q2ion_release(struct dma_buf *d)
 {
 	struct q2ion_buffer *b = d->priv;
+	struct q2ion_map *m, *tmp;
 	unsigned long i;
 
+	list_for_each_entry_safe(m, tmp, &b->maps, node) {
+		dma_unmap_sgtable(m->dev, &m->sgt, DMA_BIDIRECTIONAL, DMA_ATTR_SKIP_CPU_SYNC);
+		sg_free_table(&m->sgt);
+		put_device(m->dev);
+		kfree(m);
+	}
 	for (i = 0; i < b->nr_pages; i++)
 		__free_page(b->pages[i]);
 	kvfree(b->pages);
@@ -254,8 +248,6 @@ static void q2ion_release(struct dma_buf *d)
 }
 
 static const struct dma_buf_ops q2ion_ops = {
-	.attach = q2ion_attach,
-	.detach = q2ion_detach,
 	.map_dma_buf = q2ion_map,
 	.unmap_dma_buf = q2ion_unmap,
 	.begin_cpu_access = q2ion_begin_cpu,
@@ -285,7 +277,7 @@ struct dma_buf *ion_alloc(size_t len, unsigned int heap_id_mask, unsigned int fl
 	b->nr_pages = b->size >> PAGE_SHIFT;
 	b->cached = flags & ION_FLAG_CACHED;
 	mutex_init(&b->lock);
-	INIT_LIST_HEAD(&b->attachments);
+	INIT_LIST_HEAD(&b->maps);
 	b->pages = kvmalloc_array(b->nr_pages, sizeof(*b->pages), GFP_KERNEL);
 	if (!b->pages)
 		goto err_buf;
