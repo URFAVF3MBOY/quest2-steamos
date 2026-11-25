@@ -1,5 +1,5 @@
 diff --git a/drivers/misc/fastrpc.c b/drivers/misc/fastrpc.c
-index 8c67a08..db07641 100644
+index 8c67a08..4097b4f 100644
 --- a/drivers/misc/fastrpc.c
 +++ b/drivers/misc/fastrpc.c
 @@ -281,6 +281,7 @@ struct fastrpc_channel_ctx {
@@ -149,7 +149,7 @@ index 8c67a08..db07641 100644
  		break;
  	case FASTRPC_IOCTL_MEM_MAP:
  		err = fastrpc_req_mem_map(fl, argp);
-@@ -2371,6 +2391,329 @@ static long fastrpc_device_ioctl(struct file *file, unsigned int cmd,
+@@ -2371,6 +2391,353 @@ static long fastrpc_device_ioctl(struct file *file, unsigned int cmd,
  	return err;
  }
  
@@ -252,6 +252,13 @@ index 8c67a08..db07641 100644
 +	s32 err;
 +};
 +
++struct adsprpc_capability {
++	u32 domain;
++	u32 attribute_id;
++	u32 capability;
++};
++
++#define ADSPRPC_IOCTL_GET_CAPABILITY	_IOWR('R', 17, struct adsprpc_capability)
 +#define ADSPRPC_IOCTL_INVOKE2		_IOWR('R', 18, struct adsprpc_invoke2)
 +#define ADSPRPC_INVOKE2_KERNEL_OPTIMIZATIONS	3
 +
@@ -411,6 +418,23 @@ index 8c67a08..db07641 100644
 +		return 0;
 +	case ADSPRPC_IOCTL_SETMODE:
 +		return 0;
++	case ADSPRPC_IOCTL_GET_CAPABILITY: {
++		struct adsprpc_capability c;
++		struct fastrpc_ioctl_capability cap = {};
++		int err;
++
++		if (copy_from_user(&c, argp, sizeof(c)))
++			return -EFAULT;
++		if (c.attribute_id >= FASTRPC_MAX_DSP_ATTRIBUTES)
++			return -EOVERFLOW;
++		cap.attribute_id = c.attribute_id;
++		err = fastrpc_get_info_from_kernel(&cap, fl);
++		c.capability = err ? 0 : cap.capability;
++		if (adsprpc_trace)
++			dev_info(&fl->cctx->rpdev->dev, "adsprpc: %s: capability %u -> %u (%d)\n",
++				 current->comm, c.attribute_id, c.capability, err);
++		return copy_to_user(argp, &c, sizeof(c)) ? -EFAULT : 0;
++	}
 +	case ADSPRPC_IOCTL_INVOKE2: {
 +		struct adsprpc_invoke2 i2;
 +		u32 off = 0;
@@ -479,7 +503,7 @@ index 8c67a08..db07641 100644
  static const struct file_operations fastrpc_fops = {
  	.open = fastrpc_device_open,
  	.release = fastrpc_device_release,
-@@ -2495,6 +2838,38 @@ static int fastrpc_device_register(struct device *dev, struct fastrpc_channel_ct
+@@ -2495,6 +2862,38 @@ static int fastrpc_device_register(struct device *dev, struct fastrpc_channel_ct
  	return err;
  }
  
@@ -518,7 +542,7 @@ index 8c67a08..db07641 100644
  static int fastrpc_get_domain_id(const char *domain)
  {
  	if (!strncmp(domain, "adsp", 4))
-@@ -2611,6 +2986,13 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
+@@ -2611,6 +3010,13 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
  		err = fastrpc_device_register(rdev, data, false, domain);
  		if (err)
  			goto err_deregister_fdev;
@@ -532,7 +556,7 @@ index 8c67a08..db07641 100644
  		break;
  	default:
  		err = -EINVAL;
-@@ -2677,6 +3059,7 @@ static void fastrpc_rpmsg_remove(struct rpmsg_device *rpdev)
+@@ -2677,6 +3083,7 @@ static void fastrpc_rpmsg_remove(struct rpmsg_device *rpdev)
  
  	if (cctx->secure_fdevice)
  		misc_deregister(&cctx->secure_fdevice->miscdev);
