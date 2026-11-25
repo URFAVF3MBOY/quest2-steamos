@@ -718,8 +718,9 @@
 				rgltr-load-current = <0x1d4c0 0x13880 0x0>;
 				gpio-no-mux = <0x0>;
 				pinctrl-names = "cam_default", "cam_suspend";
-				pinctrl-0 = <&q2pin_326>;
-				pinctrl-1 = <&q2pin_327>;
+				/* MCLK pin states matching this sensor's own MCLK (Quest OS has sensors 1 and 3 swapped) */
+				pinctrl-0 = <&q2pin_322>;
+				pinctrl-1 = <&q2pin_323>;
 				gpios = <&tlmm 95 0>;
 				gpio-req-tbl-num = <0x0>;
 				gpio-req-tbl-flags = <0x1>;
@@ -864,8 +865,9 @@
 				rgltr-load-current = <0x1d4c0 0x13880 0x0>;
 				gpio-no-mux = <0x0>;
 				pinctrl-names = "cam_default", "cam_suspend";
-				pinctrl-0 = <&q2pin_322>;
-				pinctrl-1 = <&q2pin_323>;
+				/* MCLK pin states matching this sensor's own MCLK (Quest OS has sensors 1 and 3 swapped) */
+				pinctrl-0 = <&q2pin_326>;
+				pinctrl-1 = <&q2pin_327>;
 				gpios = <&tlmm 97 0>;
 				gpio-req-tbl-num = <0x0>;
 				gpio-req-tbl-flags = <0x1>;
