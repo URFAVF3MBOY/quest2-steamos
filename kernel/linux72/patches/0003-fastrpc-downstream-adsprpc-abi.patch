@@ -1,5 +1,5 @@
 diff --git a/drivers/misc/fastrpc.c b/drivers/misc/fastrpc.c
-index 8c67a08..5fe8a18 100644
+index 8c67a08..a7daf34 100644
 --- a/drivers/misc/fastrpc.c
 +++ b/drivers/misc/fastrpc.c
 @@ -281,6 +281,7 @@ struct fastrpc_channel_ctx {
@@ -149,7 +149,7 @@ index 8c67a08..5fe8a18 100644
  		break;
  	case FASTRPC_IOCTL_MEM_MAP:
  		err = fastrpc_req_mem_map(fl, argp);
-@@ -2371,6 +2391,405 @@ static long fastrpc_device_ioctl(struct file *file, unsigned int cmd,
+@@ -2371,6 +2391,410 @@ static long fastrpc_device_ioctl(struct file *file, unsigned int cmd,
  	return err;
  }
  
@@ -268,20 +268,25 @@ index 8c67a08..5fe8a18 100644
 +#define ADSPRPC_INIT_ATTACH_SENSORS	3
 +#define ADSPRPC_CONTROL_KALLOC		3
 +
++#include <linux/dma-map-ops.h>
 +#include <linux/mm.h>
 +
 +int q2ion_sync_range(struct dma_buf *d, size_t off, size_t len, bool for_device);
 +
 +/*
-+ * CPU cache maintenance on the dma-bufs passed by fd: clean (to the DSP) or invalidate (from the DSP) the bytes the
-+ * call uses, found through the caller's mapping of the buffer (an argument is a slice of a larger pool); the whole
-+ * buffer when the address is not in a mapping of it.
++ * CPU cache maintenance on the dma-bufs passed by fd, as downstream does for a context bank that is not IO-coherent:
++ * before the call every buffer is cleaned, after it the output buffers are invalidated. Only the bytes the call uses,
++ * found through the caller's mapping of the buffer (an argument is a slice of a larger pool); the whole buffer when the
++ * address is not in a mapping of it. A coherent context bank (the DSP snoops the CPU caches) needs none.
 + */
-+static void adsprpc_sync_fd_bufs(struct fastrpc_invoke_args *args, u32 nbufs, bool to_dsp)
++static void adsprpc_sync_fd_bufs(struct fastrpc_user *fl, struct fastrpc_invoke_args *args, u32 inbufs, u32 nbufs,
++				 bool to_dsp)
 +{
 +	u32 i;
 +
-+	for (i = 0; i < nbufs; i++) {
++	if (!fl->sctx || dev_is_dma_coherent(fl->sctx->dev))
++		return;
++	for (i = to_dsp ? 0 : inbufs; i < nbufs; i++) {
 +		struct vm_area_struct *vma;
 +		struct dma_buf *db;
 +		size_t off = 0, len;
@@ -365,10 +370,10 @@ index 8c67a08..5fe8a18 100644
 +	 * Downstream keeps cached buffers passed by fd coherent with the DSP on every call: clean them before,
 +	 * invalidate them after. This driver only syncs when it first maps a buffer.
 +	 */
-+	adsprpc_sync_fd_bufs(args, nbufs, true);
++	adsprpc_sync_fd_bufs(fl, args, REMOTE_SCALARS_INBUFS(inv.inv.sc), nbufs, true);
 +	err = fastrpc_internal_invoke(fl, false, inv.inv.handle, inv.inv.sc, args);
 +	if (!err)
-+		adsprpc_sync_fd_bufs(args, nbufs, false);
++		adsprpc_sync_fd_bufs(fl, args, REMOTE_SCALARS_INBUFS(inv.inv.sc), nbufs, false);
 +	if (adsprpc_trace)
 +		dev_info(&fl->cctx->rpdev->dev, "adsprpc: %s: invoke handle 0x%x sc 0x%x -> %d\n",
 +			 current->comm, inv.inv.handle, inv.inv.sc, err);
@@ -555,7 +560,7 @@ index 8c67a08..5fe8a18 100644
  static const struct file_operations fastrpc_fops = {
  	.open = fastrpc_device_open,
  	.release = fastrpc_device_release,
-@@ -2495,6 +2914,38 @@ static int fastrpc_device_register(struct device *dev, struct fastrpc_channel_ct
+@@ -2495,6 +2919,38 @@ static int fastrpc_device_register(struct device *dev, struct fastrpc_channel_ct
  	return err;
  }
  
@@ -594,7 +599,7 @@ index 8c67a08..5fe8a18 100644
  static int fastrpc_get_domain_id(const char *domain)
  {
  	if (!strncmp(domain, "adsp", 4))
-@@ -2611,6 +3062,13 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
+@@ -2611,6 +3067,13 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
  		err = fastrpc_device_register(rdev, data, false, domain);
  		if (err)
  			goto err_deregister_fdev;
@@ -608,7 +613,7 @@ index 8c67a08..5fe8a18 100644
  		break;
  	default:
  		err = -EINVAL;
-@@ -2677,6 +3135,7 @@ static void fastrpc_rpmsg_remove(struct rpmsg_device *rpdev)
+@@ -2677,6 +3140,7 @@ static void fastrpc_rpmsg_remove(struct rpmsg_device *rpdev)
  
  	if (cctx->secure_fdevice)
  		misc_deregister(&cctx->secure_fdevice->miscdev);
