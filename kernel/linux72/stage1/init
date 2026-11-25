@@ -99,8 +99,14 @@ stage2() {
   cp /usr/share/q2vr/libVkLayer_Q2_vr_pacing.so $N/usr/lib/
   cp /usr/share/q2vr/VkLayer_Q2_vr_pacing.json $N/usr/share/vulkan/implicit_layer.d/
   mkdir -p $N/etc/systemd/user/steamvr.service.d
-  printf '[Service]\nEnvironment=DISABLE_GAMESCOPE_WSI=1\nEnvironment=Q2_FRAMES_AHEAD=1\nEnvironment=Q2_VSYNC_LEAD_US=5000\n' \
-    > $N/etc/systemd/user/steamvr.service.d/50-q2.conf
+  # The headset's lens and eye settings, as the 4.19 system passes them to the q2hmd driver: IPD slider position
+  # (/var/lib/q2/ipdpos, 1-3), which panel half each eye is on (eyeswap) and the old lens model (oldlens).
+  Q=$N/var/lib/q2
+  IPDPOS=$(cat $Q/ipdpos 2>/dev/null | tr -cd 123 | head -c 1)
+  EYESWAP=$(cat $Q/eyeswap 2>/dev/null | tr -cd 01 | head -c 1)
+  OLDLENS=$(cat $Q/oldlens 2>/dev/null | tr -cd 01 | head -c 1)
+  printf '[Service]\nEnvironment=DISABLE_GAMESCOPE_WSI=1\nEnvironment=Q2_FRAMES_AHEAD=1\nEnvironment=Q2_VSYNC_LEAD_US=5000\nEnvironment=Q2VR_IPDPOS=%s\nEnvironment=Q2VR_EYESWAP=%s\nEnvironment=Q2VR_OLDLENS=%s\n' \
+    "${IPDPOS:-2}" "${EYESWAP:-0}" "${OLDLENS:-0}" > $N/etc/systemd/user/steamvr.service.d/50-q2.conf
   # Steam's VR session (gamescope-session.target), not the desktop mode the 4.19 system last chose. OpenGL on the GPU is
   # zink on Turnip (the Frame's Mesa has no other GL driver); the web helper composites through ANGLE on Vulkan.
   printf '[Autologin]\nSession=gamescope-wayland.desktop\n' > $N/etc/sddm.conf.d/zz-steamos-autologin.conf

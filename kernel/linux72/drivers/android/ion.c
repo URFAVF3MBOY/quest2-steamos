@@ -151,23 +151,40 @@ static void q2ion_unmap(struct dma_buf_attachment *a, struct sg_table *t, enum d
 	dma_unmap_sgtable(a->dev, t, dir, b->cached ? 0 : DMA_ATTR_SKIP_CPU_SYNC);
 }
 
+/* Clean (for a device) or invalidate (for the CPU) the cache lines of len bytes at off; the pages are not contiguous. */
+static void q2ion_sync_pages(struct q2ion_buffer *b, size_t off, size_t len, bool for_device)
+{
+	while (len) {
+		size_t po = off & ~PAGE_MASK, n = min_t(size_t, len, PAGE_SIZE - po);
+		unsigned long va = (unsigned long)page_address(b->pages[off >> PAGE_SHIFT]) + po;
+
+		if (for_device)
+			dcache_clean_poc(va, va + n);
+		else
+			dcache_inval_poc(va, va + n);
+		off += n;
+		len -= n;
+	}
+}
+
+/*
+ * The whole buffer, once (the caches are indexed by physical address: one pass covers every device), when a device
+ * has it mapped.
+ */
 static int q2ion_cpu_access(struct dma_buf *d, enum dma_data_direction dir, bool begin)
 {
 	struct q2ion_buffer *b = d->priv;
 	struct q2ion_attachment *qa;
+	bool mapped = false;
 
 	if (!b->cached)
 		return 0;
 	mutex_lock(&b->lock);
-	list_for_each_entry(qa, &b->attachments, node) {
-		if (!qa->mapped)
-			continue;
-		if (begin)
-			dma_sync_sgtable_for_cpu(qa->dev, &qa->sgt, dir);
-		else
-			dma_sync_sgtable_for_device(qa->dev, &qa->sgt, dir);
-	}
+	list_for_each_entry(qa, &b->attachments, node)
+		mapped |= qa->mapped;
 	mutex_unlock(&b->lock);
+	if (mapped && !(begin && dir == DMA_TO_DEVICE))
+		q2ion_sync_pages(b, 0, b->size, !begin);
 	return 0;
 }
 
@@ -314,6 +331,24 @@ int dma_buf_get_flags(struct dma_buf *dmabuf, unsigned long *flags)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(dma_buf_get_flags);
+
+/*
+ * Part of a buffer from ion_alloc (the downstream partial CPU access, used by fastrpc for an argument that is a
+ * slice of a larger buffer): -EINVAL for other dma-bufs.
+ */
+int q2ion_sync_range(struct dma_buf *d, size_t off, size_t len, bool for_device)
+{
+	struct q2ion_buffer *b;
+
+	if (d->ops != &q2ion_ops)
+		return -EINVAL;
+	b = d->priv;
+	if (!b->cached || off >= b->size)
+		return 0;
+	q2ion_sync_pages(b, off, min(len, b->size - off), for_device);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(q2ion_sync_range);
 
 static int q2ion_alloc(struct ion_allocation_data *req)
 {
